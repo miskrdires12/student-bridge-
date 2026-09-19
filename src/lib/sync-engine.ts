@@ -6,7 +6,7 @@
 
 import prisma from "@/lib/prisma";
 
-export const SYNC_TOPIC = "sb_prod_sync_miskrdires12_v1";
+export const SYNC_TOPIC = process.env.SYNC_TOPIC || "sb_prod_sync_cloudflare_r2_v1";
 export const SYNC_BASE_URL = `https://ntfy.sh/${SYNC_TOPIC}`;
 
 export interface SyncPayload {

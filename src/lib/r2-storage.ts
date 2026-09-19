@@ -280,11 +280,11 @@ export async function listR2StorageFiles(prefix = "", maxKeys = 1000): Promise<A
 /**
  * Recursively lists all object keys across the entire R2 bucket (handles pagination)
  */
-export async function listAllR2StorageFileKeys(prefix = ""): Promise<Array<{ key: string; size: number }>> {
+export async function listAllR2StorageFileKeys(prefix = ""): Promise<Array<{ key: string; size: number; lastModified?: Date }>> {
   try {
     const client = getR2Client();
     let continuationToken: string | undefined = undefined;
-    const allFiles: Array<{ key: string; size: number }> = [];
+    const allFiles: Array<{ key: string; size: number; lastModified?: Date }> = [];
 
     do {
       const command: ListObjectsV2Command = new ListObjectsV2Command({
@@ -301,6 +301,7 @@ export async function listAllR2StorageFileKeys(prefix = ""): Promise<Array<{ key
             allFiles.push({
               key: item.Key,
               size: item.Size || 0,
+              lastModified: item.LastModified,
             });
           }
         }

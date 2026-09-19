@@ -1,21 +1,20 @@
 // ============================================================================
-// STUDENT BRIDGE — ENTERPRISE PRIVATE STORAGE SERVICE & MULTI-TIER RESOLUTION
-// Private Supabase Storage with cryptographic HMAC signed URLs, multi-tier
-// asset processing (Thumbnail, Preview, Original), and resilient local fallback.
+// STUDENT BRIDGE — ENTERPRISE STORAGE SERVICE (CLOUDFLARE R2 + LOCAL CACHE)
+// High-performance Cloudflare R2 storage with zero egress fees, CDN acceleration,
+// multi-tier asset processing (Thumbnail, Preview, Original), and local fallback.
 // ============================================================================
 
 import sharp from "sharp";
 import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
-
-const BUCKET_NAME = process.env.SUPABASE_STORAGE_BUCKET || "student data";
-const ENCODED_BUCKET = encodeURIComponent(BUCKET_NAME);
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_ANON_KEY ||
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+import {
+  uploadToR2Bucket,
+  getR2PublicUrl,
+  deleteFromR2Bucket,
+  listAllR2StorageFileKeys,
+  extractR2StorageKey,
+} from "./r2-storage";
 
 // Secret used for HMAC signatures when generating time-limited local signed URLs
 const STORAGE_SIGNING_SECRET =
@@ -75,8 +74,8 @@ export function verifySignedToken(
 }
 
 /**
- * Creates a time-limited signed URL for a private storage key.
- * Default expiration: 3600 seconds (1 hour).
+ * Creates a URL for a storage key.
+ * For Cloudflare R2, returns the CDN URL directly.
  */
 export async function createSignedUrl(
   storageKey: string,
@@ -89,72 +88,39 @@ export async function createSignedUrl(
     return storageKey;
   }
 
-  // 2. Supabase Storage Signed URL API
-  if (SUPABASE_URL && SUPABASE_KEY) {
-    try {
-      const cleanKey = storageKey.replace(/^\/+/, "");
-      const res = await fetch(
-        `${SUPABASE_URL}/storage/v1/object/sign/${ENCODED_BUCKET}/${encodeURI(cleanKey)}`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${SUPABASE_KEY}`,
-            apiKey: SUPABASE_KEY,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ expiresIn: expiresInSeconds }),
-        }
-      );
-
-      if (res.ok) {
-        const json = await res.json();
-        if (json.signedURL) {
-          return `${SUPABASE_URL}/storage/v1${json.signedURL}`;
-        }
-      }
-    } catch (supabaseErr) {
-      console.warn("Notice: Supabase signed URL generation failed, using local signed token:", supabaseErr);
-    }
-  }
-
-  // 3. Fallback: Local Cryptographic Signed URL
-  const expiresAtUnix = Math.floor(Date.now() / 1000) + expiresInSeconds;
+  // 2. Return public Cloudflare R2 CDN URL
   const cleanKey = storageKey.replace(/^\/+/, "");
-  const token = generateSignedToken(cleanKey, expiresAtUnix);
-
-  return `/api/storage/file/${cleanKey}?expires=${expiresAtUnix}&token=${token}`;
+  try {
+    return getR2PublicUrl(cleanKey);
+  } catch {
+    // 3. Fallback: Local Cryptographic Signed URL
+    const expiresAtUnix = Math.floor(Date.now() / 1000) + expiresInSeconds;
+    const token = generateSignedToken(cleanKey, expiresAtUnix);
+    return `/api/storage/file/${cleanKey}?expires=${expiresAtUnix}&token=${token}`;
+  }
 }
 
 /**
- * Saves a binary buffer to private storage (Supabase Storage with local filesystem fallback).
+ * Saves a binary buffer to Cloudflare R2 Storage with local disk backup.
  */
 export async function uploadToStorage(
   storageKey: string,
   buffer: Buffer,
   contentType: string = "image/jpeg"
-): Promise<{ success: boolean; key: string; sizeBytes: number }> {
+): Promise<{ success: boolean; key: string; sizeBytes: number; publicUrl?: string }> {
   const cleanKey = storageKey.replace(/^\/+/, "");
+  const parts = cleanKey.split("/");
+  const fileName = parts.pop() || cleanKey;
+  const folderPath = parts.join("/");
 
-  // 1. Attempt upload to Supabase Storage if configured
-  if (SUPABASE_URL && SUPABASE_KEY) {
-    try {
-      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${ENCODED_BUCKET}/${encodeURI(cleanKey)}`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${SUPABASE_KEY}`,
-          apiKey: SUPABASE_KEY,
-          "Content-Type": contentType,
-          "x-upsert": "true",
-        },
-        body: new Uint8Array(buffer),
-      });
-
-      if (res.ok) {
-        return { success: true, key: cleanKey, sizeBytes: buffer.length };
-      }
-    } catch (err) {
-      console.warn("Notice: Supabase storage upload failed, saving to local private storage:", err);
+  // 1. Upload to Cloudflare R2
+  try {
+    const r2Result = await uploadToR2Bucket(buffer, folderPath, fileName, contentType);
+    if (r2Result.success) {
+      return { success: true, key: cleanKey, sizeBytes: buffer.length, publicUrl: r2Result.publicUrl };
     }
+  } catch (err) {
+    console.warn("Notice: Cloudflare R2 upload warning, saving to local private storage:", err);
   }
 
   // 2. Local Private Storage fallback
@@ -164,32 +130,26 @@ export async function uploadToStorage(
     await fs.writeFile(absolutePath, buffer);
     return { success: true, key: cleanKey, sizeBytes: buffer.length };
   } catch (localErr) {
-    console.error("Critical: Storage write failed on both Supabase and local disk:", localErr);
+    console.error("Critical: Storage write failed on both Cloudflare R2 and local disk:", localErr);
     throw new Error(`Failed to store object: ${cleanKey}`);
   }
 }
 
 /**
- * Retrieves an object's binary buffer from private storage.
+ * Retrieves an object's binary buffer from Cloudflare R2 or local disk.
  */
 export async function downloadFromStorage(storageKey: string): Promise<Buffer | null> {
   const cleanKey = storageKey.replace(/^\/+/, "");
 
-  // 1. Check Supabase Storage
-  if (SUPABASE_URL && SUPABASE_KEY) {
-    try {
-      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${ENCODED_BUCKET}/${encodeURI(cleanKey)}`, {
-        headers: {
-          Authorization: `Bearer ${SUPABASE_KEY}`,
-          apiKey: SUPABASE_KEY,
-        },
-      });
-      if (res.ok) {
-        return Buffer.from(await res.arrayBuffer());
-      }
-    } catch {
-      // fallback
+  // 1. Check Cloudflare R2 via public URL
+  try {
+    const publicUrl = getR2PublicUrl(cleanKey);
+    const res = await fetch(publicUrl);
+    if (res.ok) {
+      return Buffer.from(await res.arrayBuffer());
     }
+  } catch {
+    // fallback to local
   }
 
   // 2. Check Local Private Storage
@@ -202,23 +162,17 @@ export async function downloadFromStorage(storageKey: string): Promise<Buffer | 
 }
 
 /**
- * Checks if an object exists in private storage.
+ * Checks if an object exists in Cloudflare R2 or local disk.
  */
 export async function storageObjectExists(storageKey: string): Promise<boolean> {
   const cleanKey = storageKey.replace(/^\/+/, "");
 
-  if (SUPABASE_URL && SUPABASE_KEY) {
-    try {
-      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/info/${ENCODED_BUCKET}/${encodeURI(cleanKey)}`, {
-        headers: {
-          Authorization: `Bearer ${SUPABASE_KEY}`,
-          apiKey: SUPABASE_KEY,
-        },
-      });
-      if (res.ok) return true;
-    } catch {
-      // fallback
-    }
+  try {
+    const publicUrl = getR2PublicUrl(cleanKey);
+    const res = await fetch(publicUrl, { method: "HEAD" });
+    if (res.ok) return true;
+  } catch {
+    // fallback
   }
 
   try {
@@ -231,43 +185,21 @@ export async function storageObjectExists(storageKey: string): Promise<boolean> 
 }
 
 /**
- * Deletes an object from private storage.
+ * Deletes an object from Cloudflare R2 and local disk.
  */
 export async function deleteFromStorage(storageKey: string): Promise<boolean> {
-  let cleanKey = storageKey.replace(/^\/+/, "");
-  try {
-    const decoded = decodeURIComponent(cleanKey);
-    const bucketMarker = "/student data/";
-    const idx = decoded.indexOf(bucketMarker);
-    if (idx !== -1) {
-      cleanKey = decoded.slice(idx + bucketMarker.length).replace(/^\/+/, "");
-    } else if (cleanKey.includes("student%20data/")) {
-      cleanKey = decodeURIComponent(cleanKey.split("student%20data/")[1]);
-    } else if (cleanKey.startsWith("storage/v1/object/public/")) {
-      cleanKey = cleanKey.replace(/^storage\/v1\/object\/public\/[^/]+\//, "");
-      cleanKey = decodeURIComponent(cleanKey);
-    }
-  } catch {}
-
+  const cleanKey = extractR2StorageKey(storageKey) || storageKey.replace(/^\/+/, "");
   let deletedAny = false;
 
-  if (SUPABASE_URL && SUPABASE_KEY) {
-    try {
-      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${ENCODED_BUCKET}`, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${SUPABASE_KEY}`,
-          apiKey: SUPABASE_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ prefixes: [cleanKey] }),
-      });
-      if (res.ok) deletedAny = true;
-    } catch {
-      // fallback
-    }
+  // 1. Delete from Cloudflare R2
+  try {
+    const res = await deleteFromR2Bucket(cleanKey);
+    if (res.success) deletedAny = true;
+  } catch {
+    // ignore
   }
 
+  // 2. Delete from local disk
   try {
     const absolutePath = path.join(LOCAL_STORAGE_DIR, cleanKey);
     await fs.unlink(absolutePath);
@@ -280,42 +212,25 @@ export async function deleteFromStorage(storageKey: string): Promise<boolean> {
 }
 
 /**
- * Scans and lists all objects in the private storage bucket.
- * Essential for Orphaned Storage Detection and Storage Quota calculation.
+ * Scans and lists all objects in the Cloudflare R2 bucket + local cache.
  */
 export async function listAllStorageObjects(): Promise<StorageObjectMeta[]> {
   const objects: StorageObjectMeta[] = [];
 
-  // 1. Supabase Storage listing
-  if (SUPABASE_URL && SUPABASE_KEY) {
-    try {
-      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${ENCODED_BUCKET}`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${SUPABASE_KEY}`,
-          apiKey: SUPABASE_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ limit: 10000, offset: 0, sortBy: { column: "created_at", order: "desc" } }),
+  // 1. Cloudflare R2 listing
+  try {
+    const r2Files = await listAllR2StorageFileKeys("");
+    for (const item of r2Files) {
+      objects.push({
+        key: item.key,
+        sizeBytes: item.size,
+        lastModified: item.lastModified || new Date(),
+        mimeType: "image/jpeg",
+        tier: detectTier(item.key),
       });
-
-      if (res.ok) {
-        const list = await res.json();
-        if (Array.isArray(list)) {
-          for (const item of list) {
-            objects.push({
-              key: item.name,
-              sizeBytes: item.metadata?.size || 0,
-              lastModified: item.updated_at ? new Date(item.updated_at) : new Date(item.created_at || Date.now()),
-              mimeType: item.metadata?.mimetype || "image/jpeg",
-              tier: detectTier(item.name),
-            });
-          }
-        }
-      }
-    } catch (err) {
-      console.warn("Notice: Supabase list objects failed, using local storage list:", err);
     }
+  } catch (err) {
+    console.warn("Notice: Cloudflare R2 list objects failed, using local storage list:", err);
   }
 
   // 2. Local Private Storage listing
@@ -329,7 +244,7 @@ export async function listAllStorageObjects(): Promise<StorageObjectMeta[]> {
         } else if (entry.isFile()) {
           const stats = await fs.stat(fullPath);
           const relativeKey = path.relative(baseDir, fullPath).replace(/\\/g, "/");
-          // Avoid duplicates if already listed from Supabase
+          // Avoid duplicates if already listed from R2
           if (!objects.some((o) => o.key === relativeKey)) {
             objects.push({
               key: relativeKey,
@@ -371,14 +286,11 @@ function detectTier(key: string): "original" | "preview" | "thumbnail" | "qr" | 
  * 1. Thumbnail: 120×160 (Fast list loading, low bandwidth, ~8-15 KB)
  * 2. Preview: 360×480 (Card inspection, normal viewing, ~40-60 KB)
  * 3. Original: 600×800 (High-definition print & ID card generation, ~100-140 KB)
- *
- * Saves each tier into private storage with namespaced keys and returns signed URLs.
  */
 export async function processAndStoreMultiTierPhoto(
   inputBuffer: Buffer,
   studentId: string
 ): Promise<MultiTierPhotoResult> {
-  // Validate image magic numbers
   let metadata: sharp.Metadata;
   try {
     metadata = await sharp(inputBuffer).metadata();
@@ -419,14 +331,13 @@ export async function processAndStoreMultiTierPhoto(
   const previewKey = `${baseKey}_prev.jpg`;
   const thumbnailKey = `${baseKey}_thumb.jpg`;
 
-  // Upload all 3 tiers in parallel to private storage
+  // Upload all 3 tiers in parallel to Cloudflare R2
   await Promise.all([
     uploadToStorage(originalKey, originalBuffer, "image/jpeg"),
     uploadToStorage(previewKey, previewBuffer, "image/jpeg"),
     uploadToStorage(thumbnailKey, thumbBuffer, "image/jpeg"),
   ]);
 
-  // Generate initial signed URLs (1 hour TTL)
   const [originalUrl, previewUrl, thumbnailUrl] = await Promise.all([
     createSignedUrl(originalKey, 3600),
     createSignedUrl(previewKey, 3600),
@@ -436,7 +347,7 @@ export async function processAndStoreMultiTierPhoto(
   const origMeta = await sharp(originalBuffer).metadata();
 
   return {
-    storageKey: previewKey, // Primary displayed key is preview for bandwidth optimization
+    storageKey: previewKey,
     originalKey,
     previewKey,
     thumbnailKey,

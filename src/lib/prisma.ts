@@ -41,6 +41,13 @@ function resolveDatabaseUrl(): string {
     dbUrl += (dbUrl.includes("?") ? "&" : "?") + "sslmode=require";
   }
 
+  // Enforce Cloudflare dedicated schema to guarantee complete database isolation
+  if (dbUrl.includes("schema=")) {
+    dbUrl = dbUrl.replace(/schema=[^&]*/, "schema=cloudflare");
+  } else {
+    dbUrl += (dbUrl.includes("?") ? "&" : "?") + "schema=cloudflare";
+  }
+
   // Synchronize process.env so Prisma engine internals read the exact postgresql:// protocol
   process.env.DATABASE_URL = dbUrl;
   return dbUrl;

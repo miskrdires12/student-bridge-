@@ -13,11 +13,6 @@ import {
   getR2StorageStats,
   invalidateR2StorageCache,
 } from "@/lib/r2-storage";
-import {
-  deleteMultipleFromSupabaseBucket,
-  listAllSupabaseStorageFilePaths,
-  invalidateSupabaseStorageCache,
-} from "@/lib/supabase-storage";
 import { createSafeAuditLog } from "@/lib/audit";
 
 interface StorageItem {
@@ -127,24 +122,6 @@ export async function POST(request: NextRequest) {
       const deleteResult = await deleteMultipleFromR2Bucket(pathsToDelete);
       totalPurged = deleteResult.deletedCount;
     }
-
-    // Also check and clean up any legacy Supabase orphaned files
-    try {
-      const legacyPaths = await listAllSupabaseStorageFilePaths("");
-      if (legacyPaths.length > 0) {
-        const students = await prisma.student.findMany({ select: { studentId: true } });
-        const activeStudentIds = new Set(students.map((s) => s.studentId.trim()));
-        const sbOrphans = legacyPaths.filter((p) => {
-          const filename = p.split("/").pop() || "";
-          const match = filename.match(/^(SB-[\d-]+)_/);
-          return !match || !activeStudentIds.has(match[1]);
-        });
-        if (sbOrphans.length > 0) {
-          await deleteMultipleFromSupabaseBucket(sbOrphans);
-          invalidateSupabaseStorageCache();
-        }
-      }
-    } catch {}
 
     // Invalidate R2 storage cache and fetch fresh stats
     invalidateR2StorageCache();

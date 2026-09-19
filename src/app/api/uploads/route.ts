@@ -12,10 +12,6 @@ import {
   deleteMultipleFromR2Bucket,
   invalidateR2StorageCache,
 } from "@/lib/r2-storage";
-import {
-  extractSupabaseStorageKey,
-  deleteMultipleFromSupabaseBucket,
-} from "@/lib/supabase-storage";
 
 
 export async function POST(request: NextRequest) {
@@ -130,20 +126,6 @@ export async function POST(request: NextRequest) {
             } catch (delErr) {
               console.warn("[Uploads] Notice: Old Cloudflare R2 photo cleanup warning:", delErr);
             }
-          }
-
-          // Legacy cleanup: also check and clean up any old Supabase bucket keys if student migrated
-          const candidateOldSbKeys = [
-            extractSupabaseStorageKey(student.photoPath),
-            extractSupabaseStorageKey(student.previewPath),
-            extractSupabaseStorageKey(student.originalPhotoPath),
-            extractSupabaseStorageKey(student.thumbnailPath),
-          ].filter(Boolean) as string[];
-
-          if (candidateOldSbKeys.length > 0) {
-            try {
-              await deleteMultipleFromSupabaseBucket(candidateOldSbKeys);
-            } catch {}
           }
 
           photoRecord = await prisma.studentPhoto.create({

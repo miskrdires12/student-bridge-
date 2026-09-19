@@ -6,7 +6,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { getR2StorageStats } from "@/lib/r2-storage";
-import { getSupabaseStorageStats } from "@/lib/supabase-storage";
 
 export async function GET(request: NextRequest) {
   const session = await getSession();
@@ -47,16 +46,8 @@ export async function GET(request: NextRequest) {
     storageStats = r2Stats;
     storageOk = true;
   } catch (r2Err) {
-    try {
-      const sbStats = await getSupabaseStorageStats(forceRefresh);
-      storageStats = {
-        ...storageStats,
-        ...sbStats,
-      };
-      storageOk = true;
-    } catch {
-      storageOk = false;
-    }
+    console.warn("[Cloudflare R2] Stats fetch warning:", r2Err);
+    storageOk = false;
   }
 
 

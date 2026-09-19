@@ -23,11 +23,6 @@ import {
   deleteMultipleFromR2Bucket,
   invalidateR2StorageCache,
 } from "@/lib/r2-storage";
-import {
-  extractSupabaseStorageKey,
-  deleteMultipleFromSupabaseBucket,
-  invalidateSupabaseStorageCache,
-} from "@/lib/supabase-storage";
 
 
 
@@ -463,16 +458,6 @@ export async function updateStudentPhotoAction(
         await deleteMultipleFromR2Bucket(oldR2Keys).catch(() => {});
         invalidateR2StorageCache();
       }
-
-      // Also clean up any old Supabase bucket keys if migrating
-      const oldSbKeys = [
-        extractSupabaseStorageKey(student.photoPath),
-        extractSupabaseStorageKey(student.previewPath),
-        extractSupabaseStorageKey(student.originalPhotoPath),
-      ].filter((k): k is string => Boolean(k));
-      if (oldSbKeys.length > 0) {
-        await deleteMultipleFromSupabaseBucket(oldSbKeys).catch(() => {});
-      }
     }
 
     const updated = await prisma.student.update({
@@ -636,7 +621,6 @@ export async function deleteStudentAction(
     }
 
     invalidateR2StorageCache();
-    invalidateSupabaseStorageCache();
     revalidatePath("/students");
     revalidatePath("/dashboard");
     revalidatePath("/admin/database");
@@ -1089,7 +1073,6 @@ export async function deletePermanentlyFromSupabaseAction(params: {
     }
 
     const { deleteFromR2Bucket, purgeAllR2StorageObjects, invalidateR2StorageCache } = await import("@/lib/r2-storage");
-    const { deleteFromSupabaseBucket, purgeAllSupabaseStorageObjects } = await import("@/lib/supabase-storage");
 
     if (params.mode === "STUDENT_ID") {
       if (!params.studentId || !params.studentId.trim()) {
@@ -1116,8 +1099,6 @@ export async function deletePermanentlyFromSupabaseAction(params: {
         await Promise.allSettled([
           deleteFromR2Bucket(storagePath),
           deleteFromR2Bucket(storagePreviewPath),
-          deleteFromSupabaseBucket(storagePath),
-          deleteFromSupabaseBucket(storagePreviewPath),
         ]);
       } catch (storageErr) {
         console.warn("Notice: Storage delete non-fatal:", storageErr);
@@ -1153,18 +1134,13 @@ export async function deletePermanentlyFromSupabaseAction(params: {
     }
 
     if (params.mode === "ALL_PHOTOS") {
-      const [r2Purge, sbPurge] = await Promise.allSettled([
-        purgeAllR2StorageObjects(),
-        purgeAllSupabaseStorageObjects(),
-      ]);
-      const r2Count = r2Purge.status === "fulfilled" ? r2Purge.value.count : 0;
-      const sbCount = sbPurge.status === "fulfilled" ? sbPurge.value.count : 0;
-      const totalPurged = r2Count + sbCount;
+      const r2Purge = await purgeAllR2StorageObjects();
+      const totalPurged = r2Purge.count || 0;
 
       await createSafeAuditLog({
         action: "STORAGE_PURGED",
         entityType: "STORAGE",
-        metadata: { r2Purged: r2Count, supabasePurged: sbCount, totalPurged },
+        metadata: { r2Purged: totalPurged, totalPurged },
         userId: session.userId,
       });
 
@@ -1182,13 +1158,8 @@ export async function deletePermanentlyFromSupabaseAction(params: {
         return { success: false, message: "Invalid confirmation code. Please type 'DELETE-SUPABASE'." };
       }
 
-      const [r2Purge, sbPurge] = await Promise.allSettled([
-        purgeAllR2StorageObjects(),
-        purgeAllSupabaseStorageObjects(),
-      ]);
-      const r2Count = r2Purge.status === "fulfilled" ? r2Purge.value.count : 0;
-      const sbCount = sbPurge.status === "fulfilled" ? sbPurge.value.count : 0;
-      const totalPurged = r2Count + sbCount;
+      const r2Purge = await purgeAllR2StorageObjects();
+      const totalPurged = r2Purge.count || 0;
 
       await prisma.customFieldValue.deleteMany({});
       await prisma.studentPhoto.deleteMany({});

@@ -13,10 +13,6 @@ import {
   invalidateR2StorageCache,
   listR2StorageFiles,
 } from "@/lib/r2-storage";
-import {
-  deleteMultipleFromSupabaseBucket,
-  extractSupabaseStorageKey,
-} from "@/lib/supabase-storage";
 
 import { createSafeAuditLog } from "@/lib/audit";
 
@@ -118,9 +114,8 @@ export async function executeSafeStudentDeletion(
     console.warn("Notice: Listing candidate student versioned photos warning:", scanErr);
   }
 
-  // Extract clean relative keys for Cloudflare R2 and legacy Supabase
+  // Extract clean relative keys for Cloudflare R2
   const r2Keys: string[] = [];
-  const supabaseKeys: string[] = [];
   const localKeys: string[] = [];
 
   for (const src of rawSources) {
@@ -132,12 +127,6 @@ export async function executeSafeStudentDeletion(
       r2Keys.push(r2Key);
     }
 
-    // Supabase bucket relative path (legacy)
-    const sbKey = extractSupabaseStorageKey(src);
-    if (sbKey) {
-      supabaseKeys.push(sbKey);
-    }
-
     // Local / private normalized key
     const normalized = normalizeKey(src);
     if (normalized && !normalized.startsWith("http")) {
@@ -146,7 +135,6 @@ export async function executeSafeStudentDeletion(
   }
 
   const uniqueR2Keys = Array.from(new Set(r2Keys));
-  const uniqueSupabaseKeys = Array.from(new Set(supabaseKeys));
   const uniqueLocalKeys = Array.from(new Set(localKeys));
 
   // 3. Cross-check against other students to prevent accidental deletion of shared assets
@@ -170,24 +158,6 @@ export async function executeSafeStudentDeletion(
     }
   }
 
-  const safeSupabaseToDelete: string[] = [];
-  for (const key of uniqueSupabaseKeys) {
-    const otherStudentsSharing = await prisma.student.count({
-      where: {
-        id: { not: student.id },
-        OR: [
-          { photoPath: { contains: key } },
-          { originalPhotoPath: { contains: key } },
-          { storageKey: key },
-        ],
-      },
-    });
-
-    if (otherStudentsSharing === 0) {
-      safeSupabaseToDelete.push(key);
-    }
-  }
-
   // 4. Delete Storage Objects directly from Cloudflare R2 'siliconlabs' bucket
   const deletedKeys: string[] = [];
   if (safeR2ToDelete.length > 0) {
@@ -201,14 +171,7 @@ export async function executeSafeStudentDeletion(
     }
   }
 
-  // 4b. Also clean up legacy Supabase objects if any exist
-  if (safeSupabaseToDelete.length > 0) {
-    try {
-      await deleteMultipleFromSupabaseBucket(safeSupabaseToDelete);
-    } catch {}
-  }
-
-  // 4c. Also purge local storage cache / disk files
+  // 4b. Also purge local storage cache / disk files
   for (const key of uniqueLocalKeys) {
     try {
       await deleteFromStorage(key);
