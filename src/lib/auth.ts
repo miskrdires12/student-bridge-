@@ -207,10 +207,22 @@ export async function login(credentials: {
 
         if (existingBinding) {
           if (existingBinding.role !== targetRole) {
-            return {
-              success: false,
-              error: `ACCESS REJECTED (1 DEVICE = 1 ROLE): This physical device is locked exclusively to '${existingBinding.role}' operations. Logins with '${targetRole}' are strictly prohibited on this physical device.`,
-            };
+            if (targetRole === "ADMIN") {
+              // Super Admin override: Automatically rebind physical device to ADMIN
+              await prisma.deviceBinding.update({
+                where: { deviceId: credentials.deviceId },
+                data: {
+                  role: "ADMIN",
+                  boundEmail: targetEmail,
+                  deviceInfo: credentials.deviceInfo || "Admin Workstation",
+                },
+              });
+            } else {
+              return {
+                success: false,
+                error: `ACCESS REJECTED (1 DEVICE = 1 ROLE): This physical device is locked exclusively to '${existingBinding.role}' operations. Logins with '${targetRole}' are strictly prohibited on this physical device.`,
+              };
+            }
           }
         } else {
           // Permanently bind this physical device to the first role used
@@ -326,10 +338,15 @@ export async function login(credentials: {
 
         if (existingBinding) {
           if (existingBinding.role !== "ADMIN") {
-            return {
-              success: false,
-              error: `ACCESS REJECTED (1 DEVICE = 1 ROLE): This physical device is locked exclusively to '${existingBinding.role}' operations. Logins with 'ADMIN' are strictly prohibited on this physical device.`,
-            };
+            // Super Admin override: Automatically rebind physical device to ADMIN
+            await prisma.deviceBinding.update({
+              where: { deviceId: credentials.deviceId },
+              data: {
+                role: "ADMIN",
+                boundEmail: ADMIN_EMAIL,
+                deviceInfo: credentials.deviceInfo || "Master Admin Workstation",
+              },
+            });
           }
         } else {
           await prisma.deviceBinding.create({

@@ -138,6 +138,17 @@ export async function resetUserDeviceAction(userId: string) {
   try {
     const session = await requireAuth("user:update");
 
+    const targetUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { boundDeviceId: true },
+    });
+
+    if (targetUser?.boundDeviceId) {
+      await prisma.deviceBinding.deleteMany({
+        where: { deviceId: targetUser.boundDeviceId },
+      });
+    }
+
     await prisma.user.update({
       where: { id: userId },
       data: {
