@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: "standalone",
+  output: process.env.VERCEL ? undefined : "standalone",
   compress: true,
   poweredByHeader: false,
   experimental: {
@@ -17,6 +17,10 @@ const nextConfig = {
       {
         protocol: "http",
         hostname: "localhost",
+      },
+      {
+        protocol: "https",
+        hostname: "pub-93e8bf84c42949ec88306f456caa0fc9.r2.dev",
       },
     ],
   },
