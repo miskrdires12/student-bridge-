@@ -1,0 +1,479 @@
+// ============================================================================
+// STUDENT BRIDGE — ENTERPRISE PRODUCTION PRISMA SCHEMA
+// Architecture: SQLite (dev) / PostgreSQL-ready (production)
+// Optimized for 20,000+ student records with high-performance indexing
+// ============================================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-1.1.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// ORGANIZATION (MULTI-TENANT NAMESPACE)
+// ----------------------------------------------------------------------------
+
+model Organization {
+  id        String    @id @default(cuid())
+  name      String
+  code      String    @unique
+  logoUrl   String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  users     User[]
+  students  Student[]
+
+  @@map("organizations")
+}
+
+// ----------------------------------------------------------------------------
+// USER & RBAC AUTHENTICATION MODEL
+// ----------------------------------------------------------------------------
+
+model User {
+  id             String        @id @default(cuid())
+  username       String        @unique
+  email          String        @unique
+  passwordHash   String
+  role           String        @default("RECEIVER") // SENDER | RECEIVER | ADMIN
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  // Single-Device Lock & Hardware Fingerprint
+  boundDeviceId   String?
+  boundDeviceInfo String?       // e.g. "Windows 11 / Chrome 128", "Samsung S24 Ultra / Android"
+  lastLoginAt     DateTime?
+  workSessionCount Int          @default(0)
+  totalWorkMinutes Int          @default(0)
+  lastActiveAt    DateTime?
+  // Operator Metrics: Single Records Sent & Receiver Data Encoded (Downloads)
+  recordsSentSingle Int          @default(0)
+  recordsEncoded    Int          @default(0)
+
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  auditLogs      AuditLog[]
+  workSessions   UserWorkSession[]
+
+  @@index([role])
+  @@index([organizationId])
+  @@index([boundDeviceId])
+  @@map("users")
+}
+
+// ----------------------------------------------------------------------------
+// STUDENT MODEL (OPTIMIZED FOR 20,000+ RECORDS)
+// ----------------------------------------------------------------------------
+
+model Student {
+  id                    String              @id @default(cuid())
+  studentId             String              @unique
+  fullName              String
+  phone                 String
+  sex                   String
+  grade                 String
+
+  // Optional Standard Fields
+  dateOfBirth           DateTime?
+  emailAddress          String?
+  address               String?
+  school                String?
+  department            String?
+  academicYear          String?
+  guardianFullName      String?             @default("")
+  emergencyContactName  String?             @default("")
+  emergencyContactPhone String?             @default("")
+  contactName           String?             @default("")
+  cityRegion            String?             @default("")
+  bloodType             String?
+  rollNumber            String?             @default("")
+  nationality           String?             @default("")
+  nationalId            String?
+
+  // Media Reference Pointers
+  photoPath             String?
+  thumbnailPath         String?             // 150px progressive thumbnail for instant stream
+  previewPath           String?             // 800px progressive preview for inspection drawer
+  originalPhotoPath     String?             // Full resolution master original for printing & backup
+  qrCodeData            String?
+
+  // Sender Attribution (Strictly Admin-Only)
+  senderId              String?
+  senderName            String?
+
+  // Storage & Integrity Verification Status
+  photoIntegrityStatus  String              @default("PHOTO_PENDING") // PHOTO_VERIFIED | PHOTO_MISSING | PHOTO_PENDING | PHOTO_REPAIR_REQUIRED | PHOTO_ABSENT_INTENTIONAL
+  storageKey            String?
+  storageSyncAt         DateTime?
+
+  // Status & Relational Partitioning
+  status                String              @default("ACTIVE") // ACTIVE | INACTIVE | ARCHIVED | SUSPENDED
+  receiverHidden        Boolean             @default(false)    // True when temporarily deleted by Receiver
+  hiddenAt              DateTime?
+  batchId               String?
+  batch                 TransferBatch?      @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  organizationId        String?
+  organization          Organization?       @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  // Media & Custom Value Relations
+  photos                StudentPhoto[]
+  qrCodes               StudentQR[]
+  customValues          CustomFieldValue[]
+  transferRecords       TransferRecord[]
+
+  @@index([studentId])
+  @@index([fullName])
+  @@index([grade])
+  @@index([phone])
+  @@index([batchId])
+  @@index([department])
+  @@index([status])
+  @@index([receiverHidden])
+  @@index([photoIntegrityStatus])
+  @@index([senderId])
+  @@index([createdAt])
+  @@index([updatedAt])
+  @@index([fullName, grade])
+  @@map("students")
+}
+
+// ----------------------------------------------------------------------------
+// STUDENT PHOTO (ORIGINAL + EDITED VERSIONS)
+// ----------------------------------------------------------------------------
+
+model StudentPhoto {
+  id              String   @id @default(cuid())
+  studentId       String
+  student         Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  originalPath    String
+  editedPath      String
+  thumbnailPath   String?
+  previewPath     String?
+  storageKey      String?
+  fileSizeBytes   Int?
+  width           Int?
+  height          Int?
+  cropData        String?  // JSON coordinates {x, y, width, height, zoom, rotation}
+  filterData      String?  // JSON adjustments {brightness, contrast, saturation, exposure, sharpness}
+  status          String   @default("EDITED") // ORIGINAL | EDITED | APPROVED
+  integrityStatus String   @default("PHOTO_VERIFIED")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([studentId])
+  @@map("student_photos")
+}
+
+// ----------------------------------------------------------------------------
+// STUDENT EXTERNAL QR CODE IMAGE
+// ----------------------------------------------------------------------------
+
+model StudentQR {
+  id            String   @id @default(cuid())
+  studentId     String
+  student       Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  fileName      String
+  imagePath     String
+  mimeType      String?
+  matchedMethod String   @default("AUTO_FILENAME") // AUTO_FILENAME | MANUAL
+  status        String   @default("MATCHED")       // MATCHED | UNMATCHED
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([studentId])
+  @@map("student_qrs")
+}
+
+// ----------------------------------------------------------------------------
+// SENDER / RECEIVER TRANSFER BATCHES
+// ----------------------------------------------------------------------------
+
+model TransferBatch {
+  id              String           @id @default(cuid())
+  batchNumber     String           @unique
+  senderId        String?
+  senderName      String
+  title           String
+  description     String?
+  totalStudents   Int              @default(0)
+  totalPhotos     Int              @default(0)
+  status          String           @default("DRAFT") // DRAFT | VALIDATING | READY | SENDING | SENT | FAILED | RECEIVED | PROCESSED | ARCHIVED
+  sentAt          DateTime?
+  receivedAt      DateTime?
+  processedAt     DateTime?
+  errorsJson      String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  students        Student[]
+  transferRecords TransferRecord[]
+
+  @@index([batchNumber])
+  @@index([status])
+  @@index([senderId])
+  @@map("transfer_batches")
+}
+
+// ----------------------------------------------------------------------------
+// INDIVIDUAL RECORD IN TRANSFER BATCH
+// ----------------------------------------------------------------------------
+
+model TransferRecord {
+  id           String        @id @default(cuid())
+  batchId      String
+  batch        TransferBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  studentId    String
+  student      Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  status       String        @default("PENDING") // PENDING | VALIDATED | ERROR | PROCESSED
+  errorDetails String?
+  createdAt    DateTime      @default(now())
+
+  @@index([batchId])
+  @@index([studentId])
+  @@map("transfer_records")
+}
+
+// ----------------------------------------------------------------------------
+// VECTOR ID CARD TEMPLATE & VERSIONING
+// ----------------------------------------------------------------------------
+
+model CardTemplate {
+  id             String            @id @default(cuid())
+  name           String            @unique
+  description    String?
+  category       String            @default("STUDENT_ID")
+  widthMm        Float             @default(85.6)
+  heightMm       Float             @default(53.98)
+  orientation    String            @default("LANDSCAPE") // LANDSCAPE | PORTRAIT
+  backgroundType String            @default("VECTOR")    // VECTOR | FLATTENED_IMAGE
+  backgroundUrl  String?
+  svgContent     String
+  fieldConfig    String            // JSON serialized field coordinates & typography
+  isDefault      Boolean           @default(false)
+  version        Int               @default(1)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  versions       TemplateVersion[]
+  fields         TemplateField[]
+  printJobs      PrintJob[]
+
+  @@map("card_templates")
+}
+
+model TemplateVersion {
+  id            String       @id @default(cuid())
+  templateId    String
+  template      CardTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  versionNumber Int
+  layoutJson    String
+  svgContent    String
+  changedBy     String?
+  changeNotes   String?
+  createdAt     DateTime     @default(now())
+
+  @@index([templateId])
+  @@map("template_versions")
+}
+
+model TemplateField {
+  id         String       @id @default(cuid())
+  templateId String
+  template   CardTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  fieldKey   String       // e.g. "fullName", "studentId", "photo", "qr", "custom_dept"
+  label      String
+  fieldType  String       @default("TEXT") // TEXT | PHOTO | QR | SHAPE | LOGO
+  x          Float        @default(0)
+  y          Float        @default(0)
+  width      Float        @default(100)
+  height     Float        @default(20)
+  rotation   Float        @default(0)
+  fontSize   Float        @default(12)
+  fontFamily String       @default("Helvetica")
+  color      String       @default("#000000")
+  align      String       @default("left")
+  zIndex     Int          @default(1)
+  isLocked   Boolean      @default(false)
+  createdAt  DateTime     @default(now())
+
+  @@index([templateId])
+  @@map("template_fields")
+}
+
+// ----------------------------------------------------------------------------
+// DYNAMIC CUSTOM FIELDS (NO SCHEMA ALTERATION REQUIRED)
+// ----------------------------------------------------------------------------
+
+model CustomField {
+  id             String             @id @default(cuid())
+  organizationId String?
+  fieldKey       String             @unique
+  label          String
+  dataType       String             @default("TEXT") // TEXT | NUMBER | DATE | SELECT
+  optionsJson    String?
+  isRequired     Boolean            @default(false)
+  defaultValue   String?
+  createdAt      DateTime           @default(now())
+  values         CustomFieldValue[]
+
+  @@map("custom_fields")
+}
+
+model CustomFieldValue {
+  id            String      @id @default(cuid())
+  customFieldId String
+  customField   CustomField @relation(fields: [customFieldId], references: [id], onDelete: Cascade)
+  studentId     String
+  student       Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  value         String
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@unique([customFieldId, studentId])
+  @@index([studentId])
+  @@map("custom_field_values")
+}
+
+// ----------------------------------------------------------------------------
+// ASYNCHRONOUS BACKGROUND JOBS
+// ----------------------------------------------------------------------------
+
+model ImportJob {
+  id              String    @id @default(cuid())
+  jobType         String    @default("EXCEL_STUDENTS") // EXCEL_STUDENTS | QR_CODES | PHOTOS
+  fileName        String
+  totalRows       Int       @default(0)
+  processedRows   Int       @default(0)
+  validRows       Int       @default(0)
+  invalidRows     Int       @default(0)
+  errorReportJson String?
+  status          String    @default("PENDING") // PENDING | PROCESSING | COMPLETED | FAILED
+  createdAt       DateTime  @default(now())
+  completedAt     DateTime?
+
+  @@map("import_jobs")
+}
+
+model BulkGenerationJob {
+  id             String    @id @default(cuid())
+  templateId     String?
+  batchId        String?
+  totalCount     Int       @default(0)
+  processedCount Int       @default(0)
+  failedCount    Int       @default(0)
+  status         String    @default("QUEUED") // QUEUED | PROCESSING | COMPLETED | FAILED | CANCELLED
+  outputPdfPath  String?
+  outputZipPath  String?
+  errorLogJson   String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status])
+  @@map("bulk_generation_jobs")
+}
+
+model PrintJob {
+  id               String        @id @default(cuid())
+  templateId       String?
+  template         CardTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  totalPages       Int           @default(0)
+  studentCount     Int           @default(0)
+  layoutConfigJson String        // rows, cols, margins, bleed, etc.
+  pdfPath          String?
+  status           String        @default("COMPLETED")
+  createdBy        String?
+  createdAt        DateTime      @default(now())
+
+  @@map("print_jobs")
+}
+
+// ----------------------------------------------------------------------------
+// AUDIT LOG MODEL
+// ----------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  metadata   String?  // JSON string
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([entityType])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ----------------------------------------------------------------------------
+// STORAGE RECONCILIATION AUDIT REPORT
+// ----------------------------------------------------------------------------
+
+model StorageReconciliationReport {
+  id            String   @id @default(cuid())
+  totalObjects  Int      @default(0)
+  totalBytes    Float    @default(0)
+  orphanedCount Int      @default(0)
+  missingCount  Int      @default(0)
+  verifiedCount Int      @default(0)
+  detailsJson   String?  // JSON report breakdown
+  triggeredBy   String?  // USER or SYSTEM
+  createdAt     DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("storage_reconciliation_reports")
+}
+
+// ----------------------------------------------------------------------------
+// USER WORK SESSION & EFFICIENCY TELEMETRY
+// ----------------------------------------------------------------------------
+
+model UserWorkSession {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userEmail       String
+  role            String
+  deviceId        String
+  deviceInfo      String?
+  startedAt       DateTime  @default(now())
+  endedAt         DateTime?
+  durationMinutes Int       @default(0)
+  recordsHandled  Int       @default(0) // Efficiency metric (students processed)
+  ipAddress       String?
+
+  @@index([userId])
+  @@index([startedAt])
+  @@map("user_work_sessions")
+}
+
+// ----------------------------------------------------------------------------
+// HARDWARE DEVICE ROLE BINDING (1 DEVICE = 1 ROLE)
+// ----------------------------------------------------------------------------
+
+model DeviceBinding {
+  id         String   @id @default(cuid())
+  deviceId   String   @unique
+  role       String
+  boundBy    String?
+  boundEmail String?
+  deviceInfo String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([deviceId])
+  @@index([role])
+  @@map("device_bindings")
+}
