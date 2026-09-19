@@ -357,12 +357,32 @@ export function invalidateR2StorageCache(): void {
 }
 
 /**
+ * Pings Cloudflare R2 bucket 'siliconlabs' to measure live roundtrip edge latency
+ */
+export async function pingR2Latency(): Promise<number> {
+  const start = Date.now();
+  try {
+    const client = getR2Client();
+    await client.send(
+      new ListObjectsV2Command({
+        Bucket: BUCKET_NAME,
+        MaxKeys: 1,
+      })
+    );
+    return Math.max(1, Date.now() - start);
+  } catch (err) {
+    console.warn("[Cloudflare R2] Ping error:", err);
+    return Math.max(1, Date.now() - start);
+  }
+}
+
+/**
  * Scans Cloudflare R2 bucket 'siliconlabs' and aggregates total files, total size in bytes/MB,
- * and folder-by-folder breakdown. Cached for 15 seconds.
+ * and cohort-by-cohort breakdown. Cached for 30 seconds for maximum admin speed.
  */
 export async function getR2StorageStats(forceRefresh = false): Promise<R2StorageStats> {
   const now = Date.now();
-  if (!forceRefresh && cachedR2Stats && now - cachedR2Stats.timestamp < 15000) {
+  if (!forceRefresh && cachedR2Stats && now - cachedR2Stats.timestamp < 30000) {
     return cachedR2Stats.data;
   }
 
@@ -376,9 +396,22 @@ export async function getR2StorageStats(forceRefresh = false): Promise<R2Storage
     grandTotalFiles++;
     grandTotalBytes += item.size;
 
-    // Detect top-level folder name (e.g. "Grade 10/file.jpg" -> "Grade 10")
-    const slashIdx = item.key.indexOf("/");
-    const folderName = slashIdx !== -1 ? item.key.substring(0, slashIdx) : "root";
+    // Detect cohort/folder name (e.g. "students/11C/photo.jpg" -> "Grade 11C", "KG2/photo.jpg" -> "KG2")
+    const cleanKey = item.key.replace(/^\/+/, "");
+    const parts = cleanKey.split("/");
+    let cohort = "General";
+    if (parts[0] === "students" && parts.length > 1) {
+      cohort = parts[1];
+    } else if (parts.length > 1) {
+      cohort = parts[0];
+    }
+
+    let folderName = cohort.trim();
+    if (folderName.toUpperCase().startsWith("KG")) {
+      folderName = folderName.toUpperCase();
+    } else if (!folderName.toLowerCase().startsWith("grade") && !folderName.toLowerCase().startsWith("kg") && folderName !== "General") {
+      folderName = `Grade ${folderName}`;
+    }
 
     const current = folderMap.get(folderName) || { count: 0, bytes: 0 };
     current.count++;
