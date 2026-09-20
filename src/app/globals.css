@@ -41,8 +41,26 @@
   box-shadow: 0 16px 40px -10px rgba(0, 0, 0, 0.9), 0 0 25px -4px rgba(143, 230, 23, 0.1);
 }
 
+html,
+body,
 * {
   box-sizing: border-box;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+/* Permit text selection only in form inputs and editable controls */
+input,
+textarea,
+[contenteditable="true"] {
+  -webkit-touch-callout: default !important;
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  -ms-user-select: text !important;
+  user-select: text !important;
 }
 
 body {
@@ -52,12 +70,10 @@ body {
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   transition: background-color 0.25s ease, color 0.25s ease;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
-::selection {
-  background-color: #8fe617;
-  color: #080808;
-}
 
 /* Modern smooth scrollbars */
 ::-webkit-scrollbar {

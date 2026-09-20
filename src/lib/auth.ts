@@ -207,22 +207,10 @@ export async function login(credentials: {
 
         if (existingBinding) {
           if (existingBinding.role !== targetRole) {
-            if (targetRole === "ADMIN") {
-              // Super Admin override: Automatically rebind physical device to ADMIN
-              await prisma.deviceBinding.update({
-                where: { deviceId: credentials.deviceId },
-                data: {
-                  role: "ADMIN",
-                  boundEmail: targetEmail,
-                  deviceInfo: credentials.deviceInfo || "Admin Workstation",
-                },
-              });
-            } else {
-              return {
-                success: false,
-                error: `ACCESS REJECTED (1 DEVICE = 1 ROLE): This physical device is locked exclusively to '${existingBinding.role}' operations. Logins with '${targetRole}' are strictly prohibited on this physical device.`,
-              };
-            }
+            return {
+              success: false,
+              error: `ACCESS REJECTED (1 DEVICE = 1 ROLE): This physical device is locked exclusively to '${existingBinding.role}' operations. Logins with '${targetRole}' are strictly prohibited on this physical device.`,
+            };
           }
         } else {
           // Permanently bind this physical device to the first role used
@@ -240,16 +228,15 @@ export async function login(credentials: {
       }
     }
 
-    // Single-Device User Lock Check:
+    // Single-Device User Lock Check (strictly enforced for all accounts, including Admin):
     if (
       user.boundDeviceId &&
       credentials.deviceId &&
-      user.boundDeviceId !== credentials.deviceId &&
-      user.role !== "ADMIN"
+      user.boundDeviceId !== credentials.deviceId
     ) {
       return {
         success: false,
-        error: `Access Denied: This account is locked to another device (${user.boundDeviceInfo || "Registered Device"}). Please contact Administrator to re-provision.`,
+        error: `Access Denied: This account is locked to another authorized device (${user.boundDeviceInfo || "Registered Device"}). Cross-device access is prohibited.`,
       };
     }
 
@@ -338,15 +325,10 @@ export async function login(credentials: {
 
         if (existingBinding) {
           if (existingBinding.role !== "ADMIN") {
-            // Super Admin override: Automatically rebind physical device to ADMIN
-            await prisma.deviceBinding.update({
-              where: { deviceId: credentials.deviceId },
-              data: {
-                role: "ADMIN",
-                boundEmail: ADMIN_EMAIL,
-                deviceInfo: credentials.deviceInfo || "Master Admin Workstation",
-              },
-            });
+            return {
+              success: false,
+              error: `ACCESS REJECTED (1 DEVICE = 1 ROLE): This physical device is locked exclusively to '${existingBinding.role}' operations. Logins with 'ADMIN' are strictly prohibited on this physical device.`,
+            };
           }
         } else {
           await prisma.deviceBinding.create({
