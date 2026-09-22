@@ -81,13 +81,15 @@ if (fs.existsSync(rootPublicDir)) {
   console.log("✅ Public assets copied successfully.");
 }
 
-// 4. Copy root .next/static/ into stagingDir/.next/static/
+// 4. Copy root .next/static/ into stagingDir/.next/static/ and stagingDir/public/_next/static/
 const rootStaticDir = path.join(projectRoot, ".next", "static");
 const stagingStaticDir = path.join(stagingDir, ".next", "static");
+const stagingPublicStaticDir = path.join(stagingDir, "public", "_next", "static");
 if (fs.existsSync(rootStaticDir)) {
   console.log("⚡ Copying .next/static chunks and stylesheets (excluding source maps)...");
   copyDirSync(rootStaticDir, stagingStaticDir, (name) => !name.endsWith(".map"));
-  console.log("✅ .next/static copied successfully.");
+  copyDirSync(rootStaticDir, stagingPublicStaticDir, (name) => !name.endsWith(".map"));
+  console.log("✅ .next/static mirrored to both .next/static and public/_next/static successfully.");
 }
 
 // 5. Copy root prisma/ into stagingDir/prisma/
@@ -117,15 +119,47 @@ if (fs.existsSync(rootPrismaClientDir)) {
 const appJsContent = `// ============================================================================
 // SILICON LABS — YEGARA CPANEL PHUSION PASSENGER ENTRYPOINT
 // ============================================================================
+const http = require('http');
+const path = require('path');
+const fs = require('fs');
+
 process.env.NODE_ENV = 'production';
 process.chdir(__dirname);
 
-// Passenger / cPanel CloudLinux port routing
-const port = process.env.PORT || 3000;
-console.log('[Yegara Hosting] Student Bridge starting on port ' + port + '...');
+// 1. Load standalone Next.js configuration to bypass webpack bundle5 requirement
+let nextConfig;
+try {
+  const reqFilesPath = path.join(__dirname, '.next', 'required-server-files.json');
+  if (fs.existsSync(reqFilesPath)) {
+    nextConfig = JSON.parse(fs.readFileSync(reqFilesPath, 'utf8')).config;
+    process.env.__NEXT_PRIVATE_STANDALONE_CONFIG = JSON.stringify(nextConfig);
+  }
+} catch (e) {
+  console.warn('[Yegara Hosting] Note loading required-server-files.json:', e.message);
+}
 
-// Start standalone Next.js server
-require('./server.js');
+// 2. Initialize Next.js in production mode pointing to this root directory
+const next = require('next');
+const app = next({ dev: false, dir: __dirname, conf: nextConfig });
+const handle = app.getRequestHandler();
+
+app.prepare().then(() => {
+  const server = http.createServer((req, res) => {
+    handle(req, res);
+  });
+
+  // Passenger passes either a port number OR a named socket pipe via process.env.PORT
+  // Do NOT parseInt() because Unix domain sockets (e.g. pipe:/tmp/passenger... or /tmp/passenger.sock)
+  // become NaN when parsed as an integer.
+  const port = process.env.PORT || 3000;
+
+  server.listen(port, () => {
+    console.log('[Yegara Hosting] Student Bridge ready and listening on ' + port);
+  });
+}).catch((err) => {
+  console.error('[Yegara Hosting] Failed to prepare Next.js app:', err);
+  process.exit(1);
+});
 `;
 fs.writeFileSync(path.join(stagingDir, "app.js"), appJsContent);
 console.log("✅ cPanel Passenger entrypoint (app.js) created.");
@@ -137,15 +171,13 @@ if (fs.existsSync(sourceEnvPath)) {
   envContent = fs.readFileSync(sourceEnvPath, "utf-8");
   // Ensure NODE_ENV is production in deployment
   envContent = envContent.replace(/NODE_ENV="?development"?/, 'NODE_ENV="production"');
-  if (!envContent.includes("PORT=")) {
-    envContent += "\nPORT=3000\n";
-  }
+  // Remove hardcoded PORT= so Passenger can inject its dynamic socket/pipe
+  envContent = envContent.replace(/^PORT=.*$/gm, "").replace(/^\r?\n/gm, "");
 } else {
   envContent = `DATABASE_URL="postgresql://postgres.hiwhmpuhhakguckckuqv:1998nehase10@aws-1-eu-west-1.pooler.supabase.com:5432/postgres?schema=cloudflare&sslmode=require"
 AUTH_SECRET="student-bridge-enterprise-secret-key-32-chars-minimum-prod-grade"
 NEXT_PUBLIC_APP_URL="http://localhost:3000"
 NODE_ENV="production"
-PORT=3000
 NEXT_PUBLIC_SUPABASE_URL="https://hiwhmpuhhakguckckuqv.supabase.co"
 NEXT_PUBLIC_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhpd2htcHVoaGFrZ3Vja2NrdXF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk0OTkyMjYsImV4cCI6MjEwNTA3NTIyNn0.1v1JUKWLxEfTPDlp6h1QBpf34MVKoW5hGYHt7quE8k0"
 R2_ACCOUNT_ID="a5b6150294de0fedb8e0cd789114b939"
@@ -161,7 +193,8 @@ NEXT_PUBLIC_SYNC_TOPIC="sb_prod_sync_cloudflare_r2_v1"
 }
 fs.writeFileSync(path.join(stagingDir, ".env"), envContent);
 fs.writeFileSync(path.join(stagingDir, ".env.production"), envContent);
-console.log("✅ Production .env and .env.production configured with Cloudflare R2 and Supabase credentials.");
+console.log("✅ Production .env and .env.production configured with Cloudflare R2 and Supabase credentials (without hardcoded PORT).");
+
 
 // 9. Write .htaccess for cPanel
 const htaccessContent = `# ============================================================================
