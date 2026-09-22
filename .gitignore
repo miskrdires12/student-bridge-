@@ -40,8 +40,10 @@ prisma/*.db-journal
 deploy_staging/
 cpanel_staging/
 lean_staging/
+yegara_staging/
 deploy.zip
 lean-deploy.zip
+*.zip
 
 # Local private storage fallback directory
 /storage/
