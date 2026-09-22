@@ -95,6 +95,16 @@ export interface CloudflareDatabaseStats {
   postgresRemainingPercent?: number;
   postgresUsedPercent?: number;
   tableSizes?: CloudflareTableSizes;
+  sendersBreakdown?: Array<{
+    id: string;
+    username: string;
+    email: string;
+    studentsRegistered: number;
+    studentsWithPhotos: number;
+    isDeviceBound: boolean;
+    boundDeviceInfo?: string | null;
+    lastActiveAt?: Date | string | null;
+  }>;
 }
 
 export interface CloudflareStatusData {
@@ -362,7 +372,7 @@ export function CloudflareRealtimeStoragePieChart({
   loading: boolean;
   onRefresh: () => void;
 }) {
-  const [viewMode, setViewMode] = useState<"storage" | "ecosystem">("storage");
+  const [viewMode, setViewMode] = useState<"storage" | "ecosystem" | "senders">("storage");
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   // Silicon Labs Lemon Green & Obsidian Neon Palette
@@ -423,6 +433,36 @@ export function CloudflareRealtimeStoragePieChart({
         sizeFormatted: status?.storageSizeFormatted || "34.00 MB",
         color: "#8fe617",
         percentage: 100,
+      });
+    }
+  } else if (viewMode === "senders") {
+    // Senders Breakdown View
+    const senders = status?.database?.sendersBreakdown || [];
+    const totalStudents = status?.database?.studentsCount || 185;
+    const assignedCount = senders.reduce((acc, s) => acc + s.studentsRegistered, 0);
+    const unassignedCount = Math.max(0, totalStudents - assignedCount);
+
+    senders.forEach((s, idx) => {
+      const pct = totalStudents > 0 ? Math.round((s.studentsRegistered / totalStudents) * 100) : 0;
+      segments.push({
+        label: `Sender: ${s.username}`,
+        subLabel: `${s.studentsWithPhotos} portraits verified (${s.isDeviceBound ? "Phone Locked" : "Unbound"})`,
+        value: s.studentsRegistered,
+        sizeFormatted: `${s.studentsRegistered} registered to Admin`,
+        color: PALETTE[idx % PALETTE.length],
+        percentage: pct,
+      });
+    });
+
+    if (unassignedCount > 0) {
+      const pct = Math.round((unassignedCount / totalStudents) * 100);
+      segments.push({
+        label: "Direct / Admin Registrations",
+        subLabel: "Historical import & direct entries",
+        value: unassignedCount,
+        sizeFormatted: `${unassignedCount} registered to Admin`,
+        color: "#64748b",
+        percentage: pct,
       });
     }
   } else {
@@ -564,6 +604,20 @@ export function CloudflareRealtimeStoragePieChart({
           <button
             type="button"
             onClick={() => {
+              setViewMode("senders");
+              setHoveredIndex(null);
+            }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+              viewMode === "senders"
+                ? "bg-[#8fe617] text-[#062404] shadow-xs"
+                : "text-[#6b7771] dark:text-[#8a9e93] hover:text-[#080808] dark:hover:text-[#f2f7f4]"
+            }`}
+          >
+            Students by Sender
+          </button>
+          <button
+            type="button"
+            onClick={() => {
               setViewMode("ecosystem");
               setHoveredIndex(null);
             }}
@@ -690,6 +744,8 @@ export function CloudflareRealtimeStoragePieChart({
                     ? activeSegment.value.toLocaleString()
                     : viewMode === "storage"
                     ? totalFiles.toLocaleString()
+                    : viewMode === "senders"
+                    ? (status?.database?.studentsCount ?? totalValue).toLocaleString()
                     : totalValue.toLocaleString()}
                 </text>
 
@@ -704,6 +760,8 @@ export function CloudflareRealtimeStoragePieChart({
                     ? activeSegment.label
                     : viewMode === "storage"
                     ? "PHOTOS STORED"
+                    : viewMode === "senders"
+                    ? "STUDENTS REGISTERED"
                     : "TOTAL ARTIFACTS"}
                 </text>
 
@@ -718,6 +776,8 @@ export function CloudflareRealtimeStoragePieChart({
                     ? `${activeSegment.subLabel} (${activeSegment.percentage}%)`
                     : viewMode === "storage"
                     ? `${status?.storageSizeFormatted || "33.67 MB"} • ${status?.storageFolders?.length || 0} Cohorts`
+                    : viewMode === "senders"
+                    ? `${status?.database?.studentsCount || 0} Students in Registry`
                     : `${status?.storageSizeFormatted || "33.67 MB"} + DB Records`}
                 </text>
               </g>

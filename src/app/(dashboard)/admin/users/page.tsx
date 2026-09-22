@@ -64,21 +64,60 @@ export default async function AdminUsersPage() {
     console.warn("[AdminUsersPage] Resilient fallback on users query:", err);
   }
 
-  // Count existing students sent by each operator if recordsSentSingle is not yet populated
+  // Accurately compute students registered by each sender operator to admin
   const usersWithMetrics = await Promise.all(
     (users || []).map(async (u) => {
-      let sentCount = u.recordsSentSingle || 0;
-      if (sentCount === 0 && u.id) {
-        try {
-          const dbSentCount = await prisma.student.count({
-            where: { senderId: u.id },
-          });
-          sentCount = dbSentCount;
-        } catch {}
+      let dbSentCount = 0;
+      let photoCount = 0;
+      let latestReg: Date | null = null;
+      try {
+        const [cnt, pCnt, latest] = await Promise.all([
+          prisma.student.count({
+            where: {
+              OR: [
+                { senderId: u.id },
+                { senderName: u.username },
+                { senderName: u.email },
+              ],
+            },
+          }),
+          prisma.student.count({
+            where: {
+              OR: [
+                { senderId: u.id },
+                { senderName: u.username },
+                { senderName: u.email },
+              ],
+              photoPath: { not: null },
+            },
+          }),
+          prisma.student.findFirst({
+            where: {
+              OR: [
+                { senderId: u.id },
+                { senderName: u.username },
+                { senderName: u.email },
+              ],
+            },
+            orderBy: { createdAt: "desc" },
+            select: { createdAt: true },
+          }),
+        ]);
+        dbSentCount = cnt;
+        photoCount = pCnt;
+        latestReg = latest?.createdAt || null;
+      } catch (err) {
+        console.warn(`[AdminUsersPage] Error querying stats for user ${u.username}:`, err);
       }
+
+      const totalSent = Math.max(dbSentCount, u.recordsSentSingle || 0);
+
       return {
         ...u,
-        recordsSentSingle: sentCount,
+        recordsSentSingle: totalSent,
+        studentsRegistered: totalSent,
+        studentsWithPhotos: photoCount,
+        lastRegisteredAt: latestReg,
         recordsEncoded: u.recordsEncoded || 0,
       };
     })

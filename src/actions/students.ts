@@ -1196,4 +1196,61 @@ export async function deletePermanentlyFromSupabaseAction(params: {
   }
 }
 
+/**
+ * Returns the current authenticated sender's total student registrations to Admin,
+ * including photo verification count.
+ */
+export async function getSenderStatsAction(): Promise<{
+  success: boolean;
+  studentsRegistered: number;
+  studentsWithPhotos: number;
+  senderName: string;
+}> {
+  try {
+    const session = await getSession();
+    if (!session || !session.userId) {
+      return { success: false, studentsRegistered: 0, studentsWithPhotos: 0, senderName: "" };
+    }
+
+    const [user, dbCount, photoCount] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: session.userId },
+        select: { recordsSentSingle: true, username: true, email: true },
+      }),
+      prisma.student.count({
+        where: {
+          OR: [
+            { senderId: session.userId },
+            { senderName: session.username },
+            { senderName: session.email },
+          ],
+        },
+      }),
+      prisma.student.count({
+        where: {
+          OR: [
+            { senderId: session.userId },
+            { senderName: session.username },
+            { senderName: session.email },
+          ],
+          photoPath: { not: null },
+        },
+      }),
+    ]);
+
+    const totalRegistered = Math.max(dbCount, user?.recordsSentSingle || 0);
+
+    return {
+      success: true,
+      studentsRegistered: totalRegistered,
+      studentsWithPhotos: photoCount,
+      senderName: user?.username || session.username,
+    };
+  } catch (err: any) {
+    console.warn("[getSenderStatsAction] fallback:", err);
+    return { success: false, studentsRegistered: 0, studentsWithPhotos: 0, senderName: "" };
+  }
+}
+
+
 

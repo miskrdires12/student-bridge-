@@ -29,6 +29,8 @@ import {
   RotateCcw,
   Upload,
   Download,
+  Sparkles,
+  Camera,
 } from "lucide-react";
 import { createUserAction, deleteUserAction, resetUserDeviceAction } from "@/actions/users";
 import type { UserRole } from "@/types/auth";
@@ -46,6 +48,9 @@ export interface UserItem {
   lastActiveAt?: Date | string | null;
   recordsSentSingle?: number;
   recordsEncoded?: number;
+  studentsRegistered?: number;
+  studentsWithPhotos?: number;
+  lastRegisteredAt?: Date | string | null;
   createdAt: Date | string;
 }
 
@@ -265,11 +270,15 @@ export const UsersClient: React.FC<UsersClientProps> = ({ initialUsers, currentU
         </div>
 
         <div className="rounded-2xl border border-blue-200 dark:border-blue-950/60 bg-blue-50/50 dark:bg-blue-950/20 p-4 shadow-xs">
-          <div className="text-[10px] font-mono text-blue-700 dark:text-blue-400 uppercase font-bold">
-            Single Sent Total
+          <div className="text-[10px] font-mono text-blue-700 dark:text-blue-400 uppercase font-bold flex items-center justify-between">
+            <span>Sender Registrations</span>
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400 font-bold">TO ADMIN</span>
           </div>
           <div className="text-2xl font-black font-mono text-blue-600 dark:text-blue-400 mt-1">
-            {users.reduce((acc, u) => acc + (u.recordsSentSingle || 0), 0)}
+            {users.reduce((acc, u) => acc + (u.studentsRegistered ?? u.recordsSentSingle ?? 0), 0)}
+          </div>
+          <div className="text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93] mt-0.5">
+            {users.filter((u) => u.role === "SENDER" || (u.studentsRegistered || 0) > 0).length} intake stations
           </div>
         </div>
 
@@ -298,6 +307,99 @@ export const UsersClient: React.FC<UsersClientProps> = ({ initialUsers, currentU
           <div className="text-2xl font-black font-mono text-amber-600 dark:text-amber-400 mt-1">
             {adminCount}
           </div>
+        </div>
+      </div>
+
+      {/* Sender Student Registration Breakdown Section */}
+      <div className="rounded-3xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-5 shadow-xs space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#eef5f1] dark:border-[#1c261e] pb-3">
+          <div>
+            <h3 className="text-sm font-black font-mono tracking-tight text-[#080808] dark:text-[#f2f7f4] flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-[#8fe617]" />
+              <span>Sender Student Registrations to Admin</span>
+            </h3>
+            <p className="text-xs text-[#6b7771] dark:text-[#8a9e93] font-mono mt-0.5">
+              Exact student intake counts and portrait capture rates contributed by each sender workstation
+            </p>
+          </div>
+          <div className="text-xs font-mono font-bold text-[#080808] dark:text-[#f2f7f4] bg-[#f7faf9] dark:bg-[#161d19] px-3 py-1.5 rounded-xl border border-[#dce7e1] dark:border-[#223126]">
+            Total Sender Intake: <span className="text-[#8fe617] font-black">{users.reduce((acc, u) => acc + (u.studentsRegistered ?? u.recordsSentSingle ?? 0), 0)}</span> Students
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
+          {users.filter((u) => u.role === "SENDER" || (u.studentsRegistered || 0) > 0).length === 0 ? (
+            <div className="col-span-full py-6 text-center text-xs font-mono text-[#6b7771] dark:text-[#8a9e93]">
+              No active sender accounts found.
+            </div>
+          ) : (
+            users
+              .filter((u) => u.role === "SENDER" || (u.studentsRegistered || 0) > 0)
+              .sort((a, b) => (b.studentsRegistered ?? b.recordsSentSingle ?? 0) - (a.studentsRegistered ?? a.recordsSentSingle ?? 0))
+              .map((sender, idx) => {
+                const regCount = sender.studentsRegistered ?? sender.recordsSentSingle ?? 0;
+                const photoCount = sender.studentsWithPhotos ?? 0;
+                const photoRate = regCount > 0 ? Math.round((photoCount / regCount) * 100) : 0;
+                return (
+                  <div
+                    key={sender.id}
+                    className="p-3.5 rounded-2xl border border-[#eef5f1] dark:border-[#1c261e] bg-[#f7faf9] dark:bg-[#070908] hover:border-[#8fe617]/50 transition-all space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="h-6 w-6 rounded-lg bg-[#8fe617]/20 border border-[#8fe617]/50 flex items-center justify-center text-[11px] font-black font-mono text-[#062404] dark:text-[#8fe617] shrink-0">
+                          #{idx + 1}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-[#080808] dark:text-[#f2f7f4] truncate">
+                            {sender.username}
+                          </div>
+                          <div className="text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93] truncate">
+                            {sender.email}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <div className="text-lg font-black font-mono text-blue-600 dark:text-blue-400">
+                          {regCount}
+                        </div>
+                        <div className="text-[9px] font-mono font-bold text-[#6b7771] dark:text-[#8a9e93] uppercase">
+                          Registered
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Progress & metrics */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[10px] font-mono">
+                        <span className="text-[#6b7771] dark:text-[#8a9e93]">Verified Portraits:</span>
+                        <span className="font-bold text-[#080808] dark:text-[#f2f7f4]">
+                          {photoCount} / {regCount} ({photoRate}%)
+                        </span>
+                      </div>
+                      <div className="w-full h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                        <div
+                          className="h-full bg-[#8fe617] rounded-full transition-all duration-300"
+                          style={{ width: `${Math.min(100, photoRate)}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px] font-mono pt-1 border-t border-neutral-200/60 dark:border-neutral-800/60">
+                      <span className="text-[#6b7771] dark:text-[#8a9e93] text-[9px]">
+                        {sender.boundDeviceId ? "📱 Workstation Locked" : "🔓 Unbound Station"}
+                      </span>
+                      {sender.lastRegisteredAt && (
+                        <span className="text-[9px] text-[#6b7771] dark:text-[#8a9e93]">
+                          Last: {new Date(sender.lastRegisteredAt).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+          )}
         </div>
       </div>
 
@@ -347,7 +449,7 @@ export const UsersClient: React.FC<UsersClientProps> = ({ initialUsers, currentU
                 <th className="px-5 py-3.5">Institutional Email</th>
                 <th className="px-5 py-3.5">Role Privilege</th>
                 <th className="px-5 py-3.5">Authorized Device (1-Device Lock)</th>
-                <th className="px-5 py-3.5">Work Output (Sent / Encoded)</th>
+                <th className="px-5 py-3.5">Students Registered to Admin &amp; Work Output</th>
                 <th className="px-5 py-3.5">Work Telemetry</th>
                 <th className="px-5 py-3.5 text-right">Actions</th>
               </tr>
@@ -432,23 +534,50 @@ export const UsersClient: React.FC<UsersClientProps> = ({ initialUsers, currentU
                       </td>
                       <td className="px-5 py-3.5 font-mono text-xs">
                         <div className="flex flex-col gap-1.5">
-                          <div
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-900/40 w-fit"
-                            title="Total single student records enrolled/sent by this operator"
-                          >
-                            <Upload className="h-3 w-3 text-blue-500 shrink-0" />
-                            <span className="font-black font-mono">{user.recordsSentSingle || 0}</span>
-                            <span className="text-[10px] text-[#6b7771] dark:text-[#8a9e93]">sent in single</span>
-                          </div>
+                          {user.role === "SENDER" || (user.studentsRegistered || 0) > 0 ? (
+                            <div className="space-y-1">
+                              <div
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-900/60 w-fit"
+                                title="Total student registrations submitted to Admin by this sender station"
+                              >
+                                <Upload className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                                <span className="font-black font-mono text-xs">
+                                  {user.studentsRegistered ?? user.recordsSentSingle ?? 0}
+                                </span>
+                                <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">
+                                  Students Registered
+                                </span>
+                              </div>
 
-                          <div
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#8fe617]/15 text-[#062404] dark:text-[#8fe617] border border-[#8fe617]/35 w-fit"
-                            title="Total records encoded / downloaded as file by receiver"
-                          >
-                            <Download className="h-3 w-3 text-[#8fe617] shrink-0" />
-                            <span className="font-black font-mono">{user.recordsEncoded || 0}</span>
-                            <span className="text-[10px] text-[#6b7771] dark:text-[#8a9e93]">data encoded</span>
-                          </div>
+                              <div className="flex items-center gap-2 text-[10px] text-[#6b7771] dark:text-[#8a9e93] pl-0.5">
+                                <span className="flex items-center gap-1">
+                                  <Camera className="h-3 w-3 text-[#8fe617]" />
+                                  <strong className="text-[#080808] dark:text-[#f2f7f4]">
+                                    {user.studentsWithPhotos ?? 0}
+                                  </strong>{" "}
+                                  portraits verified
+                                </span>
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {(user.role === "RECEIVER" || (user.recordsEncoded || 0) > 0) && (
+                            <div
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#8fe617]/15 text-[#062404] dark:text-[#8fe617] border border-[#8fe617]/35 w-fit"
+                              title="Total records encoded / downloaded as file by receiver"
+                            >
+                              <Download className="h-3 w-3 text-[#8fe617] shrink-0" />
+                              <span className="font-black font-mono">{user.recordsEncoded || 0}</span>
+                              <span className="text-[10px] text-[#6b7771] dark:text-[#8a9e93]">data encoded</span>
+                            </div>
+                          )}
+
+                          {user.role === "ADMIN" && (user.studentsRegistered || 0) === 0 && (
+                            <div className="text-[10px] text-amber-600 dark:text-amber-400 font-mono font-bold flex items-center gap-1">
+                              <Shield className="h-3 w-3" />
+                              <span>Full Admin Clearance</span>
+                            </div>
+                          )}
                         </div>
                       </td>
                       <td className="px-5 py-3.5 font-mono text-xs">

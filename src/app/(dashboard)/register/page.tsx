@@ -29,8 +29,14 @@ import {
   Wifi,
   WifiOff,
   RefreshCw,
+  Sparkles,
 } from "lucide-react";
-import { createStudentAction, getCustomFieldsAction, checkStudentIdAvailabilityAction } from "@/actions/students";
+import {
+  createStudentAction,
+  getCustomFieldsAction,
+  checkStudentIdAvailabilityAction,
+  getSenderStatsAction,
+} from "@/actions/students";
 import type { StudentFormInput } from "@/lib/validations";
 import { CameraModal } from "@/components/camera/CameraModal";
 import { PhotoEditorModal } from "@/components/camera/PhotoEditorModal";
@@ -108,6 +114,13 @@ export default function RegisterPage() {
   const [offlinePendingQueue, setOfflinePendingQueue] = useState<any[]>([]);
   const [isSyncingOfflineQueue, setIsSyncingOfflineQueue] = useState<boolean>(false);
 
+  // Sender Station Output Metrics (Registrations to Admin)
+  const [senderStats, setSenderStats] = useState<{
+    studentsRegistered: number;
+    studentsWithPhotos: number;
+    senderName: string;
+  }>({ studentsRegistered: 0, studentsWithPhotos: 0, senderName: "" });
+
   // Core Form Fields
   const [formData, setFormData] = useState<Partial<StudentFormInput>>({
     studentId: "",
@@ -131,6 +144,19 @@ export default function RegisterPage() {
 
   // Generate clean default student ID & load Sender Station defaults on mount
   useEffect(() => {
+    // Fetch live sender registration metrics to Admin
+    getSenderStatsAction()
+      .then((res) => {
+        if (res.success) {
+          setSenderStats({
+            studentsRegistered: res.studentsRegistered,
+            studentsWithPhotos: res.studentsWithPhotos,
+            senderName: res.senderName,
+          });
+        }
+      })
+      .catch(() => {});
+
     let defaultGrade = "10";
     let defaultSchool = "";
     let defaultAcademicYear = "2026-2027";
@@ -617,6 +643,13 @@ export default function RegisterPage() {
         // Clear active form draft since student is safely enrolled & confirmed
         clearActiveDraft();
 
+        // Optimistically increment station registered counter
+        setSenderStats((prev) => ({
+          ...prev,
+          studentsRegistered: prev.studentsRegistered + 1,
+          studentsWithPhotos: payload.photoPath ? prev.studentsWithPhotos + 1 : prev.studentsWithPhotos,
+        }));
+
         // Show "Sent Successfully!" confirmation modal
         setSentSuccessfullyData({
           studentId: payload.studentId,
@@ -771,6 +804,37 @@ export default function RegisterPage() {
             <span>{errorMessage}</span>
           </div>
         )}
+
+        {/* Station Output Telemetry Banner: Registrations to Admin */}
+        <div className="rounded-2xl border border-[#8fe617]/40 bg-gradient-to-r from-[#8fe617]/15 via-emerald-500/10 to-transparent p-3.5 shadow-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-xl bg-[#8fe617] text-[#062404] flex items-center justify-center font-mono font-black text-sm shadow-md shadow-[#8fe617]/20 shrink-0">
+              <Sparkles className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 font-mono">
+                <span className="text-xs font-black uppercase text-[#080808] dark:text-[#f2f7f4] tracking-tight">
+                  Station Output
+                </span>
+                <span className="px-1.5 py-0.2 text-[9px] rounded-md bg-[#8fe617]/25 text-[#062404] dark:text-[#8fe617] font-bold">
+                  DELIVERED TO ADMIN
+                </span>
+              </div>
+              <div className="text-[11px] font-mono text-[#6b7771] dark:text-[#8a9e93] mt-0.5">
+                Operator: <strong className="text-[#080808] dark:text-[#f2f7f4]">{senderStats.senderName || "Sender Station"}</strong> • {senderStats.studentsWithPhotos} portraits verified
+              </div>
+            </div>
+          </div>
+
+          <div className="text-right shrink-0">
+            <div className="text-2xl font-black font-mono text-[#080808] dark:text-[#f2f7f4] leading-none">
+              {senderStats.studentsRegistered}
+            </div>
+            <div className="text-[9px] font-mono font-bold text-[#6b7771] dark:text-[#8a9e93] uppercase mt-0.5">
+              Registered
+            </div>
+          </div>
+        </div>
 
         {/* ====================================================================
             PORTRAIT CAMERA (EASY PHONE VIEWPORT, PURE 3:4 STUDIO)

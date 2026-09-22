@@ -34,6 +34,38 @@ export interface CameraModalProps {
   compressionQuality?: number; // Default 0.96
 }
 
+export type EnhancerMode = "pro" | "bright" | "vivid" | "off";
+
+export const ENHANCER_MODES: Record<
+  EnhancerMode,
+  { name: string; shortName: string; filter: string; description: string }
+> = {
+  pro: {
+    name: "PRO STUDIO",
+    shortName: "PRO",
+    filter: "contrast(108%) brightness(105%) saturate(106%)",
+    description: "Balanced portrait studio curves & crisp natural skin tone",
+  },
+  bright: {
+    name: "BRIGHT ID",
+    shortName: "BRIGHT",
+    filter: "contrast(105%) brightness(112%) saturate(108%)",
+    description: "High-key studio fill for indoor & dim sensor lighting",
+  },
+  vivid: {
+    name: "VIVID TONE",
+    shortName: "VIVID",
+    filter: "contrast(110%) brightness(104%) saturate(114%)",
+    description: "Vibrant contrast & deep rich badge color punch",
+  },
+  off: {
+    name: "RAW SENSOR",
+    shortName: "RAW",
+    filter: "none",
+    description: "Unprocessed live sensor feed",
+  },
+};
+
 type CameraState = "idle" | "requesting" | "streaming" | "captured" | "error";
 
 interface VideoDevice {
@@ -60,7 +92,7 @@ export const CameraModal: React.FC<CameraModalProps> = ({
   const [isFlashing, setIsFlashing] = useState<boolean>(false);
   const [isFlashlightOn, setIsFlashlightOn] = useState<boolean>(false);
   const [zoom, setZoom] = useState<number>(1.0);
-  const [isEnhancerActive, setIsEnhancerActive] = useState<boolean>(true);
+  const [enhancerMode, setEnhancerMode] = useState<EnhancerMode>("pro");
 
   const touchStartDistRef = useRef<number | null>(null);
   const touchStartZoomRef = useRef<number>(1.0);
@@ -368,9 +400,11 @@ export const CameraModal: React.FC<CameraModalProps> = ({
       sy = (videoH - sh) / 2;
     }
 
-    // AI Studio Photo Remaster / Enhancer: auto lighting & crisp portrait curve
-    if (isEnhancerActive) {
-      ctx.filter = "contrast(106%) brightness(102%) saturate(106%)";
+    // AI Studio Photo Remaster / Enhancer: 1:1 parity with live camera preview
+    if (enhancerMode !== "off") {
+      ctx.filter = ENHANCER_MODES[enhancerMode].filter;
+    } else {
+      ctx.filter = "none";
     }
 
     ctx.drawImage(video, sx, sy, sw, sh, 0, 0, destW, destH);
@@ -648,8 +682,10 @@ export const CameraModal: React.FC<CameraModalProps> = ({
             style={{
               transform: `${facingMode === "user" ? "scaleX(-1) " : ""}scale(${zoom})`,
               transformOrigin: "center center",
+              filter: ENHANCER_MODES[enhancerMode].filter,
+              WebkitFilter: ENHANCER_MODES[enhancerMode].filter,
             }}
-            className={`h-full w-full object-cover transition-opacity duration-200 ${
+            className={`h-full w-full object-cover transition-all duration-150 ${
               cameraState === "streaming" ? "opacity-100" : "opacity-0"
             }`}
           />
@@ -669,6 +705,14 @@ export const CameraModal: React.FC<CameraModalProps> = ({
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
               {/* Portrait Centering Guide */}
               <div className="relative aspect-[3/4] h-[78%] max-h-[460px] border-2 border-[#8fe617] shadow-[0_0_0_9999px_rgba(0,0,0,0.65)] rounded-xs">
+                {/* Live Enhancer Active Badge */}
+                {enhancerMode !== "off" && (
+                  <div className="absolute -top-7 left-1/2 -translate-x-1/2 px-2.5 py-0.5 rounded-full bg-black/85 border border-[#8fe617]/50 text-[#8fe617] text-[8px] font-mono font-black uppercase tracking-wider flex items-center gap-1 shadow-md shadow-[#8fe617]/10 animate-in fade-in">
+                    <Sparkles className="h-2.5 w-2.5" />
+                    <span>LIVE ENHANCED ({ENHANCER_MODES[enhancerMode].name})</span>
+                  </div>
+                )}
+
                 {/* Corner bracket highlight marks */}
                 <div className="absolute -top-1 -left-1 w-6 h-6 border-t-3 border-l-3 border-[#8fe617]" />
                 <div className="absolute -top-1 -right-1 w-6 h-6 border-t-3 border-r-3 border-[#8fe617]" />
@@ -691,7 +735,7 @@ export const CameraModal: React.FC<CameraModalProps> = ({
                 </div>
               </div>
 
-              {/* Top Control Badges: Ultra HD + Flash + Samsung AI Studio Enhancer */}
+              {/* Top Control Badges: Ultra HD + Flash + Studio Live Enhancer */}
               <div className="absolute top-4 flex items-center gap-2 pointer-events-auto">
                 <div className="rounded-full border border-neutral-800 bg-black/85 backdrop-blur-xs px-3 py-1 text-[10px] font-mono text-white flex items-center gap-1.5 shadow-md">
                   <span className="h-2 w-2 rounded-full bg-[#8fe617] animate-pulse" />
@@ -699,20 +743,44 @@ export const CameraModal: React.FC<CameraModalProps> = ({
                   <span className="text-[#8fe617] font-bold">• 300 DPI</span>
                 </div>
 
-                {/* Samsung AI Studio Enhancer Toggle */}
-                <button
-                  type="button"
-                  onClick={() => setIsEnhancerActive(!isEnhancerActive)}
-                  className={`rounded-full px-3 py-1 text-[10px] font-mono font-black flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
-                    isEnhancerActive
-                      ? "bg-[#8fe617] text-[#062404] shadow-[0_0_14px_rgba(143,230,23,0.5)] border border-[#8fe617]"
-                      : "bg-black/85 text-neutral-400 border border-neutral-800 hover:text-white"
-                  }`}
-                  title="AI Studio Enhancer: Auto-optimizes portrait lighting, skin detail, and contrast"
-                >
-                  <Sparkles className={`h-3 w-3 ${isEnhancerActive ? "text-[#062404]" : "text-neutral-400"}`} />
-                  <span>AI ENHANCER {isEnhancerActive ? "ON" : "OFF"}</span>
-                </button>
+                {/* Studio Live Cam Enhancer Switcher Dock */}
+                <div className="flex items-center rounded-full border border-neutral-800 bg-black/90 backdrop-blur-md p-0.5 shadow-lg">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sequence: EnhancerMode[] = ["pro", "bright", "vivid", "off"];
+                      const next = sequence[(sequence.indexOf(enhancerMode) + 1) % sequence.length];
+                      setEnhancerMode(next);
+                    }}
+                    className={`rounded-full px-2.5 py-1 text-[10px] font-mono font-black flex items-center gap-1.5 transition-all cursor-pointer ${
+                      enhancerMode !== "off"
+                        ? "bg-[#8fe617] text-[#062404] shadow-[0_0_14px_rgba(143,230,23,0.5)] border border-[#8fe617]"
+                        : "text-neutral-400 hover:text-white border border-transparent"
+                    }`}
+                    title={`Live Cam Enhancer: ${ENHANCER_MODES[enhancerMode].name} — ${ENHANCER_MODES[enhancerMode].description}. Tap to cycle.`}
+                  >
+                    <Sparkles className={`h-3 w-3 ${enhancerMode !== "off" ? "text-[#062404]" : "text-neutral-400"}`} />
+                    <span>{ENHANCER_MODES[enhancerMode].name}</span>
+                  </button>
+
+                  <div className="flex items-center gap-0.5 px-1">
+                    {(["pro", "bright", "vivid", "off"] as EnhancerMode[]).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setEnhancerMode(mode)}
+                        className={`px-1.5 py-0.5 text-[9px] font-mono font-bold rounded-full transition-all cursor-pointer ${
+                          enhancerMode === mode
+                            ? "bg-white/20 text-white font-black"
+                            : "text-neutral-400 hover:text-neutral-200"
+                        }`}
+                        title={ENHANCER_MODES[mode].description}
+                      >
+                        {ENHANCER_MODES[mode].shortName}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
                 {isFlashlightOn && (
                   <div className="rounded-full border border-amber-400/90 bg-amber-400/25 backdrop-blur-xs px-2.5 py-1 text-[10px] font-mono font-bold text-amber-300 flex items-center gap-1 shadow-lg animate-pulse">

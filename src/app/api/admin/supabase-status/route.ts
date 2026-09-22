@@ -151,6 +151,78 @@ export async function GET(request: NextRequest) {
     console.warn("[PostgreSQL] Metrics query warning:", dbErr);
   }
 
+  // Live Sender Registration Breakdown for Matrix Telemetry
+  let sendersBreakdown: Array<{
+    id: string;
+    username: string;
+    email: string;
+    studentsRegistered: number;
+    studentsWithPhotos: number;
+    isDeviceBound: boolean;
+    boundDeviceInfo?: string | null;
+    lastActiveAt?: Date | null;
+  }> = [];
+
+  try {
+    const senderUsers = await prisma.user.findMany({
+      where: {
+        OR: [
+          { role: "SENDER" },
+          { recordsSentSingle: { gt: 0 } },
+        ],
+      },
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        role: true,
+        boundDeviceId: true,
+        boundDeviceInfo: true,
+        recordsSentSingle: true,
+        lastActiveAt: true,
+      },
+    });
+
+    sendersBreakdown = await Promise.all(
+      senderUsers.map(async (sender) => {
+        const [studentCount, withPhotos] = await Promise.all([
+          prisma.student.count({
+            where: {
+              OR: [
+                { senderId: sender.id },
+                { senderName: sender.username },
+                { senderName: sender.email },
+              ],
+            },
+          }),
+          prisma.student.count({
+            where: {
+              OR: [
+                { senderId: sender.id },
+                { senderName: sender.username },
+                { senderName: sender.email },
+              ],
+              photoPath: { not: null },
+            },
+          }),
+        ]);
+
+        return {
+          id: sender.id,
+          username: sender.username,
+          email: sender.email,
+          studentsRegistered: Math.max(studentCount, sender.recordsSentSingle || 0),
+          studentsWithPhotos: withPhotos,
+          isDeviceBound: Boolean(sender.boundDeviceId),
+          boundDeviceInfo: sender.boundDeviceInfo,
+          lastActiveAt: sender.lastActiveAt,
+        };
+      })
+    );
+  } catch (senderErr) {
+    console.warn("[PostgreSQL] sendersBreakdown query warning:", senderErr);
+  }
+
   const studentsWithoutPhotos = Math.max(0, studentsCount - studentsWithPhotos);
   const totalDatabaseRecords =
     studentsCount + usersCount + batchesCount + auditLogsCount + studentPhotosCatalogCount + deviceBindingsCount;
@@ -236,6 +308,7 @@ export async function GET(request: NextRequest) {
         photoCatalog: { bytes: photoCatalogBytes, formatted: photoCatalogFormatted },
         rbac: { bytes: rbacAuthBytes, formatted: rbacAuthFormatted },
       },
+      sendersBreakdown,
     },
     region: "EU-West Multi-Region",
     edgeNetwork: "Global Anycast Edge Network",
