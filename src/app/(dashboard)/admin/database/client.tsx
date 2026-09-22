@@ -95,11 +95,17 @@ export interface CloudflareDatabaseStats {
   postgresRemainingPercent?: number;
   postgresUsedPercent?: number;
   tableSizes?: CloudflareTableSizes;
+  studentsToday?: number;
+  studentsThisMonth?: number;
+  dailyIntake?: Array<{ day: string; count: number }>;
+  monthlyIntake?: Array<{ month: string; count: number }>;
   sendersBreakdown?: Array<{
     id: string;
     username: string;
     email: string;
     studentsRegistered: number;
+    studentsRegisteredToday?: number;
+    studentsRegisteredThisMonth?: number;
     studentsWithPhotos: number;
     isDeviceBound: boolean;
     boundDeviceInfo?: string | null;
@@ -446,9 +452,9 @@ export function CloudflareRealtimeStoragePieChart({
       const pct = totalStudents > 0 ? Math.round((s.studentsRegistered / totalStudents) * 100) : 0;
       segments.push({
         label: `Sender: ${s.username}`,
-        subLabel: `${s.studentsWithPhotos} portraits verified (${s.isDeviceBound ? "Phone Locked" : "Unbound"})`,
+        subLabel: `${s.studentsWithPhotos} portraits • Today: +${s.studentsRegisteredToday || 0} • Mo: ${s.studentsRegisteredThisMonth || 0}`,
         value: s.studentsRegistered,
-        sizeFormatted: `${s.studentsRegistered} registered to Admin`,
+        sizeFormatted: `${s.studentsRegistered} total (+${s.studentsRegisteredToday || 0} today)`,
         color: PALETTE[idx % PALETTE.length],
         percentage: pct,
       });
@@ -777,8 +783,8 @@ export function CloudflareRealtimeStoragePieChart({
                     : viewMode === "storage"
                     ? `${status?.storageSizeFormatted || "33.67 MB"} • ${status?.storageFolders?.length || 0} Cohorts`
                     : viewMode === "senders"
-                    ? `${status?.database?.studentsCount || 0} Students in Registry`
-                    : `${status?.storageSizeFormatted || "33.67 MB"} + DB Records`}
+                    ? `Today: +${status?.database?.studentsToday ?? 0} • This Mo: ${status?.database?.studentsThisMonth ?? status?.database?.studentsCount ?? 0}`
+                    : `${status?.database?.postgresTotalSizeFormatted || "4.8 MB"} Relational`}
                 </text>
               </g>
             </svg>

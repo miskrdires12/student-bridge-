@@ -79,6 +79,8 @@ export async function GET(request: NextRequest) {
 
   // 3. Query PostgreSQL live table sizes and row counts in schema 'cloudflare'
   let studentsCount = 0;
+  let studentsToday = 0;
+  let studentsThisMonth = 0;
   let studentsWithPhotos = 0;
   let usersCount = 0;
   let deviceBindingsCount = 0;
@@ -86,12 +88,20 @@ export async function GET(request: NextRequest) {
   let auditLogsCount = 0;
   let studentPhotosCatalogCount = 0;
   let lastActiveAt: Date | null = null;
+  let dailyIntake: Array<{ day: string; count: number }> = [];
+  let monthlyIntake: Array<{ month: string; count: number }> = [];
 
   let tableSizesMap: Record<string, { bytes: number; pretty: string }> = {};
 
   try {
+    const nowForCadence = new Date();
+    const startOfToday = new Date(nowForCadence.getFullYear(), nowForCadence.getMonth(), nowForCadence.getDate(), 0, 0, 0, 0);
+    const startOfCurrMonth = new Date(nowForCadence.getFullYear(), nowForCadence.getMonth(), 1, 0, 0, 0, 0);
+
     const [
       stCount,
+      stTodayCount,
+      stMonthCount,
       stWithPhotos,
       uCount,
       dbCount,
@@ -101,8 +111,12 @@ export async function GET(request: NextRequest) {
       latestStudent,
       latestUser,
       tableSizesRaw,
+      dailyRaw,
+      monthlyRaw,
     ] = await Promise.all([
       prisma.student.count(),
+      prisma.student.count({ where: { createdAt: { gte: startOfToday } } }),
+      prisma.student.count({ where: { createdAt: { gte: startOfCurrMonth } } }),
       prisma.student.count({ where: { photoPath: { not: null } } }),
       prisma.user.count(),
       prisma.deviceBinding.count(),
@@ -126,15 +140,37 @@ export async function GET(request: NextRequest) {
         WHERE table_schema = 'cloudflare' AND table_type = 'BASE TABLE'
         ORDER BY pg_total_relation_size(quote_ident(table_schema) || '.' || quote_ident(table_name)) DESC;
       `),
+      prisma.$queryRawUnsafe<Array<{ day: string; count: number }>>(`
+        SELECT 
+          TO_CHAR(date_trunc('day', "createdAt"), 'YYYY-MM-DD') as day,
+          COUNT(*)::int as count
+        FROM "cloudflare"."students"
+        GROUP BY 1
+        ORDER BY 1 DESC
+        LIMIT 14;
+      `).catch(() => []),
+      prisma.$queryRawUnsafe<Array<{ month: string; count: number }>>(`
+        SELECT 
+          TO_CHAR(date_trunc('month', "createdAt"), 'YYYY-MM') as month,
+          COUNT(*)::int as count
+        FROM "cloudflare"."students"
+        GROUP BY 1
+        ORDER BY 1 DESC
+        LIMIT 6;
+      `).catch(() => []),
     ]);
 
     studentsCount = stCount;
+    studentsToday = stTodayCount;
+    studentsThisMonth = stMonthCount;
     studentsWithPhotos = stWithPhotos;
     usersCount = uCount;
     deviceBindingsCount = dbCount;
     batchesCount = bCount;
     auditLogsCount = aCount;
     studentPhotosCatalogCount = spCount;
+    dailyIntake = dailyRaw || [];
+    monthlyIntake = monthlyRaw || [];
 
     for (const row of tableSizesRaw) {
       tableSizesMap[row.table_name] = {
@@ -183,35 +219,56 @@ export async function GET(request: NextRequest) {
       },
     });
 
+    const startOfDay = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate(), 0, 0, 0, 0);
+    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1, 0, 0, 0, 0);
+
     sendersBreakdown = await Promise.all(
       senderUsers.map(async (sender) => {
-        const [studentCount, withPhotos] = await Promise.all([
+        const senderFilter = {
+          OR: [
+            { senderId: sender.id },
+            { senderName: sender.username },
+            { senderName: sender.email },
+          ],
+        };
+
+        const [studentCount, todayCount, monthCount, withPhotos] = await Promise.all([
+          prisma.student.count({
+            where: senderFilter,
+          }),
           prisma.student.count({
             where: {
-              OR: [
-                { senderId: sender.id },
-                { senderName: sender.username },
-                { senderName: sender.email },
-              ],
+              ...senderFilter,
+              createdAt: { gte: startOfDay },
             },
           }),
           prisma.student.count({
             where: {
-              OR: [
-                { senderId: sender.id },
-                { senderName: sender.username },
-                { senderName: sender.email },
-              ],
+              ...senderFilter,
+              createdAt: { gte: startOfMonth },
+            },
+          }),
+          prisma.student.count({
+            where: {
+              ...senderFilter,
               photoPath: { not: null },
             },
           }),
         ]);
 
+        const totalRegistered = Math.max(studentCount, sender.recordsSentSingle || 0);
+        const totalThisMonth = Math.max(
+          monthCount,
+          totalRegistered > studentCount ? totalRegistered - (studentCount - monthCount) : monthCount
+        );
+
         return {
           id: sender.id,
           username: sender.username,
           email: sender.email,
-          studentsRegistered: Math.max(studentCount, sender.recordsSentSingle || 0),
+          studentsRegistered: totalRegistered,
+          studentsRegisteredToday: todayCount,
+          studentsRegisteredThisMonth: totalThisMonth,
           studentsWithPhotos: withPhotos,
           isDeviceBound: Boolean(sender.boundDeviceId),
           boundDeviceInfo: sender.boundDeviceInfo,
@@ -288,6 +345,8 @@ export async function GET(request: NextRequest) {
 
     database: {
       studentsCount,
+      studentsToday,
+      studentsThisMonth,
       studentsWithPhotos,
       studentsWithoutPhotos,
       usersCount,
@@ -309,6 +368,8 @@ export async function GET(request: NextRequest) {
         rbac: { bytes: rbacAuthBytes, formatted: rbacAuthFormatted },
       },
       sendersBreakdown,
+      dailyIntake,
+      monthlyIntake,
     },
     region: "EU-West Multi-Region",
     edgeNetwork: "Global Anycast Edge Network",

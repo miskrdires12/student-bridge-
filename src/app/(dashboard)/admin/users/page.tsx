@@ -64,46 +64,58 @@ export default async function AdminUsersPage() {
     console.warn("[AdminUsersPage] Resilient fallback on users query:", err);
   }
 
-  // Accurately compute students registered by each sender operator to admin
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+
+  // Accurately compute students registered by each sender operator to admin (per day, per month, and total)
   const usersWithMetrics = await Promise.all(
     (users || []).map(async (u) => {
       let dbSentCount = 0;
+      let dbTodayCount = 0;
+      let dbMonthCount = 0;
       let photoCount = 0;
       let latestReg: Date | null = null;
       try {
-        const [cnt, pCnt, latest] = await Promise.all([
+        const senderFilter = {
+          OR: [
+            { senderId: u.id },
+            { senderName: u.username },
+            { senderName: u.email },
+          ],
+        };
+
+        const [cnt, todayCnt, monthCnt, pCnt, latest] = await Promise.all([
+          prisma.student.count({
+            where: senderFilter,
+          }),
           prisma.student.count({
             where: {
-              OR: [
-                { senderId: u.id },
-                { senderName: u.username },
-                { senderName: u.email },
-              ],
+              ...senderFilter,
+              createdAt: { gte: startOfDay },
             },
           }),
           prisma.student.count({
             where: {
-              OR: [
-                { senderId: u.id },
-                { senderName: u.username },
-                { senderName: u.email },
-              ],
+              ...senderFilter,
+              createdAt: { gte: startOfMonth },
+            },
+          }),
+          prisma.student.count({
+            where: {
+              ...senderFilter,
               photoPath: { not: null },
             },
           }),
           prisma.student.findFirst({
-            where: {
-              OR: [
-                { senderId: u.id },
-                { senderName: u.username },
-                { senderName: u.email },
-              ],
-            },
+            where: senderFilter,
             orderBy: { createdAt: "desc" },
             select: { createdAt: true },
           }),
         ]);
         dbSentCount = cnt;
+        dbTodayCount = todayCnt;
+        dbMonthCount = monthCnt;
         photoCount = pCnt;
         latestReg = latest?.createdAt || null;
       } catch (err) {
@@ -111,11 +123,17 @@ export default async function AdminUsersPage() {
       }
 
       const totalSent = Math.max(dbSentCount, u.recordsSentSingle || 0);
+      const totalThisMonth = Math.max(
+        dbMonthCount,
+        totalSent > dbSentCount ? totalSent - (dbSentCount - dbMonthCount) : dbMonthCount
+      );
 
       return {
         ...u,
         recordsSentSingle: totalSent,
         studentsRegistered: totalSent,
+        studentsRegisteredToday: dbTodayCount,
+        studentsRegisteredThisMonth: totalThisMonth,
         studentsWithPhotos: photoCount,
         lastRegisteredAt: latestReg,
         recordsEncoded: u.recordsEncoded || 0,
@@ -123,6 +141,42 @@ export default async function AdminUsersPage() {
     })
   );
 
+  // System-wide daily & monthly registration intake history
+  let dailyHistory: Array<{ day: string; count: number }> = [];
+  let monthlyHistory: Array<{ month: string; count: number }> = [];
+  let systemTotalToday = 0;
+  let systemTotalMonth = 0;
+
+  try {
+    const [todayCount, monthCount, dailyRaw, monthlyRaw] = await Promise.all([
+      prisma.student.count({ where: { createdAt: { gte: startOfDay } } }),
+      prisma.student.count({ where: { createdAt: { gte: startOfMonth } } }),
+      prisma.$queryRawUnsafe<Array<{ day: string; count: number }>>(`
+        SELECT 
+          TO_CHAR(date_trunc('day', "createdAt"), 'YYYY-MM-DD') as day,
+          COUNT(*)::int as count
+        FROM "cloudflare"."students"
+        GROUP BY 1
+        ORDER BY 1 DESC
+        LIMIT 14;
+      `).catch(() => []),
+      prisma.$queryRawUnsafe<Array<{ month: string; count: number }>>(`
+        SELECT 
+          TO_CHAR(date_trunc('month', "createdAt"), 'YYYY-MM') as month,
+          COUNT(*)::int as count
+        FROM "cloudflare"."students"
+        GROUP BY 1
+        ORDER BY 1 DESC
+        LIMIT 6;
+      `).catch(() => []),
+    ]);
+    systemTotalToday = todayCount;
+    systemTotalMonth = monthCount;
+    dailyHistory = dailyRaw || [];
+    monthlyHistory = monthlyRaw || [];
+  } catch (histErr) {
+    console.warn("[AdminUsersPage] Registration cadence history error:", histErr);
+  }
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto text-[#080808] dark:text-[#f2f7f4]">
@@ -162,7 +216,16 @@ export default async function AdminUsersPage() {
         </div>
       </div>
 
-      <UsersClient initialUsers={usersWithMetrics} currentUserId={session.userId} />
+      <UsersClient
+        initialUsers={usersWithMetrics}
+        currentUserId={session.userId}
+        systemCadence={{
+          totalToday: systemTotalToday,
+          totalMonth: systemTotalMonth,
+          dailyHistory,
+          monthlyHistory,
+        }}
+      />
     </div>
   );
 }

@@ -1198,59 +1198,167 @@ export async function deletePermanentlyFromSupabaseAction(params: {
 
 /**
  * Returns the current authenticated sender's total student registrations to Admin,
- * including photo verification count.
+ * including daily (today) and monthly registration rates and photo verification count.
  */
 export async function getSenderStatsAction(): Promise<{
   success: boolean;
   studentsRegistered: number;
+  studentsRegisteredToday: number;
+  studentsRegisteredThisMonth: number;
   studentsWithPhotos: number;
   senderName: string;
 }> {
   try {
     const session = await getSession();
     if (!session || !session.userId) {
-      return { success: false, studentsRegistered: 0, studentsWithPhotos: 0, senderName: "" };
+      return {
+        success: false,
+        studentsRegistered: 0,
+        studentsRegisteredToday: 0,
+        studentsRegisteredThisMonth: 0,
+        studentsWithPhotos: 0,
+        senderName: "",
+      };
     }
 
-    const [user, dbCount, photoCount] = await Promise.all([
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+
+    const senderFilter = {
+      OR: [
+        { senderId: session.userId },
+        { senderName: session.username },
+        { senderName: session.email },
+      ],
+    };
+
+    const [user, dbCount, todayDbCount, monthDbCount, photoCount] = await Promise.all([
       prisma.user.findUnique({
         where: { id: session.userId },
         select: { recordsSentSingle: true, username: true, email: true },
       }),
       prisma.student.count({
+        where: senderFilter,
+      }),
+      prisma.student.count({
         where: {
-          OR: [
-            { senderId: session.userId },
-            { senderName: session.username },
-            { senderName: session.email },
-          ],
+          ...senderFilter,
+          createdAt: { gte: startOfDay },
         },
       }),
       prisma.student.count({
         where: {
-          OR: [
-            { senderId: session.userId },
-            { senderName: session.username },
-            { senderName: session.email },
-          ],
+          ...senderFilter,
+          createdAt: { gte: startOfMonth },
+        },
+      }),
+      prisma.student.count({
+        where: {
+          ...senderFilter,
           photoPath: { not: null },
         },
       }),
     ]);
 
     const totalRegistered = Math.max(dbCount, user?.recordsSentSingle || 0);
+    // If the user's legacy recordsSentSingle is greater than dbCount, attribute to this month
+    const totalThisMonth = Math.max(monthDbCount, totalRegistered > dbCount ? totalRegistered - (dbCount - monthDbCount) : monthDbCount);
 
     return {
       success: true,
       studentsRegistered: totalRegistered,
+      studentsRegisteredToday: todayDbCount,
+      studentsRegisteredThisMonth: totalThisMonth,
       studentsWithPhotos: photoCount,
       senderName: user?.username || session.username,
     };
   } catch (err: any) {
     console.warn("[getSenderStatsAction] fallback:", err);
-    return { success: false, studentsRegistered: 0, studentsWithPhotos: 0, senderName: "" };
+    return {
+      success: false,
+      studentsRegistered: 0,
+      studentsRegisteredToday: 0,
+      studentsRegisteredThisMonth: 0,
+      studentsWithPhotos: 0,
+      senderName: "",
+    };
   }
 }
+
+export interface DailyRegistrationCadence {
+  day: string;
+  count: number;
+}
+
+export interface MonthlyRegistrationCadence {
+  month: string;
+  count: number;
+}
+
+/**
+ * Returns systemic daily and monthly student intake velocity and calendar breakdown for Admin.
+ */
+export async function getRegistrationCadenceAction(): Promise<{
+  success: boolean;
+  total: number;
+  today: number;
+  thisMonth: number;
+  dailyCadence: DailyRegistrationCadence[];
+  monthlyCadence: MonthlyRegistrationCadence[];
+}> {
+  try {
+    await requireAuth("student:read");
+
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+
+    const [total, today, thisMonth, dailyRaw, monthlyRaw] = await Promise.all([
+      prisma.student.count(),
+      prisma.student.count({ where: { createdAt: { gte: startOfDay } } }),
+      prisma.student.count({ where: { createdAt: { gte: startOfMonth } } }),
+      prisma.$queryRawUnsafe<Array<{ day: string; count: number }>>(`
+        SELECT 
+          TO_CHAR(date_trunc('day', "createdAt"), 'YYYY-MM-DD') as day,
+          COUNT(*)::int as count
+        FROM "cloudflare"."students"
+        GROUP BY 1
+        ORDER BY 1 DESC
+        LIMIT 30;
+      `).catch(() => []),
+      prisma.$queryRawUnsafe<Array<{ month: string; count: number }>>(`
+        SELECT 
+          TO_CHAR(date_trunc('month', "createdAt"), 'YYYY-MM') as month,
+          COUNT(*)::int as count
+        FROM "cloudflare"."students"
+        GROUP BY 1
+        ORDER BY 1 DESC
+        LIMIT 12;
+      `).catch(() => []),
+    ]);
+
+    return {
+      success: true,
+      total,
+      today,
+      thisMonth,
+      dailyCadence: dailyRaw || [],
+      monthlyCadence: monthlyRaw || [],
+    };
+  } catch (err: any) {
+    console.warn("[getRegistrationCadenceAction] error:", err);
+    return {
+      success: false,
+      total: 0,
+      today: 0,
+      thisMonth: 0,
+      dailyCadence: [],
+      monthlyCadence: [],
+    };
+  }
+}
+
 
 
 

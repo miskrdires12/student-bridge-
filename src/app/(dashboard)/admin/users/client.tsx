@@ -31,6 +31,8 @@ import {
   Download,
   Sparkles,
   Camera,
+  Calendar,
+  Zap,
 } from "lucide-react";
 import { createUserAction, deleteUserAction, resetUserDeviceAction } from "@/actions/users";
 import type { UserRole } from "@/types/auth";
@@ -49,17 +51,27 @@ export interface UserItem {
   recordsSentSingle?: number;
   recordsEncoded?: number;
   studentsRegistered?: number;
+  studentsRegisteredToday?: number;
+  studentsRegisteredThisMonth?: number;
   studentsWithPhotos?: number;
   lastRegisteredAt?: Date | string | null;
   createdAt: Date | string;
 }
 
+export interface SystemCadence {
+  totalToday: number;
+  totalMonth: number;
+  dailyHistory: Array<{ day: string; count: number }>;
+  monthlyHistory: Array<{ month: string; count: number }>;
+}
+
 interface UsersClientProps {
   initialUsers: UserItem[];
   currentUserId: string;
+  systemCadence?: SystemCadence;
 }
 
-export const UsersClient: React.FC<UsersClientProps> = ({ initialUsers, currentUserId }) => {
+export const UsersClient: React.FC<UsersClientProps> = ({ initialUsers, currentUserId, systemCadence }) => {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
@@ -67,6 +79,7 @@ export const UsersClient: React.FC<UsersClientProps> = ({ initialUsers, currentU
   const [users, setUsers] = useState<UserItem[]>(initialUsers);
   const [searchQuery, setSearchQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<string>("ALL");
+  const [breakdownView, setBreakdownView] = useState<"senders" | "cadence">("senders");
 
   // Modal State
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -277,8 +290,13 @@ export const UsersClient: React.FC<UsersClientProps> = ({ initialUsers, currentU
           <div className="text-2xl font-black font-mono text-blue-600 dark:text-blue-400 mt-1">
             {users.reduce((acc, u) => acc + (u.studentsRegistered ?? u.recordsSentSingle ?? 0), 0)}
           </div>
-          <div className="text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93] mt-0.5">
-            {users.filter((u) => u.role === "SENDER" || (u.studentsRegistered || 0) > 0).length} intake stations
+          <div className="flex flex-wrap items-center gap-1.5 mt-1.5 font-mono text-[10px]">
+            <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 font-bold flex items-center gap-0.5">
+              <Zap className="h-2.5 w-2.5" /> +{systemCadence?.totalToday ?? users.reduce((acc, u) => acc + (u.studentsRegisteredToday || 0), 0)} today
+            </span>
+            <span className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-700 dark:text-blue-400 font-bold flex items-center gap-0.5">
+              <Calendar className="h-2.5 w-2.5" /> {systemCadence?.totalMonth ?? users.reduce((acc, u) => acc + (u.studentsRegisteredThisMonth || 0), 0)} this mo
+            </span>
           </div>
         </div>
 
@@ -310,97 +328,237 @@ export const UsersClient: React.FC<UsersClientProps> = ({ initialUsers, currentU
         </div>
       </div>
 
-      {/* Sender Student Registration Breakdown Section */}
-      <div className="rounded-3xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-5 shadow-xs space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#eef5f1] dark:border-[#1c261e] pb-3">
+      {/* Sender Student Registration Breakdown Section (Per Day, Per Month, and Station Output) */}
+      <div className="rounded-3xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-5 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#eef5f1] dark:border-[#1c261e] pb-3">
           <div>
             <h3 className="text-sm font-black font-mono tracking-tight text-[#080808] dark:text-[#f2f7f4] flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-[#8fe617]" />
-              <span>Sender Student Registrations to Admin</span>
+              <span>Sender Registrations to Admin (Per Day &amp; Per Month)</span>
             </h3>
             <p className="text-xs text-[#6b7771] dark:text-[#8a9e93] font-mono mt-0.5">
-              Exact student intake counts and portrait capture rates contributed by each sender workstation
+              Daily velocity, monthly production totals, and portrait quality delivered by each workstation
             </p>
           </div>
-          <div className="text-xs font-mono font-bold text-[#080808] dark:text-[#f2f7f4] bg-[#f7faf9] dark:bg-[#161d19] px-3 py-1.5 rounded-xl border border-[#dce7e1] dark:border-[#223126]">
-            Total Sender Intake: <span className="text-[#8fe617] font-black">{users.reduce((acc, u) => acc + (u.studentsRegistered ?? u.recordsSentSingle ?? 0), 0)}</span> Students
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* View Switcher */}
+            <div className="flex items-center p-1 rounded-xl bg-[#f7faf9] dark:bg-[#161d19] border border-[#dce7e1] dark:border-[#223126]">
+              <button
+                type="button"
+                onClick={() => setBreakdownView("senders")}
+                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                  breakdownView === "senders"
+                    ? "bg-[#8fe617] text-[#062404] shadow-xs"
+                    : "text-[#6b7771] dark:text-[#8a9e93] hover:text-[#080808] dark:hover:text-[#f2f7f4]"
+                }`}
+              >
+                Stations Breakdown
+              </button>
+              <button
+                type="button"
+                onClick={() => setBreakdownView("cadence")}
+                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                  breakdownView === "cadence"
+                    ? "bg-[#8fe617] text-[#062404] shadow-xs"
+                    : "text-[#6b7771] dark:text-[#8a9e93] hover:text-[#080808] dark:hover:text-[#f2f7f4]"
+                }`}
+              >
+                Daily &amp; Monthly History
+              </button>
+            </div>
+
+            <div className="text-xs font-mono font-bold text-[#080808] dark:text-[#f2f7f4] bg-[#f7faf9] dark:bg-[#161d19] px-3 py-1.5 rounded-xl border border-[#dce7e1] dark:border-[#223126]">
+              Total Intake: <span className="text-[#8fe617] font-black">{users.reduce((acc, u) => acc + (u.studentsRegistered ?? u.recordsSentSingle ?? 0), 0)}</span> Students
+            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
-          {users.filter((u) => u.role === "SENDER" || (u.studentsRegistered || 0) > 0).length === 0 ? (
-            <div className="col-span-full py-6 text-center text-xs font-mono text-[#6b7771] dark:text-[#8a9e93]">
-              No active sender accounts found.
-            </div>
-          ) : (
-            users
-              .filter((u) => u.role === "SENDER" || (u.studentsRegistered || 0) > 0)
-              .sort((a, b) => (b.studentsRegistered ?? b.recordsSentSingle ?? 0) - (a.studentsRegistered ?? a.recordsSentSingle ?? 0))
-              .map((sender, idx) => {
-                const regCount = sender.studentsRegistered ?? sender.recordsSentSingle ?? 0;
-                const photoCount = sender.studentsWithPhotos ?? 0;
-                const photoRate = regCount > 0 ? Math.round((photoCount / regCount) * 100) : 0;
-                return (
-                  <div
-                    key={sender.id}
-                    className="p-3.5 rounded-2xl border border-[#eef5f1] dark:border-[#1c261e] bg-[#f7faf9] dark:bg-[#070908] hover:border-[#8fe617]/50 transition-all space-y-2.5"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="h-6 w-6 rounded-lg bg-[#8fe617]/20 border border-[#8fe617]/50 flex items-center justify-center text-[11px] font-black font-mono text-[#062404] dark:text-[#8fe617] shrink-0">
-                          #{idx + 1}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-[#080808] dark:text-[#f2f7f4] truncate">
-                            {sender.username}
+        {breakdownView === "senders" ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {users.filter((u) => u.role === "SENDER" || (u.studentsRegistered || 0) > 0).length === 0 ? (
+              <div className="col-span-full py-6 text-center text-xs font-mono text-[#6b7771] dark:text-[#8a9e93]">
+                No active sender accounts found.
+              </div>
+            ) : (
+              users
+                .filter((u) => u.role === "SENDER" || (u.studentsRegistered || 0) > 0)
+                .sort((a, b) => (b.studentsRegistered ?? b.recordsSentSingle ?? 0) - (a.studentsRegistered ?? a.recordsSentSingle ?? 0))
+                .map((sender, idx) => {
+                  const regCount = sender.studentsRegistered ?? sender.recordsSentSingle ?? 0;
+                  const todayCount = sender.studentsRegisteredToday || 0;
+                  const monthCount = sender.studentsRegisteredThisMonth || 0;
+                  const photoCount = sender.studentsWithPhotos ?? 0;
+                  const photoRate = regCount > 0 ? Math.round((photoCount / regCount) * 100) : 0;
+                  return (
+                    <div
+                      key={sender.id}
+                      className="p-3.5 rounded-2xl border border-[#eef5f1] dark:border-[#1c261e] bg-[#f7faf9] dark:bg-[#070908] hover:border-[#8fe617]/50 transition-all space-y-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="h-6 w-6 rounded-lg bg-[#8fe617]/20 border border-[#8fe617]/50 flex items-center justify-center text-[11px] font-black font-mono text-[#062404] dark:text-[#8fe617] shrink-0">
+                            #{idx + 1}
                           </div>
-                          <div className="text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93] truncate">
-                            {sender.email}
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-[#080808] dark:text-[#f2f7f4] truncate">
+                              {sender.username}
+                            </div>
+                            <div className="text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93] truncate">
+                              {sender.email}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <div className="text-lg font-black font-mono text-blue-600 dark:text-blue-400">
+                            {regCount}
+                          </div>
+                          <div className="text-[9px] font-mono font-bold text-[#6b7771] dark:text-[#8a9e93] uppercase">
+                            Total Sent
                           </div>
                         </div>
                       </div>
 
-                      <div className="text-right shrink-0">
-                        <div className="text-lg font-black font-mono text-blue-600 dark:text-blue-400">
-                          {regCount}
+                      {/* 3-Pill Velocity Grid: Today (Per Day), This Month (Per Month), All-Time */}
+                      <div className="grid grid-cols-3 gap-1.5 p-2 rounded-xl bg-white dark:bg-[#111613] border border-[#eef5f1] dark:border-[#1c261e]">
+                        <div className="text-center">
+                          <div className="text-[9px] font-mono font-bold text-emerald-600 dark:text-emerald-400 uppercase">
+                            Today
+                          </div>
+                          <div className="text-sm font-black font-mono text-emerald-600 dark:text-emerald-400">
+                            +{todayCount}
+                          </div>
                         </div>
-                        <div className="text-[9px] font-mono font-bold text-[#6b7771] dark:text-[#8a9e93] uppercase">
-                          Registered
+                        <div className="text-center border-x border-[#eef5f1] dark:border-[#1c261e]">
+                          <div className="text-[9px] font-mono font-bold text-blue-600 dark:text-blue-400 uppercase">
+                            This Month
+                          </div>
+                          <div className="text-sm font-black font-mono text-blue-600 dark:text-blue-400">
+                            {monthCount}
+                          </div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-[9px] font-mono font-bold text-[#6b7771] dark:text-[#8a9e93] uppercase">
+                            Photos
+                          </div>
+                          <div className="text-sm font-black font-mono text-[#8fe617]">
+                            {photoCount}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    {/* Progress & metrics */}
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-[10px] font-mono">
-                        <span className="text-[#6b7771] dark:text-[#8a9e93]">Verified Portraits:</span>
-                        <span className="font-bold text-[#080808] dark:text-[#f2f7f4]">
-                          {photoCount} / {regCount} ({photoRate}%)
-                        </span>
+                      {/* Progress & metrics */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px] font-mono">
+                          <span className="text-[#6b7771] dark:text-[#8a9e93]">Verified Portraits:</span>
+                          <span className="font-bold text-[#080808] dark:text-[#f2f7f4]">
+                            {photoCount} / {regCount} ({photoRate}%)
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                          <div
+                            className="h-full bg-[#8fe617] rounded-full transition-all duration-300"
+                            style={{ width: `${Math.min(100, photoRate)}%` }}
+                          />
+                        </div>
                       </div>
-                      <div className="w-full h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
-                        <div
-                          className="h-full bg-[#8fe617] rounded-full transition-all duration-300"
-                          style={{ width: `${Math.min(100, photoRate)}%` }}
-                        />
-                      </div>
-                    </div>
 
-                    <div className="flex items-center justify-between text-[10px] font-mono pt-1 border-t border-neutral-200/60 dark:border-neutral-800/60">
-                      <span className="text-[#6b7771] dark:text-[#8a9e93] text-[9px]">
-                        {sender.boundDeviceId ? "📱 Workstation Locked" : "🔓 Unbound Station"}
-                      </span>
-                      {sender.lastRegisteredAt && (
-                        <span className="text-[9px] text-[#6b7771] dark:text-[#8a9e93]">
-                          Last: {new Date(sender.lastRegisteredAt).toLocaleDateString()}
+                      <div className="flex items-center justify-between text-[10px] font-mono pt-1 border-t border-neutral-200/60 dark:border-neutral-800/60">
+                        <span className="text-[#6b7771] dark:text-[#8a9e93] text-[9px]">
+                          {sender.boundDeviceId ? "📱 Workstation Locked" : "🔓 Unbound Station"}
                         </span>
-                      )}
+                        {sender.lastRegisteredAt && (
+                          <span className="text-[9px] text-[#6b7771] dark:text-[#8a9e93]">
+                            Last: {new Date(sender.lastRegisteredAt).toLocaleDateString()}
+                          </span>
+                        )}
+                      </div>
                     </div>
+                  );
+                })
+            )}
+          </div>
+        ) : (
+          /* Daily & Monthly History Calendar Grid */
+          <div className="space-y-4 pt-1 animate-in fade-in duration-200">
+            {/* Monthly Summary Cards */}
+            <div>
+              <div className="text-xs font-mono font-bold uppercase text-[#6b7771] dark:text-[#8a9e93] mb-2 flex items-center gap-1.5">
+                <Calendar className="h-3.5 w-3.5 text-[#8fe617]" />
+                <span>Monthly Registration Production</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
+                {(systemCadence?.monthlyHistory || []).length === 0 ? (
+                  <div className="p-3 rounded-2xl bg-[#f7faf9] dark:bg-[#070908] border border-[#eef5f1] dark:border-[#1c261e] text-xs font-mono text-[#6b7771]">
+                    Current Month: {users.reduce((acc, u) => acc + (u.studentsRegistered ?? u.recordsSentSingle ?? 0), 0)} students
                   </div>
-                );
-              })
-          )}
-        </div>
+                ) : (
+                  (systemCadence?.monthlyHistory || []).map((m) => (
+                    <div
+                      key={m.month}
+                      className="p-3 rounded-2xl bg-[#f7faf9] dark:bg-[#070908] border border-blue-500/30 flex items-center justify-between"
+                    >
+                      <div>
+                        <div className="text-[10px] font-mono uppercase text-[#6b7771] dark:text-[#8a9e93]">
+                          Month: {m.month}
+                        </div>
+                        <div className="text-lg font-black font-mono text-blue-600 dark:text-blue-400">
+                          {m.count}
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-blue-500/15 text-blue-700 dark:text-blue-300">
+                        Students
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Daily History Activity */}
+            <div>
+              <div className="text-xs font-mono font-bold uppercase text-[#6b7771] dark:text-[#8a9e93] mb-2 flex items-center gap-1.5">
+                <Zap className="h-3.5 w-3.5 text-emerald-500" />
+                <span>Daily Intake Log (Registrations per Day)</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                {(systemCadence?.dailyHistory || []).length === 0 ? (
+                  <div className="p-3 rounded-2xl bg-[#f7faf9] dark:bg-[#070908] border border-[#eef5f1] dark:border-[#1c261e] text-xs font-mono text-[#6b7771]">
+                    No historical daily records logged yet.
+                  </div>
+                ) : (
+                  (systemCadence?.dailyHistory || []).map((d) => {
+                    const maxDaily = Math.max(...(systemCadence?.dailyHistory || []).map((x) => x.count), 1);
+                    const pct = Math.round((d.count / maxDaily) * 100);
+                    return (
+                      <div
+                        key={d.day}
+                        className="p-3 rounded-2xl bg-[#f7faf9] dark:bg-[#070908] border border-[#eef5f1] dark:border-[#1c261e] space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between text-xs font-mono">
+                          <span className="font-bold text-[#080808] dark:text-[#f2f7f4] flex items-center gap-1.5">
+                            <span className="h-2 w-2 rounded-full bg-[#8fe617]" />
+                            {d.day}
+                          </span>
+                          <span className="font-black text-emerald-600 dark:text-emerald-400">
+                            {d.count} registered
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                          <div
+                            className="h-full bg-emerald-500 rounded-full transition-all duration-300"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Control Bar: Search, Filter & Provision Action */}
@@ -535,7 +693,7 @@ export const UsersClient: React.FC<UsersClientProps> = ({ initialUsers, currentU
                       <td className="px-5 py-3.5 font-mono text-xs">
                         <div className="flex flex-col gap-1.5">
                           {user.role === "SENDER" || (user.studentsRegistered || 0) > 0 ? (
-                            <div className="space-y-1">
+                            <div className="space-y-1.5">
                               <div
                                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-900/60 w-fit"
                                 title="Total student registrations submitted to Admin by this sender station"
@@ -546,6 +704,16 @@ export const UsersClient: React.FC<UsersClientProps> = ({ initialUsers, currentU
                                 </span>
                                 <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">
                                   Students Registered
+                                </span>
+                              </div>
+
+                              {/* Daily & Monthly Cadence Micro-Chips */}
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 font-mono text-[9px] font-bold flex items-center gap-0.5">
+                                  <Zap className="h-2.5 w-2.5" /> +{user.studentsRegisteredToday || 0} today
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-700 dark:text-blue-400 font-mono text-[9px] font-bold flex items-center gap-0.5">
+                                  <Calendar className="h-2.5 w-2.5" /> {user.studentsRegisteredThisMonth || 0} this mo
                                 </span>
                               </div>
 

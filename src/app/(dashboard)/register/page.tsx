@@ -114,12 +114,20 @@ export default function RegisterPage() {
   const [offlinePendingQueue, setOfflinePendingQueue] = useState<any[]>([]);
   const [isSyncingOfflineQueue, setIsSyncingOfflineQueue] = useState<boolean>(false);
 
-  // Sender Station Output Metrics (Registrations to Admin)
+  // Sender Station Output Metrics (Registrations to Admin per day, per month, and total)
   const [senderStats, setSenderStats] = useState<{
     studentsRegistered: number;
+    studentsRegisteredToday: number;
+    studentsRegisteredThisMonth: number;
     studentsWithPhotos: number;
     senderName: string;
-  }>({ studentsRegistered: 0, studentsWithPhotos: 0, senderName: "" });
+  }>({
+    studentsRegistered: 0,
+    studentsRegisteredToday: 0,
+    studentsRegisteredThisMonth: 0,
+    studentsWithPhotos: 0,
+    senderName: "",
+  });
 
   // Core Form Fields
   const [formData, setFormData] = useState<Partial<StudentFormInput>>({
@@ -144,12 +152,14 @@ export default function RegisterPage() {
 
   // Generate clean default student ID & load Sender Station defaults on mount
   useEffect(() => {
-    // Fetch live sender registration metrics to Admin
+    // Fetch live sender registration metrics to Admin (per day, per month, and total)
     getSenderStatsAction()
       .then((res) => {
         if (res.success) {
           setSenderStats({
             studentsRegistered: res.studentsRegistered,
+            studentsRegisteredToday: res.studentsRegisteredToday,
+            studentsRegisteredThisMonth: res.studentsRegisteredThisMonth,
             studentsWithPhotos: res.studentsWithPhotos,
             senderName: res.senderName,
           });
@@ -643,10 +653,12 @@ export default function RegisterPage() {
         // Clear active form draft since student is safely enrolled & confirmed
         clearActiveDraft();
 
-        // Optimistically increment station registered counter
+        // Optimistically increment station registered counters (per day, per month, total)
         setSenderStats((prev) => ({
           ...prev,
           studentsRegistered: prev.studentsRegistered + 1,
+          studentsRegisteredToday: prev.studentsRegisteredToday + 1,
+          studentsRegisteredThisMonth: prev.studentsRegisteredThisMonth + 1,
           studentsWithPhotos: payload.photoPath ? prev.studentsWithPhotos + 1 : prev.studentsWithPhotos,
         }));
 
@@ -805,33 +817,62 @@ export default function RegisterPage() {
           </div>
         )}
 
-        {/* Station Output Telemetry Banner: Registrations to Admin */}
-        <div className="rounded-2xl border border-[#8fe617]/40 bg-gradient-to-r from-[#8fe617]/15 via-emerald-500/10 to-transparent p-3.5 shadow-xs flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-[#8fe617] text-[#062404] flex items-center justify-center font-mono font-black text-sm shadow-md shadow-[#8fe617]/20 shrink-0">
-              <Sparkles className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2 font-mono">
-                <span className="text-xs font-black uppercase text-[#080808] dark:text-[#f2f7f4] tracking-tight">
-                  Station Output
-                </span>
-                <span className="px-1.5 py-0.2 text-[9px] rounded-md bg-[#8fe617]/25 text-[#062404] dark:text-[#8fe617] font-bold">
-                  DELIVERED TO ADMIN
-                </span>
+        {/* Station Output Telemetry Banner: Registrations to Admin (Per Day & Per Month) */}
+        <div className="rounded-2xl border border-[#8fe617]/40 bg-gradient-to-r from-[#8fe617]/15 via-emerald-500/10 to-transparent p-3.5 shadow-xs space-y-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="h-9 w-9 rounded-xl bg-[#8fe617] text-[#062404] flex items-center justify-center font-mono font-black text-sm shadow-md shadow-[#8fe617]/20 shrink-0">
+                <Sparkles className="h-4.5 w-4.5" />
               </div>
-              <div className="text-[11px] font-mono text-[#6b7771] dark:text-[#8a9e93] mt-0.5">
-                Operator: <strong className="text-[#080808] dark:text-[#f2f7f4]">{senderStats.senderName || "Sender Station"}</strong> • {senderStats.studentsWithPhotos} portraits verified
+              <div>
+                <div className="flex items-center gap-1.5 font-mono">
+                  <span className="text-xs font-black uppercase text-[#080808] dark:text-[#f2f7f4] tracking-tight">
+                    Station Output
+                  </span>
+                  <span className="px-1.5 py-0.5 text-[9px] rounded-md bg-[#8fe617]/25 text-[#062404] dark:text-[#8fe617] font-bold">
+                    TO ADMIN
+                  </span>
+                </div>
+                <div className="text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93]">
+                  Operator: <strong className="text-[#080808] dark:text-[#f2f7f4]">{senderStats.senderName || "Sender Station"}</strong> • {senderStats.studentsWithPhotos} portraits verified
+                </div>
+              </div>
+            </div>
+
+            <div className="text-right shrink-0">
+              <div className="text-xl font-black font-mono text-[#080808] dark:text-[#f2f7f4] leading-none">
+                {senderStats.studentsRegistered}
+              </div>
+              <div className="text-[8px] font-mono font-bold text-[#6b7771] dark:text-[#8a9e93] uppercase mt-0.5">
+                Total Intake
               </div>
             </div>
           </div>
 
-          <div className="text-right shrink-0">
-            <div className="text-2xl font-black font-mono text-[#080808] dark:text-[#f2f7f4] leading-none">
-              {senderStats.studentsRegistered}
+          {/* Daily & Monthly Cadence Badges */}
+          <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#8fe617]/20">
+            <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-white/70 dark:bg-[#111613]/80 border border-[#8fe617]/30 shadow-2xs">
+              <div className="flex items-center gap-1.5">
+                <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-[10px] font-mono font-bold text-[#080808] dark:text-[#f2f7f4]">
+                  Registered Today
+                </span>
+              </div>
+              <span className="text-xs font-mono font-black text-emerald-600 dark:text-emerald-400">
+                +{senderStats.studentsRegisteredToday}
+              </span>
             </div>
-            <div className="text-[9px] font-mono font-bold text-[#6b7771] dark:text-[#8a9e93] uppercase mt-0.5">
-              Registered
+
+            <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-white/70 dark:bg-[#111613]/80 border border-blue-500/30 shadow-2xs">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px]">🗓️</span>
+                <span className="text-[10px] font-mono font-bold text-[#080808] dark:text-[#f2f7f4]">
+                  This Month
+                </span>
+              </div>
+              <span className="text-xs font-mono font-black text-blue-600 dark:text-blue-400">
+                {senderStats.studentsRegisteredThisMonth}
+              </span>
             </div>
           </div>
         </div>
