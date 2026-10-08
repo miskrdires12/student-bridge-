@@ -1,0 +1,51 @@
+{
+  "version": "5",
+  "remote": {
+    "https://edge.netlify.com/": "607baf43414ddf5d42a24cf0e0ac7d03cc02fbc96f21bc34f027935060e28793",
+    "https://edge.netlify.com/bootstrap/config.ts": "6a2ce0e544e15e8f8883a5c18da5948e37fd0f2619f68cb31f3af53c51817025",
+    "https://edge.netlify.com/bootstrap/context.ts": "2260177df4a7d692f31177ccbf2de969cd8db1269c564a45517d6e47fd7d248f",
+    "https://edge.netlify.com/bootstrap/cookie.ts": "8b0baae708989ca183c6f3b4ab3d029e6abcbc2e43f93edeb0ff447b3bbc3a05",
+    "https://edge.netlify.com/bootstrap/edge_function.ts": "0c6c24959154a4ac64e24077adea5b4d23f01704a1dd1290df56fa9e4c6801f3",
+    "https://edge.netlify.com/bootstrap/globals/types.ts": "eaa6148ded3121d8dee62dd91c86e7fe76601df0f3ca8d7962243a30f4c8935f"
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@aws-sdk/client-s3@^3.1136.0",
+        "npm:@prisma/client@^5.22.0",
+        "npm:@types/archiver@8",
+        "npm:@types/bcryptjs@^2.4.6",
+        "npm:@types/jszip@^3.4.0",
+        "npm:@types/node@^20.17.0",
+        "npm:@types/pg@^8.23.1",
+        "npm:@types/qrcode@^1.5.5",
+        "npm:@types/react-dom@^18.3.1",
+        "npm:@types/react@^18.3.12",
+        "npm:@vercel/blob@^2.8.0",
+        "npm:@vercel/kv@3",
+        "npm:archiver@8",
+        "npm:autoprefixer@^10.4.20",
+        "npm:bcryptjs@^2.4.3",
+        "npm:clsx@^2.1.1",
+        "npm:jose@^5.9.6",
+        "npm:jsqr@^1.4.0",
+        "npm:jszip@^3.10.2",
+        "npm:lucide-react@0.454",
+        "npm:next@^14.2.15",
+        "npm:pdf-lib@^1.17.1",
+        "npm:pg@^8.23.1",
+        "npm:postcss@^8.4.47",
+        "npm:prisma@^5.22.0",
+        "npm:qrcode@^1.5.4",
+        "npm:react-dom@^18.3.1",
+        "npm:react@^18.3.1",
+        "npm:sharp@~0.33.5",
+        "npm:tailwind-merge@^2.5.4",
+        "npm:tailwindcss@^3.4.14",
+        "npm:typescript@^5.6.3",
+        "npm:xlsx@~0.18.5",
+        "npm:zod@^3.23.8"
+      ]
+    }
+  }
+}

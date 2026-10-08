@@ -1,0 +1,12 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  # Next.js 14 is tested against Node 18/20; Netlify's default (Node 24) is newer than this app supports
+  NODE_VERSION = "20"
+  NEXT_TELEMETRY_DISABLED = "1"
+
+[functions]
+  # Ship the Prisma query engine for the Netlify Functions runtime (Amazon Linux, OpenSSL 3)
+  included_files = ["node_modules/.prisma/client/libquery_engine-rhel-openssl-3.0.x.so.node", "prisma/schema.prisma"]
