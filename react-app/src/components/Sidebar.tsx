@@ -19,7 +19,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
 
   const getStationBadge = () => {
     switch (currentStation) {
-      case 'SENDER': return { title: 'SENDER WORKSTATION', color: '#8fe617' };
+      case 'SENDER': return { title: 'SENDER WORKSTATION', color: '#85e510' };
       case 'RECEIVER': return { title: 'RECEIVER CONSOLE', color: '#60a5fa' };
       case 'ADMIN': return { title: 'ADMIN SUPERVISION', color: '#fbbf24' };
       case 'SUPER_ADMIN': return { title: 'SUPER ADMIN CONSOLE', color: '#a855f7' };
@@ -84,16 +84,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
       )}
 
       <aside
-        className={`fixed lg:sticky top-16 left-0 z-40 w-60 h-[calc(100vh-4rem)] bg-[#0d1410] border-r border-[#1e2c22] flex flex-col transition-transform duration-300 lg:translate-x-0 ${
+        className={`fixed lg:sticky top-16 left-0 z-40 w-60 h-[calc(100vh-4rem)] bg-[#101924] border-r border-[#1e2e42] flex flex-col transition-transform duration-300 lg:translate-x-0 ${
           mobileOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'
         }`}
       >
         {/* Station Header */}
-        <div className="p-4 border-b border-white/[0.05]">
+        <div className="p-4 border-b border-[#1e2e42]/60">
           <div className="font-heading font-black text-sm text-[#f2f7f4]">
-            SILICON <span className="bg-[#8fe617] text-[#062404] text-[9px] font-black px-1.5 py-0.5 rounded">LABS</span>
+            SILICON <span className="bg-[#85e510] text-[#062404] text-[9px] font-black px-1.5 py-0.5 rounded">LABS</span>
           </div>
-          <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#8fe617]/10 text-[#8fe617] text-[10px] font-black uppercase tracking-wider mt-1.5 border border-[#8fe617]/20">
+          <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#85e510]/10 text-[#85e510] text-[10px] font-black uppercase tracking-wider mt-1.5 border border-[#85e510]/20">
             <span>{badge.title}</span>
           </div>
         </div>
@@ -110,8 +110,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
                 className={({ isActive }) =>
                   `flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
                     isActive
-                      ? 'bg-[#8fe617] text-[#062404] shadow-[0_0_14px_rgba(143,230,23,0.35)]'
-                      : 'text-[#9eb2a6] hover:text-white hover:bg-white/[0.04]'
+                      ? 'bg-[#85e510] text-[#062404] shadow-[0_0_15px_rgba(133,229,16,0.4)]'
+                      : 'text-[#8fa2b7] hover:text-white hover:bg-white/[0.04]'
                   }`
                 }
               >
@@ -123,13 +123,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
         </nav>
 
         {/* Profile Card at bottom */}
-        <div className="p-3 border-t border-white/[0.05] bg-[#090e0b] flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-full bg-[#1b2820] border border-[#8fe617] flex items-center justify-center font-black text-xs text-[#8fe617]">
+        <div className="p-3 border-t border-[#1e2e42] bg-[#0c141d] flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-full bg-[#1b2838] border border-[#85e510] flex items-center justify-center font-black text-xs text-[#85e510]">
             {(user?.username || 'M')[0].toUpperCase()}
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-xs font-bold text-[#f2f7f4] truncate">{user?.username || 'Operator'}</div>
-            <div className="text-[10px] font-semibold text-[#8fe617] truncate">{user?.role || 'SUPER_ADMIN'}</div>
+            <div className="text-[10px] font-semibold text-[#85e510] truncate">{user?.role || 'SENDER'}</div>
           </div>
         </div>
       </aside>

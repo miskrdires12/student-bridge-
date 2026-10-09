@@ -38,6 +38,8 @@ export interface Student {
   updatedAt?: string;
   hasMistake?: boolean;
   country?: string;
+  location?: string;
+  recordHistory?: { date: string; action: string; user: string; role: string; notes: string; }[];
 }
 
 export interface Task {

@@ -54,6 +54,17 @@ const queryClient = new QueryClient({
   },
 });
 
+import { getCurrentUser } from '@/lib/store';
+
+const RootRedirect: React.FC = () => {
+  const user = getCurrentUser();
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role === 'SENDER') return <Navigate to="/sender/dashboard" replace />;
+  if (user.role === 'RECEIVER') return <Navigate to="/receiver/dashboard" replace />;
+  if (user.role === 'ADMIN') return <Navigate to="/admin/dashboard" replace />;
+  return <Navigate to="/super-admin/dashboard" replace />;
+};
+
 export const App: React.FC = () => {
   return (
     <QueryClientProvider client={queryClient}>
@@ -65,8 +76,8 @@ export const App: React.FC = () => {
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           </Route>
 
-          {/* Root Redirect to Sender Dashboard */}
-          <Route path="/" element={<Navigate to="/sender/dashboard" replace />} />
+          {/* Root Redirect to Login if not authenticated, or to Role Dashboard */}
+          <Route path="/" element={<RootRedirect />} />
 
           {/* Operational Stations under Unified AppLayout */}
           <Route element={<AppLayout />}>
@@ -107,7 +118,7 @@ export const App: React.FC = () => {
           </Route>
 
           {/* Catch-all Wildcard Route */}
-          <Route path="*" element={<Navigate to="/sender/dashboard" replace />} />
+          <Route path="*" element={<RootRedirect />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

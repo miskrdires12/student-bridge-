@@ -20,8 +20,83 @@ const DEFAULT_TASKS: Task[] = [
   { id: "T-005", title: "Photo verification batch 4", assignedTo: "Dawit Alemu", school: "Warka", priority: "Medium", deadline: "2026-10-16", status: "In Progress" }
 ];
 
+export interface OperatorAccount extends User {
+  password?: string;
+}
+
+export const PRESET_OPERATORS: OperatorAccount[] = [
+  {
+    id: "usr-sender-1",
+    username: "Loza Bereket",
+    email: "loza.bereket@siliconlabs.et",
+    role: "SENDER",
+    password: "sender123",
+    boundDeviceId: null,
+    recordsSentSingle: 28,
+  },
+  {
+    id: "usr-sender-2",
+    username: "field_sender",
+    email: "sender@siliconlabs.et",
+    role: "SENDER",
+    password: "sender123",
+    boundDeviceId: null,
+    recordsSentSingle: 142,
+  },
+  {
+    id: "usr-receiver-1",
+    username: "Alemu Tadesse",
+    email: "alemu.tadesse@siliconlabs.et",
+    role: "RECEIVER",
+    password: "receiver123",
+    boundDeviceId: null,
+    recordsEncoded: 3578,
+  },
+  {
+    id: "usr-receiver-2",
+    username: "central_receiver",
+    email: "receiver@siliconlabs.et",
+    role: "RECEIVER",
+    password: "receiver123",
+    boundDeviceId: null,
+    recordsEncoded: 3723,
+  },
+  {
+    id: "usr-admin-1",
+    username: "Getnet Kassa",
+    email: "admin.addis@siliconlabs.et",
+    role: "ADMIN",
+    password: "admin123",
+    boundDeviceId: null,
+  },
+  {
+    id: "usr-admin-2",
+    username: "station_admin",
+    email: "admin@siliconlabs.et",
+    role: "ADMIN",
+    password: "admin123",
+    boundDeviceId: null,
+  },
+  {
+    id: "usr-super-1",
+    username: "miskrdires11",
+    email: "miskrdires11@gmail.com",
+    role: "SUPER_ADMIN",
+    password: "admin123",
+    boundDeviceId: null,
+  },
+  {
+    id: "usr-super-2",
+    username: "root_superadmin",
+    email: "superadmin@siliconlabs.et",
+    role: "SUPER_ADMIN",
+    password: "super123",
+    boundDeviceId: null,
+  }
+];
+
 let memoryStudents: Student[] = [];
-let memoryUsers: User[] = [];
+let memoryUsers: User[] = [...PRESET_OPERATORS];
 let memorySchools: School[] = DEFAULT_SCHOOLS;
 let memoryTasks: Task[] = DEFAULT_TASKS;
 let memoryAuditLogs: AuditLog[] = [
@@ -42,15 +117,20 @@ export async function initStore(): Promise<void> {
     }
   }
 
-  if (memoryUsers.length === 0) {
-    try {
-      const res = await fetch('/data/users.json');
-      if (res.ok) {
-        memoryUsers = await res.json();
-      }
-    } catch (e) {
-      console.warn('Could not load /data/users.json', e);
+  try {
+    const res = await fetch('/data/users.json');
+    if (res.ok) {
+      const loadedUsers: User[] = await res.json();
+      // Merge while preserving preset aliases
+      const existingEmails = new Set(memoryUsers.map(u => u.email.toLowerCase()));
+      loadedUsers.forEach(u => {
+        if (!existingEmails.has(u.email.toLowerCase())) {
+          memoryUsers.push(u);
+        }
+      });
     }
+  } catch (e) {
+    console.warn('Could not load /data/users.json', e);
   }
 
   // Merge custom students from localStorage
@@ -63,6 +143,19 @@ export async function initStore(): Promise<void> {
       }
     }
   } catch (e) {}
+
+  // Sync bound devices from localStorage if previously updated
+  try {
+    const savedLocks = localStorage.getItem('sb_device_locks');
+    if (savedLocks) {
+      const locksMap: Record<string, string | null> = JSON.parse(savedLocks);
+      memoryUsers.forEach(u => {
+        if (locksMap[u.id] !== undefined) {
+          u.boundDeviceId = locksMap[u.id];
+        }
+      });
+    }
+  } catch (e) {}
 }
 
 export function getStudents(): Student[] {
@@ -70,7 +163,23 @@ export function getStudents(): Student[] {
 }
 
 export function addStudent(newStudent: Student): void {
+  // Ensure default fields
+  if (!newStudent.status) newStudent.status = 'Accepted';
+  if (!newStudent.location) newStudent.location = 'Addis Ababa';
+  if (!newStudent.recordHistory || newStudent.recordHistory.length === 0) {
+    newStudent.recordHistory = [
+      {
+        date: new Date().toISOString().replace('T', ' ').substring(0, 16),
+        action: 'Initial Submission',
+        user: getCurrentUser()?.username || 'Loza Bereket',
+        role: 'Sender',
+        notes: 'Initial student identity registration and portrait capture'
+      }
+    ];
+  }
+
   memoryStudents.unshift(newStudent);
+
   try {
     const existing = JSON.parse(localStorage.getItem('sb_custom_students') || '[]');
     existing.unshift(newStudent);
@@ -79,33 +188,74 @@ export function addStudent(newStudent: Student): void {
 
   addAuditLog({
     timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
-    user: getCurrentUser()?.username || 'Field Operator',
+    user: getCurrentUser()?.username || 'Loza Bereket',
     station: 'Sender',
     action: 'Student Registration',
     entity: newStudent.studentId,
-    details: `Registered ${newStudent.fullName} for ${newStudent.school}`
+    details: `Registered ${newStudent.fullName} for ${newStudent.school || 'YMS'}`
   });
+
+  // Dispatch custom event for immediate UI updates
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('studentbridge_datachange', { detail: newStudent }));
+  }
 }
 
 export function updateStudent(id: string, updates: Partial<Student>): void {
   const index = memoryStudents.findIndex(s => s.id === id || s.studentId === id);
   if (index !== -1) {
-    memoryStudents[index] = { ...memoryStudents[index], ...updates, updatedAt: new Date().toISOString() };
+    const existing = memoryStudents[index];
+    const history = existing.recordHistory || [];
+    history.unshift({
+      date: new Date().toISOString().replace('T', ' ').substring(0, 16),
+      action: 'Data Correction',
+      user: getCurrentUser()?.username || 'Receiver Analyst',
+      role: getCurrentUser()?.role || 'Receiver',
+      notes: updates.grade ? `Updated grade to ${updates.grade}` : 'Updated student record fields'
+    });
+
+    memoryStudents[index] = {
+      ...existing,
+      ...updates,
+      recordHistory: history,
+      updatedAt: new Date().toISOString()
+    };
+
+    // Update in localStorage as well
+    try {
+      const custom: Student[] = JSON.parse(localStorage.getItem('sb_custom_students') || '[]');
+      const cIdx = custom.findIndex(s => s.id === id || s.studentId === id);
+      if (cIdx !== -1) {
+        custom[cIdx] = memoryStudents[index];
+        localStorage.setItem('sb_custom_students', JSON.stringify(custom));
+      }
+    } catch (e) {}
+
     addAuditLog({
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
       user: getCurrentUser()?.username || 'Receiver',
       station: 'Receiver',
       action: 'Student Updated',
       entity: memoryStudents[index].studentId,
-      details: `Updated fields for ${memoryStudents[index].fullName}`
+      details: `Updated record for ${memoryStudents[index].fullName}`
     });
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
+    }
   }
 }
 
 export function deleteStudent(id: string): void {
-  const index = memoryStudents.findIndex(s => s.id === id);
+  const index = memoryStudents.findIndex(s => s.id === id || s.studentId === id);
   if (index !== -1) {
     const deleted = memoryStudents.splice(index, 1)[0];
+    try {
+      const custom: Student[] = JSON.parse(localStorage.getItem('sb_custom_students') || '[]');
+      const filtered = custom.filter(s => s.id !== id && s.studentId !== id);
+      localStorage.setItem('sb_custom_students', JSON.stringify(filtered));
+    } catch (e) {}
+
     addAuditLog({
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
       user: getCurrentUser()?.username || 'Admin',
@@ -114,6 +264,10 @@ export function deleteStudent(id: string): void {
       entity: deleted.studentId,
       details: `Removed record for ${deleted.fullName}`
     });
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
+    }
   }
 }
 
@@ -122,9 +276,26 @@ export function getUsers(): User[] {
 }
 
 export function resetUserHardwareLock(userId: string): void {
-  const u = memoryUsers.find(x => x.id === userId || x.username === userId);
+  const u = memoryUsers.find(x => x.id === userId || x.username === userId || x.email === userId);
   if (u) {
     u.boundDeviceId = null;
+    try {
+      const locksMap = JSON.parse(localStorage.getItem('sb_device_locks') || '{}');
+      locksMap[u.id] = null;
+      localStorage.setItem('sb_device_locks', JSON.stringify(locksMap));
+    } catch (e) {}
+  }
+}
+
+export function setUserHardwareLock(userId: string, deviceId: string): void {
+  const u = memoryUsers.find(x => x.id === userId || x.username === userId || x.email === userId);
+  if (u) {
+    u.boundDeviceId = deviceId;
+    try {
+      const locksMap = JSON.parse(localStorage.getItem('sb_device_locks') || '{}');
+      locksMap[u.id] = deviceId;
+      localStorage.setItem('sb_device_locks', JSON.stringify(locksMap));
+    } catch (e) {}
   }
 }
 
@@ -162,7 +333,7 @@ export function getMistakes(): MistakeItem[] {
   const seenIds = new Set<string>();
 
   memoryStudents.forEach((s) => {
-    if (!s.photoPath) {
+    if (!s.photoPath && !s.previewPath) {
       mistakes.push({
         id: s.id,
         studentId: s.studentId,
@@ -213,12 +384,7 @@ export function getCurrentUser(): User | null {
     const saved = localStorage.getItem('sb_auth_user');
     if (saved) return JSON.parse(saved);
   } catch (e) {}
-  return {
-    id: 'usr-default',
-    username: 'miskrdires11',
-    email: 'miskrdires11@gmail.com',
-    role: 'SUPER_ADMIN'
-  };
+  return null;
 }
 
 export function setCurrentUser(user: User | null): void {
@@ -227,4 +393,13 @@ export function setCurrentUser(user: User | null): void {
   } else {
     localStorage.removeItem('sb_auth_user');
   }
+}
+
+export function getOrCreateDeviceId(): string {
+  let devId = localStorage.getItem('sb_device_id');
+  if (!devId) {
+    devId = 'DEV-SILICON-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+    localStorage.setItem('sb_device_id', devId);
+  }
+  return devId;
 }
