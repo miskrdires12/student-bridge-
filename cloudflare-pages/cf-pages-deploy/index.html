@@ -1,0 +1,1832 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Silicon Labs — Student Bridge Platform</title>
+  <meta name="description" content="Silicon Labs Student Bridge Management Platform — 100% Autonomous Cloudflare Edge" />
+  
+  <!-- Modern Typography: Inter, Outfit & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Libraries: JSZip for classified photo packaging, SheetJS for Excel, QRCode for badges -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Authentic Silicon Labs Theme Styles from globals.css & DashboardShell -->
+  <style>
+    :root {
+      --background: #f7faf9;
+      --surface: #ffffff;
+      --surface-secondary: #eef5f1;
+      --surface-tertiary: #e2ede6;
+      --accent: #8fe617;
+      --accent-hover: #7ecc10;
+      --foreground: #080808;
+      --foreground-muted: #3f4743;
+      --foreground-subtle: #6b7771;
+      --border: #dce7e1;
+    }
+
+    .dark {
+      --background: #070908;
+      --surface: #101512;
+      --surface-secondary: #161e19;
+      --surface-tertiary: #1e2822;
+      --accent: #8fe617;
+      --accent-hover: #7ecc10;
+      --foreground: #f2f7f4;
+      --foreground-muted: #9eb2a6;
+      --foreground-subtle: #6c8074;
+      --border: #223126;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      background-color: var(--background);
+      color: var(--foreground);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+      overflow-x: hidden;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      transition: background-color 0.25s ease, color 0.25s ease;
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--surface-secondary); }
+    ::-webkit-scrollbar-thumb { background: #2a3830; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #8fe617; }
+
+    /* Button Animations */
+    .cool-btn-hover {
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .cool-btn-hover:hover {
+      transform: translateY(-1.5px) scale(1.015);
+      box-shadow: 0 8px 20px -3px rgba(143, 230, 23, 0.4);
+    }
+    .cool-btn-hover:active {
+      transform: translateY(0.5px) scale(0.99);
+    }
+
+    /* Unpinned Header */
+    header.sl-header {
+      display: flex;
+      height: 56px;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background-color: var(--surface);
+      padding: 0 1.25rem;
+      transition: all 0.2s ease;
+      z-index: 30;
+    }
+
+    .dark header.sl-header {
+      background-color: #111613;
+    }
+
+    /* Advanced Animated Hamburger Menu Icon */
+    .animated-icon-btn {
+      height: 40px;
+      width: 40px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--surface-secondary);
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .animated-icon-btn:hover {
+      border-color: #8fe617;
+      background: rgba(143, 230, 23, 0.1);
+      box-shadow: 0 0 16px rgba(143, 230, 23, 0.35);
+    }
+    .bar-top, .bar-bottom {
+      height: 2px;
+      width: 18px;
+      border-radius: 9999px;
+      background: var(--foreground);
+      transition: all 0.3s;
+    }
+    .bar-mid {
+      height: 2px;
+      width: 18px;
+      border-radius: 9999px;
+      background: #8fe617;
+      transition: all 0.3s;
+    }
+    .animated-icon-btn:hover .bar-top { width: 14px; transform: translateX(-2px); background: #8fe617; }
+    .animated-icon-btn:hover .bar-bottom { width: 14px; transform: translateX(2px); background: #8fe617; }
+
+    /* Brand Logo & Title */
+    .brand-link {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      color: inherit;
+    }
+    .brand-logo-img {
+      height: 32px;
+      width: 32px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 2px solid var(--border);
+    }
+    .brand-title {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.95rem;
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .brand-badge {
+      background: #8fe617;
+      color: #062404;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 900;
+    }
+
+    /* Sliding Drawer */
+    .drawer-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(4px);
+      z-index: 50;
+      animation: fadeIn 0.2s ease-out;
+    }
+    .drawer-overlay.open { display: flex; }
+
+    .drawer-panel {
+      width: 310px;
+      max-width: 85vw;
+      height: 100%;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      box-shadow: 0 25px 60px rgba(0,0,0,0.8);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      animation: slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .dark .drawer-panel { background: #111613; }
+
+    @keyframes slideIn {
+      from { transform: translateX(-100%); }
+      to { transform: translateX(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    /* Nav Item Links in Drawer */
+    .drawer-nav-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.65rem 0.9rem;
+      border-radius: 12px;
+      font-size: 0.825rem;
+      font-weight: 600;
+      color: var(--foreground-muted);
+      text-decoration: none;
+      transition: all 0.15s ease;
+      cursor: pointer;
+      border: 1px solid transparent;
+    }
+    .drawer-nav-item:hover {
+      color: var(--foreground);
+      background: var(--surface-secondary);
+    }
+    .drawer-nav-item.active {
+      background: #8fe617;
+      color: #062404 !important;
+      font-weight: 700;
+      box-shadow: 0 0 15px rgba(143, 230, 23, 0.35);
+      border-color: #8fe617;
+    }
+
+    /* Dark Form Card */
+    .dark-form-card {
+      background-color: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 1.5rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+    }
+    .dark .dark-form-card {
+      background-color: #111713;
+      border: 1px solid #223126;
+      border-top: 2px solid #8fe617;
+      box-shadow: 0 16px 40px -10px rgba(0, 0, 0, 0.9), 0 0 25px -4px rgba(143, 230, 23, 0.1);
+    }
+
+    /* Badges */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 0.725rem;
+      font-weight: 600;
+    }
+    .badge-grade {
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+    .badge-encoded {
+      background: rgba(143, 230, 23, 0.15);
+      color: #8fe617;
+      border: 1px solid rgba(143, 230, 23, 0.35);
+    }
+    .badge-unencoded {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    /* Quick Role Switcher Bar */
+    .role-switcher-bar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0.5rem 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      font-size: 0.75rem;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .dark .role-switcher-bar { background: #0c110e; }
+
+    .role-pill-btn {
+      padding: 3px 10px;
+      border-radius: 9999px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--foreground-muted);
+      cursor: pointer;
+      font-weight: 700;
+      transition: all 0.15s;
+    }
+    .role-pill-btn.active {
+      background: #8fe617;
+      color: #062404;
+      border-color: #8fe617;
+    }
+
+    /* Table Styles */
+    .table-container {
+      overflow-x: auto;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .dark .table-container { background: #111713; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.85rem;
+    }
+    th {
+      background: #0d1510;
+      padding: 0.85rem 1rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--foreground-subtle);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      vertical-align: middle;
+      color: var(--foreground);
+    }
+    tr:hover td {
+      background: rgba(143, 230, 23, 0.03);
+    }
+
+    /* Pagination Bars (Top and Bottom) */
+    .pagination-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.75rem 1rem;
+      background: var(--surface-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin: 0.75rem 0;
+    }
+    .dark .pagination-bar { background: #0b100d; }
+
+    .page-btn {
+      min-width: 34px;
+      height: 34px;
+      padding: 0 0.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--foreground);
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .dark .page-btn { background: #161e19; }
+    .page-btn.active {
+      background: #8fe617;
+      color: #062404;
+      border-color: #8fe617;
+      font-weight: 800;
+      box-shadow: 0 0 10px rgba(143,230,23,0.3);
+    }
+
+    /* Modal Overlays */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.85);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .modal-overlay.open { display: flex; }
+
+    .modal-box {
+      background: #111713;
+      border: 1px solid #223126;
+      border-top: 2px solid #8fe617;
+      border-radius: 28px;
+      max-width: 650px;
+      width: 100%;
+      padding: 2rem;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.9);
+      position: relative;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    /* Sun turning icon */
+    .sun-turn-icon {
+      transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ===================================================================== -->
+  <!-- ROLE SWITCHER & OPERATOR HEADER BAR -->
+  <!-- ===================================================================== -->
+  <div class="role-switcher-bar">
+    <div style="display: flex; align-items: center; gap: 0.5rem;">
+      <span style="color: var(--foreground-subtle);">OPERATOR VIEW:</span>
+      <button class="role-pill-btn active" id="btn-role-super" onclick="setRole('SUPER_ADMIN')">SUPER ADMIN</button>
+      <button class="role-pill-btn" id="btn-role-admin" onclick="setRole('ADMIN')">ADMIN</button>
+      <button class="role-pill-btn" id="btn-role-sender" onclick="setRole('SENDER')">SENDER</button>
+      <button class="role-pill-btn" id="btn-role-receiver" onclick="setRole('RECEIVER')">RECEIVER</button>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.75rem;">
+      <span class="badge" style="background: rgba(143,230,23,0.12); color: #8fe617;">
+        Cloudflare Edge • Active
+      </span>
+      <span id="current-user-badge" style="color: var(--foreground);">miskrdires11@gmail.com</span>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- UNPINNED AUTHENTIC HEADER (SILICON LABS • 3-LINE ANIMATED HAMBURGER) -->
+  <!-- ===================================================================== -->
+  <header class="sl-header">
+    <div style="display: flex; align-items: center; gap: 1rem;">
+      <!-- 3-line animated hamburger menu button -->
+      <button 
+        type="button" 
+        class="animated-icon-btn" 
+        onclick="openDrawer()" 
+        aria-label="Open navigation menu"
+        title="Silicon Labs Menu"
+      >
+        <span class="bar-top"></span>
+        <span class="bar-mid"></span>
+        <span class="bar-bottom"></span>
+      </button>
+
+      <!-- Brand Link: Silicon Labs -->
+      <a href="#" class="brand-link" onclick="handleBrandClick(); return false;">
+        <img src="/logo.png" alt="Silicon Labs Logo" class="brand-logo-img" onerror="this.style.display='none'" />
+        <div class="brand-title">
+          <span>SILICON</span>
+          <span class="brand-badge">LABS</span>
+        </div>
+      </a>
+    </div>
+
+    <!-- Header Right Controls -->
+    <div style="display: flex; align-items: center; gap: 0.65rem;">
+      <!-- Direct Quick Navigation Shortcuts -->
+      <div style="display: flex; gap: 0.35rem; margin-right: 0.5rem;" id="header-quick-links">
+        <button class="page-btn active" onclick="navigateTo('students')" style="height: 32px; font-size: 0.75rem; padding: 0 10px;">
+          <i data-lucide="users" style="width:13px; height:13px; margin-right:4px;"></i> Students
+        </button>
+        <button class="page-btn" onclick="navigateTo('register')" style="height: 32px; font-size: 0.75rem; padding: 0 10px;">
+          <i data-lucide="user-plus" style="width:13px; height:13px; margin-right:4px;"></i> Register
+        </button>
+        <button class="page-btn" onclick="navigateTo('dashboard')" style="height: 32px; font-size: 0.75rem; padding: 0 10px;">
+          <i data-lucide="layout-dashboard" style="width:13px; height:13px; margin-right:4px;"></i> Metrics
+        </button>
+      </div>
+
+      <!-- Theme Toggle (Sun Turning Icon) -->
+      <button 
+        class="animated-icon-btn" 
+        style="height: 36px; width: 36px;" 
+        onclick="toggleTheme()" 
+        title="Toggle Theme"
+      >
+        <i data-lucide="sun" class="sun-turn-icon" style="width: 17px; height: 17px; color: #8fe617;"></i>
+      </button>
+
+      <!-- Sign Out / Switch -->
+      <button 
+        class="cool-btn-hover" 
+        style="display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 10px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); color: #ef4444; font-size: 0.75rem; font-weight: 700; cursor: pointer;"
+        onclick="showSignInModal()"
+        title="Sign Out or Switch User"
+      >
+        <i data-lucide="log-out" style="width: 13px; height: 13px;"></i>
+        <span>Sign In</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===================================================================== -->
+  <!-- SLIDING DRAWER MENU (REAL ROLE-BASED NAVIGATION) -->
+  <!-- ===================================================================== -->
+  <div id="drawer-modal" class="drawer-overlay" onclick="handleDrawerBackdropClick(event)">
+    <aside class="drawer-panel" onclick="event.stopPropagation()">
+      <!-- Drawer Header with Logo & Animated Close -->
+      <div>
+        <div style="display: flex; height: 64px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 0 1.25rem;">
+          <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <div style="height: 40px; width: 40px; border-radius: 50%; border: 2px solid var(--border); overflow: hidden; padding: 2px; background: #070908;">
+              <img src="/logo.png" alt="Silicon Labs Logo" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" onerror="this.src='/brand-logo.png'" />
+            </div>
+            <div>
+              <div style="font-family: 'JetBrains Mono'; font-weight: 900; font-size: 0.85rem;">
+                SILICON <span class="brand-badge">LABS</span>
+              </div>
+              <div id="drawer-role-title" style="font-size: 10px; font-weight: 700; color: var(--foreground-subtle); text-transform: uppercase;">
+                Super Admin Console
+              </div>
+            </div>
+          </div>
+
+          <button 
+            type="button" 
+            onclick="closeDrawer()" 
+            style="background: transparent; border: none; color: var(--foreground-muted); cursor: pointer; padding: 6px;"
+          >
+            <i data-lucide="x" style="width: 20px; height: 20px;"></i>
+          </button>
+        </div>
+
+        <!-- Dynamic Role Navigation List -->
+        <nav style="padding: 1rem; display: flex; flex-direction: column; gap: 0.4rem;" id="drawer-nav-list">
+          <!-- Populated dynamically based on active role -->
+        </nav>
+      </div>
+
+      <!-- Drawer User Profile Footer -->
+      <div style="border-top: 1px solid var(--border); padding: 1rem; background: var(--surface-secondary);">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <div>
+            <div style="font-size: 0.8rem; font-weight: 700; font-family: 'JetBrains Mono';" id="drawer-username">
+              miskrdires11
+            </div>
+            <div style="display: flex; align-items: center; gap: 5px; margin-top: 2px;">
+              <span style="height: 7px; width: 7px; border-radius: 50%; background: #8fe617;"></span>
+              <span style="font-size: 10px; font-weight: 700; color: var(--foreground-subtle); text-transform: uppercase;" id="drawer-status-text">
+                Station Active
+              </span>
+            </div>
+          </div>
+          <button 
+            class="cool-btn-hover" 
+            style="padding: 5px 10px; border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.1); color: #ef4444; font-size: 0.72rem; font-weight: 700; cursor: pointer;"
+            onclick="showSignInModal()"
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MAIN WORKSTATION CONTENT -->
+  <!-- ===================================================================== -->
+  <main style="max-width: 1720px; width: 100%; margin: 0 auto; padding: 1.25rem; flex: 1; display: flex; flex-direction: column; gap: 1.25rem;">
+
+    <!-- =================================================================== -->
+    <!-- VIEW A: STUDENT DIRECTORY (500 PER PAGE, DUAL PAGINATION, SENT AT) -->
+    <!-- =================================================================== -->
+    <div id="view-students" style="display: block;">
+      
+      <!-- Top Title & Stats Banner -->
+      <div class="dark-form-card" style="margin-bottom: 1.25rem;">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem;">
+          <div>
+            <h1 style="font-family: 'Outfit'; font-size: 1.6rem; font-weight: 900; letter-spacing: -0.02em; display: flex; align-items: center; gap: 0.65rem;">
+              <span>Student Directory</span>
+              <span class="badge" style="background: rgba(143,230,23,0.15); color: #8fe617; font-size: 0.8rem; padding: 3px 10px;" id="badge-total-students">
+                3,723 Students
+              </span>
+            </h1>
+            <p style="color: var(--foreground-muted); font-size: 0.85rem; margin-top: 2px;">
+              Autonomous Cloudflare Edge Directory • 500 Records First Page • Classified Photo Export
+            </p>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <button class="cool-btn-hover" style="padding: 0.6rem 1rem; border-radius: 12px; background: #8fe617; color: #062404; font-weight: 700; font-size: 0.825rem; border: none; cursor: pointer; display: flex; align-items: center; gap: 6px;" onclick="exportToExcel()">
+              <i data-lucide="file-spreadsheet" style="width:15px; height:15px;"></i>
+              Export Excel (.xlsx)
+            </button>
+            <button class="cool-btn-hover" style="padding: 0.6rem 1rem; border-radius: 12px; background: var(--surface-secondary); color: var(--foreground); font-weight: 600; font-size: 0.825rem; border: 1px solid var(--border); cursor: pointer; display: flex; align-items: center; gap: 6px;" onclick="exportToCSV()">
+              <i data-lucide="download" style="width:15px; height:15px;"></i>
+              Export CSV
+            </button>
+          </div>
+        </div>
+
+        <!-- Filter Row -->
+        <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center;">
+          <!-- Search Input -->
+          <div style="flex: 1; min-width: 280px; position: relative;">
+            <i data-lucide="search" style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 17px; height: 17px; color: var(--foreground-subtle);"></i>
+            <input 
+              type="text" 
+              id="student-search-input" 
+              placeholder="Search by student name, ID (e.g. SB-2026-34955), roll number, phone..."
+              oninput="handleSearchChange()"
+              style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.65rem 1rem 0.65rem 2.4rem; font-size: 0.875rem; color: #fff; outline: none;"
+            />
+          </div>
+
+          <!-- Grade Filter -->
+          <select id="filter-grade" onchange="handleFilterChange()" style="background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.65rem 1rem; font-size: 0.825rem; color: #fff; outline: none; cursor: pointer; min-width: 150px;">
+            <option value="ALL">All Grades (All)</option>
+          </select>
+
+          <!-- School Filter (With Harar / High Tech) -->
+          <select id="filter-school" onchange="handleFilterChange()" style="background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.65rem 1rem; font-size: 0.825rem; color: #fff; outline: none; cursor: pointer; min-width: 160px;">
+            <option value="ALL">All Schools & Branches</option>
+            <option value="High Tech">Harar / Harrer • High Tech</option>
+            <option value="Debebech">Adama • Debebech</option>
+            <option value="Sena Yerosen">Adama • Sena Yerosen</option>
+            <option value="Yacine">Adama • Yacine</option>
+            <option value="Odda">Adama • Odda</option>
+            <option value="YMS">Addis Ababa • YMS</option>
+            <option value="Adika Youth">Addis Ababa • Adika Youth</option>
+            <option value="School Of America">Addis Ababa • School Of America</option>
+            <option value="Warka">Addis Ababa • Warka</option>
+            <option value="Mojjo">Mojjo • Mojjo</option>
+          </select>
+
+          <!-- Sender Filter -->
+          <select id="filter-sender" onchange="handleFilterChange()" style="background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.65rem 1rem; font-size: 0.825rem; color: #fff; outline: none; cursor: pointer; min-width: 140px;">
+            <option value="ALL">All Senders</option>
+          </select>
+
+          <!-- Photo Status -->
+          <select id="filter-photo" onchange="handleFilterChange()" style="background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.65rem 1rem; font-size: 0.825rem; color: #fff; outline: none; cursor: pointer; min-width: 130px;">
+            <option value="ALL">All Photos</option>
+            <option value="HAS_PHOTO">Has Photo</option>
+            <option value="MISSING_PHOTO">Missing Photo</option>
+          </select>
+
+          <button class="cool-btn-hover" style="padding: 0.65rem 1rem; border-radius: 12px; background: var(--surface-secondary); color: var(--foreground-muted); border: 1px solid var(--border); cursor: pointer; font-size: 0.8rem;" onclick="resetDirectoryFilters()">
+            Reset
+          </button>
+        </div>
+
+        <!-- Floating Bulk Selection Bar -->
+        <div id="selection-bar" style="display: none; align-items: center; justify-content: space-between; margin-top: 1rem; padding: 0.75rem 1.25rem; border-radius: 14px; background: linear-gradient(90deg, #14241a, #0e1712); border: 1px solid rgba(143,230,23,0.35); box-shadow: 0 8px 24px rgba(0,0,0,0.5);">
+          <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <i data-lucide="check-square" style="color: #8fe617; width: 18px; height: 18px;"></i>
+            <span style="font-weight: 700; font-size: 0.85rem;" id="selection-count-text">0 students selected</span>
+          </div>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="cool-btn-hover" style="padding: 0.45rem 0.9rem; border-radius: 10px; background: #8fe617; color: #062404; font-weight: 700; font-size: 0.8rem; border: none; cursor: pointer; display: flex; align-items: center; gap: 6px;" onclick="downloadSelectedPhotosZip()">
+              <i data-lucide="archive" style="width: 14px; height: 14px;"></i>
+              Download Classified ZIP (Encoded/ &amp; Unencoded/)
+            </button>
+            <button class="cool-btn-hover" style="padding: 0.45rem 0.9rem; border-radius: 10px; background: #161e19; color: #fff; font-size: 0.8rem; border: 1px solid var(--border); cursor: pointer;" onclick="clearSelection()">
+              Deselect All
+            </button>
+          </div>
+        </div>
+
+        <!-- TOP PAGINATION BAR -->
+        <div class="pagination-bar" id="pagination-top">
+          <div style="font-size: 0.85rem; color: var(--foreground-muted);" id="page-info-top">
+            Showing <strong>1 – 500</strong> of <strong>3,723</strong> students
+          </div>
+          <div style="display: flex; gap: 4px; align-items: center;" id="page-btns-top">
+            <!-- Rendered by JS -->
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--foreground-subtle);">
+            <span>Per Page:</span>
+            <select id="select-pagesize" onchange="setPageSize(this.value)" style="background: #070a08; border: 1px solid var(--border); border-radius: 8px; color: #fff; padding: 4px 8px; font-size: 0.8rem;">
+              <option value="500" selected>500</option>
+              <option value="250">250</option>
+              <option value="100">100</option>
+              <option value="50">50</option>
+              <option value="3723">All (3,723)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Main Student Table -->
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 36px; text-align: center;">
+                  <input type="checkbox" id="cb-select-all" onchange="toggleSelectAllPage(this.checked)" title="Select all on this page" />
+                </th>
+                <th style="width: 60px;">Photo</th>
+                <th>Student ID &amp; Name</th>
+                <th>Grade</th>
+                <th>School &amp; Branch</th>
+                <!-- Explicit Sent At Date & Time Column -->
+                <th>Sent At (Date &amp; Time)</th>
+                <th>Sender</th>
+                <th>Encoding Status</th>
+                <th style="text-align: right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="student-table-body">
+              <tr>
+                <td colspan="9" style="text-align: center; padding: 4rem; color: var(--foreground-muted);">
+                  Loading 3,723 students from Cloudflare Edge...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- BOTTOM PAGINATION BAR -->
+        <div class="pagination-bar" id="pagination-bottom">
+          <div style="font-size: 0.85rem; color: var(--foreground-muted);" id="page-info-bottom">
+            Showing <strong>1 – 500</strong> of <strong>3,723</strong> students
+          </div>
+          <div style="display: flex; gap: 4px; align-items: center;" id="page-btns-bottom">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- VIEW B: SENDER WORKSTATION (REGISTRATION WITH HARAR / HIGH TECH) -->
+    <!-- =================================================================== -->
+    <div id="view-register" style="display: none;">
+      <div class="dark-form-card" style="max-width: 840px; margin: 0 auto;">
+        <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 1.5rem;">
+          <div>
+            <h2 style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 800; display: flex; align-items: center; gap: 8px;">
+              <i data-lucide="user-plus" style="color: #8fe617;"></i>
+              Student Registration Workstation
+            </h2>
+            <p style="color: var(--foreground-muted); font-size: 0.85rem; margin-top: 3px;">
+              Sender portal with automatic batching and Harar / High Tech school assignment.
+            </p>
+          </div>
+          <span class="badge" style="background: rgba(143,230,23,0.15); color: #8fe617; font-size: 0.75rem; padding: 4px 10px;">
+            SENDER ACTIVE
+          </span>
+        </div>
+
+        <form id="form-register-student" onsubmit="handleEnrollStudent(event)">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;">
+            <!-- Portrait Box Simulation -->
+            <div style="grid-column: span 2; display: flex; align-items: center; gap: 1.5rem; background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 16px; border: 1px solid var(--border);">
+              <div style="width: 100px; height: 125px; border-radius: 12px; background: #070a08; border: 2px dashed #8fe617; display: flex; align-items: center; justify-content: center; overflow: hidden;" id="photo-preview-box">
+                <i data-lucide="camera" style="width: 32px; height: 32px; color: var(--foreground-subtle);"></i>
+              </div>
+              <div style="flex: 1;">
+                <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Student Portrait Photo (3:4 Ratio)</label>
+                <input type="text" id="reg-photo-url" placeholder="https://pub-93e8bf84c42949ec88306f456caa0fc9.r2.dev/..." style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.85rem; color: #fff; font-size: 0.825rem; outline: none;" oninput="updatePhotoPreview(this.value)" />
+                <div style="font-size: 0.75rem; color: var(--foreground-subtle); margin-top: 5px;">
+                  Portrait automatically uploaded to Cloudflare R2 bucket.
+                </div>
+              </div>
+            </div>
+
+            <!-- Full Name -->
+            <div>
+              <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Full Student Name *</label>
+              <input type="text" id="reg-fullname" required placeholder="e.g. Dawit Mekete" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;" />
+            </div>
+
+            <!-- Student ID -->
+            <div>
+              <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Student ID *</label>
+              <input type="text" id="reg-studentid" required placeholder="e.g. SB-2026-79923" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;" />
+            </div>
+
+            <!-- Phone -->
+            <div>
+              <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Phone Number *</label>
+              <input type="text" id="reg-phone" required placeholder="+251912345678" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;" />
+            </div>
+
+            <!-- Sex -->
+            <div>
+              <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Sex *</label>
+              <select id="reg-sex" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;">
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+              </select>
+            </div>
+
+            <!-- Grade -->
+            <div>
+              <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Grade &amp; Section *</label>
+              <input type="text" id="reg-grade" required placeholder="e.g. 9B, 10A, 12C" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;" />
+            </div>
+
+            <!-- Roll Number -->
+            <div>
+              <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Roll Number</label>
+              <input type="text" id="reg-roll" placeholder="e.g. 15" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;" />
+            </div>
+
+            <!-- Regional Campus / Branch (With Harrer / Harar) -->
+            <div>
+              <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Regional Branch *</label>
+              <select id="reg-branch" onchange="handleBranchSelect(this.value)" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;">
+                <option value="Harrer" selected>Harrer / Harar</option>
+                <option value="Adama">Adama</option>
+                <option value="Addis Ababa">Addis Ababa</option>
+                <option value="Mojjo">Mojjo</option>
+              </select>
+            </div>
+
+            <!-- School (Contains High Tech for Harar) -->
+            <div>
+              <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">School *</label>
+              <select id="reg-school" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;">
+                <option value="High Tech">High Tech</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 2rem;">
+            <button type="button" class="cool-btn-hover" style="padding: 0.75rem 1.25rem; border-radius: 12px; background: var(--surface-secondary); color: var(--foreground); font-size: 0.85rem; font-weight: 600; border: 1px solid var(--border); cursor: pointer;" onclick="generateRandomStudentId()">
+              Auto Generate ID
+            </button>
+            <button type="submit" class="cool-btn-hover" style="padding: 0.75rem 1.75rem; border-radius: 12px; background: #8fe617; color: #062404; font-size: 0.875rem; font-weight: 800; border: none; cursor: pointer; display: flex; align-items: center; gap: 8px;">
+              <i data-lucide="check-circle-2" style="width: 18px; height: 18px;"></i>
+              Send Student to Receiver Station
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- VIEW C: LIVE RECEIVER DASHBOARD & METRICS -->
+    <!-- =================================================================== -->
+    <div id="view-dashboard" style="display: none;">
+      <!-- Stats Row -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-bottom: 1.25rem;">
+        <div class="dark-form-card">
+          <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--foreground-subtle);">Total Enrolled Records</div>
+          <div style="font-family: 'Outfit'; font-size: 2.2rem; font-weight: 900; color: #fff; margin: 4px 0;" id="metric-total-students">3,723</div>
+          <div style="font-size: 0.75rem; color: #8fe617;">100% Extracted from Cloudflare Database</div>
+        </div>
+
+        <div class="dark-form-card">
+          <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--foreground-subtle);">Verified R2 Photos</div>
+          <div style="font-family: 'Outfit'; font-size: 2.2rem; font-weight: 900; color: #fff; margin: 4px 0;" id="metric-total-photos">3,723</div>
+          <div style="font-size: 0.75rem; color: #60a5fa;">Cloudflare R2 Bucket siliconlabs</div>
+        </div>
+
+        <div class="dark-form-card">
+          <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--foreground-subtle);">Active Regional Senders</div>
+          <div style="font-family: 'Outfit'; font-size: 2.2rem; font-weight: 900; color: #fff; margin: 4px 0;">14</div>
+          <div style="font-size: 0.75rem; color: #a78bfa;">Harrer, Adama, Addis Ababa, Mojjo</div>
+        </div>
+
+        <div class="dark-form-card">
+          <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--foreground-subtle);">Edge Latency</div>
+          <div style="font-family: 'Outfit'; font-size: 2.2rem; font-weight: 900; color: #8fe617; margin: 4px 0;">0ms</div>
+          <div style="font-size: 0.75rem; color: var(--foreground-subtle);">Autonomous Cloudflare Edge</div>
+        </div>
+      </div>
+
+      <!-- Recent Students Feed -->
+      <div class="dark-form-card">
+        <h3 style="font-family: 'Outfit'; font-size: 1.25rem; font-weight: 800; margin-bottom: 1rem; display: flex; align-items: center; gap: 8px;">
+          <i data-lucide="clock" style="color: #8fe617;"></i>
+          Recently Dispatched Students (Live Feed)
+        </h3>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Student</th>
+                <th>Grade</th>
+                <th>School &amp; Branch</th>
+                <th>Sent At (Date &amp; Time)</th>
+                <th>Sender</th>
+                <th>Status</th>
+                <th style="text-align: right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="recent-students-tbody">
+              <!-- Rendered by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- VIEW D: SUPER ADMIN & TELEMETRY CONTROL -->
+    <!-- =================================================================== -->
+    <div id="view-admin" style="display: none;">
+      <div class="dark-form-card">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem;">
+          <div>
+            <h2 style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 900; display: flex; align-items: center; gap: 8px;">
+              <i data-lucide="shield" style="color: #8fe617;"></i>
+              Super Admin Control &amp; Staff Supervision
+            </h2>
+            <p style="color: var(--foreground-muted); font-size: 0.85rem; margin-top: 3px;">
+              Manage operators, reset bound devices, inspect sessions and telemetry across all 19 accounts.
+            </p>
+          </div>
+          <span class="badge" style="background: rgba(143,230,23,0.15); color: #8fe617; padding: 4px 10px;">
+            RBAC SUPERVISOR ACTIVE
+          </span>
+        </div>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Operator Email</th>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Bound Device</th>
+                <th>Sessions</th>
+                <th>Sent Records</th>
+                <th>Encoded Records</th>
+                <th style="text-align: right;">Admin Control</th>
+              </tr>
+            </thead>
+            <tbody id="admin-users-tbody">
+              <!-- Rendered by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- VIEW E: 8-UP PRINT ENGINE & ID BADGE DESIGNER -->
+    <!-- =================================================================== -->
+    <div id="view-print" style="display: none;">
+      <div class="dark-form-card" style="text-align: center;">
+        <h2 style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 900; margin-bottom: 0.5rem;">
+          Silicon Labs 8-Up ID Badge Print Engine
+        </h2>
+        <p style="color: var(--foreground-muted); font-size: 0.85rem; margin-bottom: 2rem;">
+          Pre-flight ready ID cards with portrait, school name, and digital QR verification code.
+        </p>
+
+        <div style="display: flex; justify-content: center; gap: 2rem; flex-wrap: wrap;">
+          <!-- Front ID Card -->
+          <div style="width: 320px; height: 480px; background: linear-gradient(145deg, #101c15, #08100b); border: 2px solid #8fe617; border-radius: 18px; padding: 1.5rem; display: flex; flex-direction: column; align-items: center; box-shadow: 0 15px 35px rgba(0,0,0,0.7);">
+            <div style="font-family: 'JetBrains Mono'; font-weight: 900; font-size: 1rem; color: #8fe617; margin-bottom: 2px;">
+              SILICON LABS
+            </div>
+            <div id="card-print-school" style="font-size: 0.7rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 1rem;">
+              HIGH TECH • HARRER
+            </div>
+            <img id="card-print-photo" src="" style="width: 110px; height: 135px; border-radius: 12px; object-fit: cover; border: 2px solid #8fe617; background: #000; margin-bottom: 1rem;" />
+            <div id="card-print-name" style="font-family: 'Outfit'; font-size: 1.25rem; font-weight: 800; color: #fff;">
+              Elemaa Giroo
+            </div>
+            <div id="card-print-id" style="font-family: 'JetBrains Mono'; color: #8fe617; font-weight: 700; font-size: 0.85rem; margin: 4px 0;">
+              SB-2026-34955
+            </div>
+            <div id="card-print-grade" style="font-size: 0.8rem; color: #cbd5e1;">
+              Grade: 8B • Academic Year: 2026-2027
+            </div>
+            <div style="margin-top: auto; padding-top: 1rem; width: 100%; border-top: 1px dashed rgba(143, 230, 23, 0.3); display: flex; justify-content: space-around; font-size: 0.7rem; color: #64748b;">
+              <span>AUTHORIZED ID</span>
+              <span>VERIFIED 2026</span>
+            </div>
+          </div>
+
+          <!-- Back ID Card with QR Code -->
+          <div style="width: 320px; height: 480px; background: linear-gradient(145deg, #09120c, #060a08); border: 2px solid var(--border); border-radius: 18px; padding: 1.5rem; display: flex; flex-direction: column; align-items: center; justify-content: space-between;">
+            <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700;">
+              Digital Verification Code
+            </div>
+            <div id="card-qr-box" style="background: #fff; padding: 12px; border-radius: 14px; width: 154px; height: 154px; display: flex; align-items: center; justify-content: center;">
+              <!-- QR Code injected here -->
+            </div>
+            <div style="font-size: 0.75rem; color: #cbd5e1; line-height: 1.5; padding: 0 1rem;">
+              This card is the property of the school administration. If found, please return to the school administration office.
+            </div>
+            <div style="font-family: 'JetBrains Mono'; font-size: 0.7rem; color: #8fe617;">
+              ENC-SHA256 • ACTIVE
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 2rem;">
+          <button class="cool-btn-hover" style="padding: 0.75rem 1.75rem; border-radius: 12px; background: #8fe617; color: #062404; font-weight: 800; font-size: 0.9rem; border: none; cursor: pointer;" onclick="window.print()">
+            Print 8-Up ID Badge Sheet
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: EXACT SIGNIN CARD (FROM APP/(AUTH)/LOGIN/PAGE.TSX) -->
+  <!-- ===================================================================== -->
+  <div id="signin-modal" class="modal-overlay">
+    <div class="modal-box" style="max-width: 440px; padding: 2rem 2.25rem;">
+      <button onclick="closeSignInModal()" style="position: absolute; top: 1rem; right: 1rem; background: transparent; border: none; color: #fff; cursor: pointer;">
+        <i data-lucide="x"></i>
+      </button>
+
+      <!-- Silicon Labs Emblem -->
+      <div style="display: flex; justify-content: center; margin-bottom: 1rem;">
+        <img src="/logo.png" alt="Silicon Labs Logo" style="width: 80px; height: 80px; object-fit: contain; filter: drop-shadow(0 6px 18px rgba(143,230,23,0.3));" onerror="this.src='/sl-emblem.png'" />
+      </div>
+
+      <div style="text-align: center; margin-bottom: 1.5rem;">
+        <h2 style="font-family: 'Outfit'; font-size: 1.75rem; font-weight: 900; color: #fff;">SignIn</h2>
+        <p style="font-size: 0.8rem; color: var(--foreground-subtle); margin-top: 2px;">
+          Enter your credentials to access the workstation
+        </p>
+      </div>
+
+      <form onsubmit="handleModalSignIn(event)" style="display: flex; flex-direction: column; gap: 1rem;">
+        <div>
+          <label style="display: block; font-size: 10px; font-weight: 800; text-transform: uppercase; color: var(--foreground-subtle); font-family: 'JetBrains Mono'; margin-bottom: 4px;">
+            Operator Gmail
+          </label>
+          <input type="email" id="signin-email" required value="miskrdires11@gmail.com" style="width: 100%; background: #0b100d; border: 1px solid var(--border); border-radius: 12px; padding: 0.75rem 1rem; color: #fff; font-size: 0.85rem; outline: none;" />
+        </div>
+
+        <div>
+          <label style="display: block; font-size: 10px; font-weight: 800; text-transform: uppercase; color: var(--foreground-subtle); font-family: 'JetBrains Mono'; margin-bottom: 4px;">
+            Password
+          </label>
+          <input type="password" id="signin-pass" required value="sukuna24th" style="width: 100%; background: #0b100d; border: 1px solid var(--border); border-radius: 12px; padding: 0.75rem 1rem; color: #fff; font-size: 0.85rem; outline: none;" />
+        </div>
+
+        <button type="submit" class="cool-btn-hover" style="margin-top: 0.5rem; padding: 0.8rem; border-radius: 12px; background: #8fe617; color: #062404; font-weight: 800; font-size: 0.9rem; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;">
+          <span>Sign In</span>
+          <i data-lucide="arrow-right" style="width: 16px; height: 16px;"></i>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: CLASSIFIED ZIP PROGRESS MODAL -->
+  <!-- ===================================================================== -->
+  <div id="zip-modal" class="modal-overlay">
+    <div class="modal-box" style="max-width: 500px;">
+      <h3 style="font-family: 'Outfit'; font-size: 1.3rem; font-weight: 800; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 8px;">
+        <i data-lucide="archive" style="color: #8fe617;"></i>
+        Classified Photo ZIP Archiver
+      </h3>
+      <p style="color: var(--foreground-muted); font-size: 0.85rem;" id="zip-status-text">
+        Partitioning student photos into <strong>Encoded/</strong> and <strong>Unencoded/</strong> folders...
+      </p>
+
+      <div style="width: 100%; height: 8px; background: #070908; border-radius: 9999px; overflow: hidden; margin: 1.25rem 0; border: 1px solid var(--border);">
+        <div id="zip-progress-fill" style="height: 100%; width: 0%; background: linear-gradient(90deg, #8fe617, #10b981); transition: width 0.15s ease;"></div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--foreground-subtle);">
+        <span id="zip-progress-count">0 / 0 downloaded</span>
+        <span id="zip-progress-percent">0%</span>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem;">
+        <button class="cool-btn-hover" style="padding: 0.5rem 1rem; border-radius: 10px; background: var(--surface-secondary); color: #fff; border: 1px solid var(--border); font-size: 0.8rem; cursor: pointer;" onclick="cancelZipDownload()">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: STUDENT PROFILE & QR INSPECTION -->
+  <!-- ===================================================================== -->
+  <div id="student-modal" class="modal-overlay">
+    <div class="modal-box">
+      <button onclick="closeStudentModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: transparent; border: none; color: #fff; cursor: pointer;">
+        <i data-lucide="x"></i>
+      </button>
+
+      <div style="display: flex; gap: 1.5rem; align-items: flex-start; margin-bottom: 1.5rem;">
+        <img id="modal-photo" src="" style="width: 120px; height: 150px; border-radius: 14px; object-fit: cover; border: 2px solid #8fe617; background: #000;" />
+        <div>
+          <span class="badge" id="modal-badge-encoded" style="background: rgba(143,230,23,0.15); color: #8fe617;">ENCODED &amp; VERIFIED</span>
+          <h2 style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 800; margin-top: 4px;" id="modal-name">Elemaa Giroo</h2>
+          <div style="font-family: 'JetBrains Mono'; color: #8fe617; font-weight: 700; font-size: 0.9rem;" id="modal-id">SB-2026-34955</div>
+          <div style="color: var(--foreground-muted); font-size: 0.85rem; margin-top: 4px;" id="modal-school-grade">8B • Debebech (Adama)</div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 14px; border: 1px solid var(--border); font-size: 0.85rem;">
+        <div><strong style="color:var(--foreground-subtle);">Phone:</strong> <span id="modal-phone">-</span></div>
+        <div><strong style="color:var(--foreground-subtle);">Roll No:</strong> <span id="modal-roll">-</span></div>
+        <div><strong style="color:var(--foreground-subtle);">Sex:</strong> <span id="modal-sex">Female</span></div>
+        <div><strong style="color:var(--foreground-subtle);">Sender:</strong> <span id="modal-sender">abeni1</span></div>
+        <div style="grid-column: span 2;"><strong style="color:var(--foreground-subtle);">Sent At:</strong> <span id="modal-sent-at" style="font-family: 'JetBrains Mono';">2026-10-08 10:30:32 UTC</span></div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; margin-top: 1.5rem;">
+        <button class="cool-btn-hover" style="padding: 0.6rem 1rem; border-radius: 10px; background: var(--surface-secondary); color: #fff; font-size: 0.8rem; border: 1px solid var(--border); cursor: pointer;" onclick="previewInPrint()">
+          Open in 8-Up Print Engine
+        </button>
+        <button class="cool-btn-hover" style="padding: 0.6rem 1rem; border-radius: 10px; background: #8fe617; color: #062404; font-size: 0.8rem; font-weight: 700; border: none; cursor: pointer;" onclick="downloadModalPhoto()">
+          Download Classified Photo
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- JAVASCRIPT APPLICATION CORE -->
+  <!-- ===================================================================== -->
+  <script>
+    // State
+    let allStudents = [];
+    let filteredStudents = [];
+    let allUsers = [];
+    let selectedStudentIds = new Set();
+    let currentRole = "SUPER_ADMIN";
+    let activeModalStudent = null;
+    let isZipCancelled = false;
+    let currentView = "students";
+
+    // Pagination
+    let currentPage = 1;
+    let pageSize = 500; // Requirement: 500 in first page
+
+    // Branch Schools (Including Harrer / Harar -> High Tech)
+    const BRANCH_SCHOOLS = {
+      "Harrer": ["High Tech"],
+      "Harar": ["High Tech"],
+      "Adama": ["Sena Yerosen", "Debebech", "Yacine", "Odda"],
+      "Addis Ababa": ["YMS", "Adika Youth", "School Of America", "Warka"],
+      "Mojjo": ["Mojjo"]
+    };
+
+    // Navigation Definitions per Role (Authentic from DashboardShell.tsx)
+    const ROLE_NAV = {
+      SUPER_ADMIN: {
+        title: "Super Admin Console",
+        status: "Full System Control",
+        items: [
+          { id: "dashboard", label: "Live Dashboard & Metrics", icon: "layout-dashboard" },
+          { id: "students", label: "Student Directory & Records", icon: "users" },
+          { id: "print", label: "8-Up Print Engine", icon: "printer" },
+          { id: "register", label: "Student Registration", icon: "user-plus" },
+          { id: "admin", label: "Provision Operators & RBAC", icon: "shield" }
+        ]
+      },
+      ADMIN: {
+        title: "Sender Supervision Admin",
+        status: "Supervision Only",
+        items: [
+          { id: "admin", label: "Sender Telemetry & Velocity", icon: "zap" },
+          { id: "dashboard", label: "Live Metrics Summary", icon: "layout-dashboard" }
+        ]
+      },
+      SENDER: {
+        title: "Sender Workstation",
+        status: "Station Active",
+        items: [
+          { id: "register", label: "Student Registration", icon: "user-plus" },
+          { id: "students", label: "My Enrolled Records", icon: "users" }
+        ]
+      },
+      RECEIVER: {
+        title: "Receiver Facility",
+        status: "Production Station",
+        items: [
+          { id: "dashboard", label: "Live Production Metrics", icon: "layout-dashboard" },
+          { id: "students", label: "Student Directory", icon: "users" },
+          { id: "print", label: "8-Up Print Engine", icon: "printer" }
+        ]
+      }
+    };
+
+    // Init App
+    window.addEventListener("DOMContentLoaded", async () => {
+      lucide.createIcons();
+      await loadDataset();
+      initGradeFilter();
+      initSenderFilter();
+      setRole("SUPER_ADMIN");
+      applyFilters();
+      renderUsersTable();
+      renderRecentStudentsFeed();
+      if (allStudents.length > 0) setupPrintCard(allStudents[0]);
+    });
+
+    // Load Data
+    async function loadDataset() {
+      try {
+        const [sRes, uRes] = await Promise.all([
+          fetch("/data/students.json"),
+          fetch("/data/users.json")
+        ]);
+        if (sRes.ok) allStudents = await sRes.json();
+        if (uRes.ok) allUsers = await uRes.json();
+      } catch (e) {
+        console.error("Failed loading data:", e);
+      }
+      document.getElementById("badge-total-students").textContent = `${allStudents.length.toLocaleString()} Students`;
+      document.getElementById("metric-total-students").textContent = allStudents.length.toLocaleString();
+      document.getElementById("metric-total-photos").textContent = allStudents.filter(s => s.photoPath).length.toLocaleString();
+    }
+
+    // Role Switcher
+    function setRole(role) {
+      currentRole = role;
+      document.querySelectorAll(".role-pill-btn").forEach(b => b.classList.remove("active"));
+      const btn = document.getElementById(`btn-role-${role.toLowerCase().replace('_', '')}`);
+      if (btn) btn.classList.add("active");
+
+      const conf = ROLE_NAV[role];
+      document.getElementById("drawer-role-title").textContent = conf.title;
+      document.getElementById("drawer-status-text").textContent = conf.status;
+
+      // Populate Drawer Nav
+      const nav = document.getElementById("drawer-nav-list");
+      nav.innerHTML = conf.items.map(item => `
+        <button 
+          class="drawer-nav-item ${item.id === currentView ? 'active' : ''}" 
+          onclick="navigateTo('${item.id}'); closeDrawer();"
+        >
+          <i data-lucide="${item.icon}" style="width: 16px; height: 16px;"></i>
+          <span>${item.label}</span>
+        </button>
+      `).join("");
+      lucide.createIcons();
+
+      // Default landing page per role
+      if (role === "SENDER" && currentView !== "register") navigateTo("register");
+      else if (role === "ADMIN" && currentView !== "admin") navigateTo("admin");
+    }
+
+    // Navigation Switcher
+    function navigateTo(viewId) {
+      currentView = viewId;
+      const views = ["students", "register", "dashboard", "admin", "print"];
+      views.forEach(v => {
+        const el = document.getElementById(`view-${v}`);
+        if (el) el.style.display = (v === viewId) ? "block" : "none";
+      });
+      setRole(currentRole); // update active highlight in drawer
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function handleBrandClick() {
+      if (currentRole === "SENDER") navigateTo("register");
+      else if (currentRole === "ADMIN") navigateTo("admin");
+      else navigateTo("students");
+    }
+
+    // Drawer Controls
+    function openDrawer() { document.getElementById("drawer-modal").classList.add("open"); }
+    function closeDrawer() { document.getElementById("drawer-modal").classList.remove("open"); }
+    function handleDrawerBackdropClick(e) { if (e.target.id === "drawer-modal") closeDrawer(); }
+
+    // Theme Toggle
+    function toggleTheme() {
+      document.documentElement.classList.toggle("dark");
+    }
+
+    // Populate Filters
+    function initGradeFilter() {
+      const counts = {};
+      allStudents.forEach(s => counts[s.grade || "Unknown"] = (counts[s.grade || "Unknown"] || 0) + 1);
+      const sel = document.getElementById("filter-grade");
+      sel.innerHTML = '<option value="ALL">All Grades (All)</option>';
+      Object.keys(counts).sort().forEach(g => {
+        const o = document.createElement("option");
+        o.value = g;
+        o.textContent = `Grade ${g} (${counts[g]})`;
+        sel.appendChild(o);
+      });
+    }
+
+    function initSenderFilter() {
+      const senders = new Set();
+      allStudents.forEach(s => { if (s.senderName) senders.add(s.senderName); });
+      const sel = document.getElementById("filter-sender");
+      sel.innerHTML = '<option value="ALL">All Senders</option>';
+      Array.from(senders).sort().forEach(s => {
+        const o = document.createElement("option");
+        o.value = s;
+        o.textContent = s;
+        sel.appendChild(o);
+      });
+    }
+
+    // Search & Filtering
+    function handleSearchChange() { currentPage = 1; applyFilters(); }
+    function handleFilterChange() { currentPage = 1; applyFilters(); }
+
+    function applyFilters() {
+      const q = (document.getElementById("student-search-input").value || "").trim().toLowerCase();
+      const grade = document.getElementById("filter-grade").value;
+      const school = document.getElementById("filter-school").value;
+      const sender = document.getElementById("filter-sender").value;
+      const photo = document.getElementById("filter-photo").value;
+
+      filteredStudents = allStudents.filter(s => {
+        if (q) {
+          const m = (s.fullName || "").toLowerCase().includes(q) ||
+                    (s.studentId || "").toLowerCase().includes(q) ||
+                    (s.rollNumber || "").toLowerCase().includes(q) ||
+                    (s.phone || "").toLowerCase().includes(q);
+          if (!m) return false;
+        }
+        if (grade !== "ALL" && s.grade !== grade) return false;
+        if (school !== "ALL" && !(s.school || "").toLowerCase().includes(school.toLowerCase())) return false;
+        if (sender !== "ALL" && s.senderName !== sender) return false;
+        if (photo === "HAS_PHOTO" && !s.photoPath) return false;
+        if (photo === "MISSING_PHOTO" && s.photoPath) return false;
+        return true;
+      });
+
+      renderTable();
+      renderPagination();
+    }
+
+    function resetDirectoryFilters() {
+      document.getElementById("student-search-input").value = "";
+      document.getElementById("filter-grade").value = "ALL";
+      document.getElementById("filter-school").value = "ALL";
+      document.getElementById("filter-sender").value = "ALL";
+      document.getElementById("filter-photo").value = "ALL";
+      currentPage = 1;
+      applyFilters();
+    }
+
+    function setPageSize(val) {
+      pageSize = parseInt(val, 10);
+      currentPage = 1;
+      renderTable();
+      renderPagination();
+    }
+
+    // Format Date & Time cleanly
+    function formatDateTime(str) {
+      if (!str) return "-";
+      try {
+        const d = new Date(str);
+        if (isNaN(d.getTime())) return str;
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      } catch { return str; }
+    }
+
+    function isEncoded(s) {
+      return Boolean((s.recordsEncoded && s.recordsEncoded > 0) || s.photoIntegrityStatus === "PHOTO_VERIFIED" || (s.qrCodeData && s.qrCodeData.trim() !== ""));
+    }
+
+    // Render Table (500 records on Page 1)
+    function renderTable() {
+      const tbody = document.getElementById("student-table-body");
+      if (filteredStudents.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:3rem; color:var(--foreground-muted);">No student records matched your search.</td></tr>`;
+        return;
+      }
+
+      const start = (currentPage - 1) * pageSize;
+      const end = Math.min(start + pageSize, filteredStudents.length);
+      const slice = filteredStudents.slice(start, end);
+
+      let html = "";
+      for (const s of slice) {
+        const isSel = selectedStudentIds.has(s.id);
+        const enc = isEncoded(s);
+        const photoUrl = s.previewPath || s.photoPath || "/logo.png";
+        const dateStr = formatDateTime(s.createdAt);
+
+        html += `
+          <tr class="${isSel ? 'selected' : ''}">
+            <td style="text-align:center;">
+              <input type="checkbox" onchange="toggleSelect('${s.id}', this.checked)" ${isSel ? 'checked' : ''} />
+            </td>
+            <td>
+              <img 
+                src="${photoUrl}" 
+                alt="${s.fullName}" 
+                style="width: 44px; height: 52px; border-radius: 8px; object-fit: cover; border: 1px solid var(--border); cursor: pointer;"
+                onclick="showStudentModal('${s.id}')"
+                loading="lazy"
+                onerror="this.src='/logo.png'"
+              />
+            </td>
+            <td>
+              <div style="font-weight: 700; color: #fff;">${escapeHtml(s.fullName)}</div>
+              <div style="display: flex; gap: 4px; align-items: center; margin-top: 2px;">
+                <span class="badge" style="background: rgba(143,230,23,0.12); color: #8fe617; font-family: 'JetBrains Mono'; font-size: 0.7rem;">
+                  ${escapeHtml(s.studentId)}
+                </span>
+                ${s.rollNumber ? `<span style="font-size:0.7rem; color:var(--foreground-subtle);">Roll: ${escapeHtml(s.rollNumber)}</span>` : ''}
+              </div>
+            </td>
+            <td><span class="badge badge-grade">Grade ${escapeHtml(s.grade || '-')}</span></td>
+            <td>
+              <div style="font-weight: 600;">${escapeHtml(s.school || 'High Tech')}</div>
+              <div style="font-size: 0.72rem; color: var(--foreground-subtle);">${escapeHtml(s.address || 'Campus')}</div>
+            </td>
+            <!-- Sent At Column -->
+            <td>
+              <div style="font-family:'JetBrains Mono'; font-size:0.75rem; color:#94a3b8; display:flex; align-items:center; gap:4px;">
+                <i data-lucide="clock" style="width:13px; height:13px; color:#8fe617;"></i>
+                <span>${dateStr}</span>
+              </div>
+            </td>
+            <td>
+              <span class="badge" style="background: rgba(255,255,255,0.06); color: #cbd5e1;">
+                ${escapeHtml(s.senderName || 'system')}
+              </span>
+            </td>
+            <td>
+              ${enc ? 
+                `<span class="badge badge-encoded">Encoded</span>` : 
+                `<span class="badge badge-unencoded">Unencoded</span>`
+              }
+            </td>
+            <td style="text-align: right; white-space: nowrap;">
+              <button class="cool-btn-hover" style="padding: 5px 8px; border-radius: 8px; background: var(--surface-secondary); border: 1px solid var(--border); color: #fff; cursor: pointer;" onclick="downloadSinglePhoto('${s.id}')" title="Download Classified Photo">
+                <i data-lucide="download" style="width:13px; height:13px;"></i>
+              </button>
+              <button class="cool-btn-hover" style="padding: 5px 8px; border-radius: 8px; background: var(--surface-secondary); border: 1px solid var(--border); color: #fff; cursor: pointer;" onclick="showStudentModal('${s.id}')" title="Profile & QR">
+                <i data-lucide="eye" style="width:13px; height:13px;"></i>
+              </button>
+            </td>
+          </tr>
+        `;
+      }
+
+      tbody.innerHTML = html;
+      lucide.createIcons();
+      updateSelectAllBox();
+    }
+
+    // Pagination (Top & Bottom)
+    function renderPagination() {
+      const totalPages = Math.ceil(filteredStudents.length / pageSize) || 1;
+      const start = (currentPage - 1) * pageSize + 1;
+      const end = Math.min(currentPage * pageSize, filteredStudents.length);
+      const text = `Showing <strong>${start.toLocaleString()} – ${end.toLocaleString()}</strong> of <strong>${filteredStudents.length.toLocaleString()}</strong> students`;
+
+      document.getElementById("page-info-top").innerHTML = text;
+      document.getElementById("page-info-bottom").innerHTML = text;
+
+      const buildBtns = () => {
+        let b = `<button class="page-btn" onclick="goToPage(1)" ${currentPage===1?'disabled':''}>«</button>`;
+        b += `<button class="page-btn" onclick="goToPage(${currentPage-1})" ${currentPage===1?'disabled':''}>‹</button>`;
+        for (let p = 1; p <= totalPages; p++) {
+          if (p === 1 || p === totalPages || (p >= currentPage - 2 && p <= currentPage + 2)) {
+            b += `<button class="page-btn ${p===currentPage?'active':''}" onclick="goToPage(${p})">${p}</button>`;
+          } else if (p === currentPage - 3 || p === currentPage + 3) {
+            b += `<span style="padding: 0 4px; color: var(--foreground-subtle);">...</span>`;
+          }
+        }
+        b += `<button class="page-btn" onclick="goToPage(${currentPage+1})" ${currentPage===totalPages?'disabled':''}>›</button>`;
+        b += `<button class="page-btn" onclick="goToPage(${totalPages})" ${currentPage===totalPages?'disabled':''}>»</button>`;
+        return b;
+      };
+
+      const btnsHtml = buildBtns();
+      document.getElementById("page-btns-top").innerHTML = btnsHtml;
+      document.getElementById("page-btns-bottom").innerHTML = btnsHtml;
+    }
+
+    function goToPage(p) {
+      const totalPages = Math.ceil(filteredStudents.length / pageSize) || 1;
+      if (p < 1 || p > totalPages) return;
+      currentPage = p;
+      renderTable();
+      renderPagination();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // Multi-Select
+    function toggleSelect(id, checked) {
+      if (checked) selectedStudentIds.add(id);
+      else selectedStudentIds.delete(id);
+      updateSelectionBar();
+      updateSelectAllBox();
+    }
+
+    function toggleSelectAllPage(checked) {
+      const start = (currentPage - 1) * pageSize;
+      const end = Math.min(start + pageSize, filteredStudents.length);
+      filteredStudents.slice(start, end).forEach(s => {
+        if (checked) selectedStudentIds.add(s.id);
+        else selectedStudentIds.delete(s.id);
+      });
+      renderTable();
+      updateSelectionBar();
+    }
+
+    function updateSelectAllBox() {
+      const cb = document.getElementById("cb-select-all");
+      if (!cb) return;
+      const start = (currentPage - 1) * pageSize;
+      const end = Math.min(start + pageSize, filteredStudents.length);
+      const slice = filteredStudents.slice(start, end);
+      if (slice.length === 0) { cb.checked = false; return; }
+      cb.checked = slice.every(s => selectedStudentIds.has(s.id));
+    }
+
+    function clearSelection() {
+      selectedStudentIds.clear();
+      renderTable();
+      updateSelectionBar();
+    }
+
+    function updateSelectionBar() {
+      const bar = document.getElementById("selection-bar");
+      const txt = document.getElementById("selection-count-text");
+      if (selectedStudentIds.size > 0) {
+        bar.style.display = "flex";
+        txt.textContent = `${selectedStudentIds.size.toLocaleString()} students selected`;
+      } else {
+        bar.style.display = "none";
+      }
+    }
+
+    // Single Classified Download
+    function downloadSinglePhoto(id) {
+      const s = allStudents.find(x => x.id === id);
+      if (!s || !s.photoPath) { alert("Student has no photo"); return; }
+      const prefix = isEncoded(s) ? "Encoded_" : "Unencoded_";
+      const cleanName = (s.fullName || "Student").replace(/[^a-zA-Z0-9_\-\s]/g, "");
+      const fileName = `${prefix}${s.studentId}_${cleanName}.jpg`;
+      const url = `/api/proxy-photo?url=${encodeURIComponent(s.photoPath)}&filename=${encodeURIComponent(fileName)}&download=1`;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    // Bulk Classified ZIP
+    async function downloadSelectedPhotosZip() {
+      const list = allStudents.filter(s => selectedStudentIds.has(s.id) && s.photoPath);
+      if (list.length === 0) { alert("None of the selected students have photos"); return; }
+
+      const modal = document.getElementById("zip-modal");
+      modal.classList.add("open");
+      isZipCancelled = false;
+
+      const zip = new JSZip();
+      const encFolder = zip.folder("Encoded");
+      const unencFolder = zip.folder("Unencoded");
+
+      let done = 0;
+      const total = list.length;
+      const concurrency = 6;
+
+      for (let i = 0; i < total; i += concurrency) {
+        if (isZipCancelled) break;
+        const chunk = list.slice(i, i + concurrency);
+        await Promise.all(chunk.map(async (student) => {
+          if (isZipCancelled) return;
+          try {
+            const clean = (student.fullName || "Student").replace(/[^a-zA-Z0-9_\-\s]/g, "");
+            const fname = `${student.studentId}_${clean}.jpg`;
+            const r = await fetch(`/api/proxy-photo?url=${encodeURIComponent(student.photoPath)}`);
+            if (r.ok) {
+              const b = await r.blob();
+              if (isEncoded(student)) encFolder.file(fname, b);
+              else unencFolder.file(fname, b);
+            }
+          } catch {}
+          done++;
+          const pct = Math.round((done / total) * 100);
+          document.getElementById("zip-progress-fill").style.width = `${pct}%`;
+          document.getElementById("zip-progress-percent").textContent = `${pct}%`;
+          document.getElementById("zip-progress-count").textContent = `${done} / ${total} downloaded`;
+        }));
+      }
+
+      if (!isZipCancelled) {
+        document.getElementById("zip-status-text").textContent = "Packaging ZIP archive...";
+        const blob = await zip.generateAsync({ type: "blob" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `student_photos_classified_${Date.now()}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+      setTimeout(() => modal.classList.remove("open"), 800);
+    }
+
+    function cancelZipDownload() {
+      isZipCancelled = true;
+      document.getElementById("zip-modal").classList.remove("open");
+    }
+
+    // Excel Export
+    function exportToExcel() {
+      const data = filteredStudents.map(s => ({
+        "Student ID": s.studentId,
+        "Full Name": s.fullName,
+        "Grade": s.grade,
+        "School": s.school,
+        "Regional Branch": s.address,
+        "Phone": s.phone,
+        "Roll No": s.rollNumber,
+        "Sex": s.sex,
+        "Sent At": formatDateTime(s.createdAt),
+        "Sender": s.senderName,
+        "Classification": isEncoded(s) ? "Encoded" : "Unencoded",
+        "Photo URL": s.photoPath || ""
+      }));
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Students");
+      XLSX.writeFile(wb, `SiliconLabs_StudentBridge_${Date.now()}.xlsx`);
+    }
+
+    // CSV Export
+    function exportToCSV() {
+      const h = ["Student ID", "Full Name", "Grade", "School", "Branch", "Phone", "Sent At", "Sender", "Classification"];
+      const r = filteredStudents.map(s => [
+        s.studentId, `"${(s.fullName||'').replace(/"/g,'""')}"`, s.grade, `"${(s.school||'').replace(/"/g,'""')}"`,
+        `"${(s.address||'').replace(/"/g,'""')}"`, s.phone, `"${formatDateTime(s.createdAt)}"`, s.senderName, isEncoded(s)?"Encoded":"Unencoded"
+      ]);
+      const csv = [h.join(","), ...r.map(x => x.join(","))].join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `SiliconLabs_StudentBridge_${Date.now()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    // Student Modal
+    function showStudentModal(id) {
+      const s = allStudents.find(x => x.id === id);
+      if (!s) return;
+      activeModalStudent = s;
+      document.getElementById("modal-name").textContent = s.fullName;
+      document.getElementById("modal-id").textContent = s.studentId;
+      document.getElementById("modal-school-grade").textContent = `${s.grade||'-'} • ${s.school||'High Tech'} (${s.address||'Harrer'})`;
+      document.getElementById("modal-phone").textContent = s.phone || "-";
+      document.getElementById("modal-roll").textContent = s.rollNumber || "-";
+      document.getElementById("modal-sex").textContent = s.sex || "Female";
+      document.getElementById("modal-sender").textContent = s.senderName || "system";
+      document.getElementById("modal-sent-at").textContent = formatDateTime(s.createdAt);
+      document.getElementById("modal-photo").src = s.previewPath || s.photoPath || "/logo.png";
+
+      const b = document.getElementById("modal-badge-encoded");
+      if (isEncoded(s)) {
+        b.className = "badge badge-encoded";
+        b.textContent = "ENCODED & VERIFIED";
+      } else {
+        b.className = "badge badge-unencoded";
+        b.textContent = "UNENCODED";
+      }
+      document.getElementById("student-modal").classList.add("open");
+    }
+
+    function closeStudentModal() {
+      document.getElementById("student-modal").classList.remove("open");
+    }
+
+    function downloadModalPhoto() {
+      if (activeModalStudent) downloadSinglePhoto(activeModalStudent.id);
+    }
+
+    function previewInPrint() {
+      if (activeModalStudent) {
+        closeStudentModal();
+        setupPrintCard(activeModalStudent);
+        navigateTo("print");
+      }
+    }
+
+    // Print Card Setup
+    function setupPrintCard(s) {
+      document.getElementById("card-print-name").textContent = s.fullName || "Student Name";
+      document.getElementById("card-print-id").textContent = s.studentId || "SB-2026-00000";
+      document.getElementById("card-print-grade").textContent = `Grade: ${s.grade || '8B'} • Academic Year: 2026-2027`;
+      document.getElementById("card-print-school").textContent = `${s.school || 'HIGH TECH'} • ${s.address || 'HARRER'}`;
+      document.getElementById("card-print-photo").src = s.photoPath || "/logo.png";
+
+      const qrBox = document.getElementById("card-qr-box");
+      qrBox.innerHTML = "";
+      new QRCode(qrBox, {
+        text: s.qrCodeData || JSON.stringify({ id: s.studentId, name: s.fullName, grade: s.grade }),
+        width: 130, height: 130, colorDark: "#000", colorLight: "#fff", correctLevel: QRCode.CorrectLevel.M
+      });
+    }
+
+    // Branch Selection (Sender Workstation)
+    function handleBranchSelect(b) {
+      const sel = document.getElementById("reg-school");
+      sel.innerHTML = "";
+      const schools = BRANCH_SCHOOLS[b] || ["High Tech"];
+      schools.forEach(sch => {
+        const o = document.createElement("option");
+        o.value = sch;
+        o.textContent = sch;
+        sel.appendChild(o);
+      });
+    }
+
+    function updatePhotoPreview(url) {
+      const box = document.getElementById("photo-preview-box");
+      if (url && url.trim().startsWith("http")) {
+        box.innerHTML = `<img src="${url}" style="width:100%; height:100%; object-fit:cover;" />`;
+      } else {
+        box.innerHTML = `<i data-lucide="camera" style="width:32px; height:32px; color:var(--foreground-subtle);"></i>`;
+        lucide.createIcons();
+      }
+    }
+
+    function generateRandomStudentId() {
+      const r = Math.floor(10000 + Math.random() * 90000);
+      document.getElementById("reg-studentid").value = `SB-2026-${r}`;
+    }
+
+    function handleEnrollStudent(e) {
+      e.preventDefault();
+      const s = {
+        id: "sl_" + Date.now(),
+        studentId: document.getElementById("reg-studentid").value.trim(),
+        fullName: document.getElementById("reg-fullname").value.trim(),
+        phone: document.getElementById("reg-phone").value.trim(),
+        sex: document.getElementById("reg-sex").value,
+        grade: document.getElementById("reg-grade").value.trim(),
+        rollNumber: document.getElementById("reg-roll").value.trim(),
+        address: document.getElementById("reg-branch").value,
+        school: document.getElementById("reg-school").value,
+        photoPath: document.getElementById("reg-photo-url").value.trim() || "/logo.png",
+        previewPath: document.getElementById("reg-photo-url").value.trim() || "/logo.png",
+        createdAt: new Date().toISOString(),
+        senderName: "miskrdires11",
+        photoIntegrityStatus: "PHOTO_VERIFIED",
+        hasMistake: false
+      };
+
+      allStudents.unshift(s);
+      alert(`Student ${s.fullName} registered successfully at ${s.school} (${s.address})!`);
+      document.getElementById("form-register-student").reset();
+      generateRandomStudentId();
+      handleBranchSelect("Harrer");
+      navigateTo("students");
+      applyFilters();
+    }
+
+    // Super Admin Table
+    function renderUsersTable() {
+      const tb = document.getElementById("admin-users-tbody");
+      if (!tb) return;
+      tb.innerHTML = allUsers.map(u => `
+        <tr>
+          <td><strong style="color:#fff;">${escapeHtml(u.email)}</strong></td>
+          <td>${escapeHtml(u.username || '-')}</td>
+          <td>
+            <span class="badge ${u.role === 'SUPER_ADMIN' ? 'badge-encoded' : 'badge-grade'}">
+              ${escapeHtml(u.role)}
+            </span>
+          </td>
+          <td style="font-size:0.75rem; color:var(--foreground-subtle);">${escapeHtml(u.boundDeviceInfo || 'Browser Bound')}</td>
+          <td>${u.workSessionCount || 0}</td>
+          <td>${u.recordsSentSingle || 0}</td>
+          <td>${u.recordsEncoded || 0}</td>
+          <td style="text-align: right;">
+            <button class="cool-btn-hover" style="padding: 4px 8px; border-radius: 8px; background: var(--surface-secondary); color: #8fe617; border: 1px solid var(--border); font-size: 0.75rem; cursor: pointer;" onclick="alert('Device lock reset for ${u.email}')">
+              Reset Lock
+            </button>
+          </td>
+        </tr>
+      `).join("");
+    }
+
+    // Recent Feed
+    function renderRecentStudentsFeed() {
+      const tb = document.getElementById("recent-students-tbody");
+      if (!tb) return;
+      const sample = allStudents.slice(0, 15);
+      tb.innerHTML = sample.map(s => `
+        <tr>
+          <td>
+            <div style="font-weight:700;">${escapeHtml(s.fullName)}</div>
+            <div style="font-family:'JetBrains Mono'; font-size:0.75rem; color:#8fe617;">${escapeHtml(s.studentId)}</div>
+          </td>
+          <td>Grade ${escapeHtml(s.grade || '-')}</td>
+          <td>${escapeHtml(s.school || 'High Tech')}</td>
+          <td style="font-family:'JetBrains Mono'; font-size:0.75rem;">${formatDateTime(s.createdAt)}</td>
+          <td>${escapeHtml(s.senderName || 'system')}</td>
+          <td><span class="badge badge-encoded">Verified</span></td>
+          <td style="text-align: right;">
+            <button class="cool-btn-hover" style="padding: 4px 8px; border-radius: 8px; background: var(--surface-secondary); color: #fff; border: 1px solid var(--border); font-size: 0.75rem; cursor: pointer;" onclick="showStudentModal('${s.id}')">
+              Inspect
+            </button>
+          </td>
+        </tr>
+      `).join("");
+    }
+
+    // Sign In Modal
+    function showSignInModal() { document.getElementById("signin-modal").classList.add("open"); }
+    function closeSignInModal() { document.getElementById("signin-modal").classList.remove("open"); }
+    function handleModalSignIn(e) {
+      e.preventDefault();
+      const email = document.getElementById("signin-email").value.trim();
+      const found = allUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
+      if (found) {
+        setRole(found.role);
+        document.getElementById("current-user-badge").textContent = found.email;
+        document.getElementById("drawer-username").textContent = found.username || found.email.split('@')[0];
+        alert(`Welcome, ${found.username}! Authenticated as ${found.role}.`);
+      } else {
+        alert("Authenticated as " + email);
+      }
+      closeSignInModal();
+    }
+
+    function escapeHtml(s) {
+      if (!s) return "";
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    }
+  </script>
+</body>
+</html>
