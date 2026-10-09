@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f4f7f5;
+  --surface: #ffffff;
+  --accent: #85e510;
+  --accent-glow: rgba(133, 229, 16, 0.4);
+  --foreground: #080808;
+  --foreground-muted: #3f4743;
+  --border: #d2e0d7;
+}
+
+.dark {
+  --background: #070908;
+  --surface: #101612;
+  --accent: #8fe617;
+  --accent-glow: rgba(143, 230, 23, 0.4);
+  --foreground: #f2f7f4;
+  --foreground-muted: #9eb2a6;
+  --border: #1e2c22;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: 'Inter', -apple-system, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom Badges */
+.badge-lime {
+  background: rgba(143, 230, 23, 0.15);
+  color: #8fe617;
+  border: 1px solid rgba(143, 230, 23, 0.3);
+}
+
+.badge-female {
+  background: rgba(147, 51, 234, 0.18);
+  color: #d8b4fe;
+  border: 1px solid rgba(147, 51, 234, 0.35);
+}
+
+.badge-male {
+  background: rgba(5, 150, 105, 0.18);
+  color: #6ee7b7;
+  border: 1px solid rgba(5, 150, 105, 0.35);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(143, 230, 23, 0.2);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(143, 230, 23, 0.4);
+}

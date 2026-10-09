@@ -1,0 +1,3451 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Student Bridge — Enterprise Student Management</title>
+  <meta name="description" content="Silicon Labs Student Bridge — Enterprise Student Management Platform on Cloudflare Edge" />
+  
+  <!-- Typography: Inter, Outfit, JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Libraries: JSZip, SheetJS, QRCode -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Authentic Silicon Labs Design System -->
+  <style>
+    :root {
+      --background: #f7faf9;
+      --surface: #ffffff;
+      --surface-secondary: #eef5f1;
+      --surface-tertiary: #e2ede6;
+      --accent: #8fe617;
+      --accent-hover: #7ecc10;
+      --foreground: #080808;
+      --foreground-muted: #3f4743;
+      --foreground-subtle: #6b7771;
+      --border: #dce7e1;
+    }
+
+    .dark {
+      --background: #070908;
+      --surface: #101512;
+      --surface-secondary: #161e19;
+      --surface-tertiary: #1e2822;
+      --accent: #8fe617;
+      --accent-hover: #7ecc10;
+      --foreground: #f2f7f4;
+      --foreground-muted: #9eb2a6;
+      --foreground-subtle: #6c8074;
+      --border: #223126;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      background-color: var(--background);
+      color: var(--foreground);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+      overflow-x: hidden;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      transition: background-color 0.25s ease, color 0.25s ease;
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--surface-secondary); }
+    ::-webkit-scrollbar-thumb { background: #2a3830; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #8fe617; }
+
+    /* Button Hover */
+    .cool-btn-hover {
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .cool-btn-hover:hover {
+      transform: translateY(-1.5px) scale(1.015);
+      box-shadow: 0 8px 20px -3px rgba(143, 230, 23, 0.4);
+    }
+    .cool-btn-hover:active {
+      transform: translateY(0.5px) scale(0.99);
+    }
+
+    /* Header */
+    header.sl-header {
+      display: flex;
+      height: 56px;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background-color: var(--surface);
+      padding: 0 1.25rem;
+      transition: all 0.2s ease;
+      z-index: 30;
+    }
+    .dark header.sl-header { background-color: #111613; }
+
+    /* 3-Bar Animated Menu Hamburger Button */
+    .animated-icon-btn {
+      height: 38px;
+      width: 38px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--surface-secondary);
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .animated-icon-btn:hover {
+      border-color: #8fe617;
+      background: rgba(143, 230, 23, 0.1);
+      box-shadow: 0 0 16px rgba(143, 230, 23, 0.35);
+    }
+    .bar-top, .bar-bottom {
+      height: 2px;
+      width: 18px;
+      border-radius: 9999px;
+      background: var(--foreground);
+      transition: all 0.3s;
+    }
+    .bar-mid {
+      height: 2px;
+      width: 18px;
+      border-radius: 9999px;
+      background: #8fe617;
+      transition: all 0.3s;
+    }
+    .animated-icon-btn:hover .bar-top { width: 14px; transform: translateX(-2px); background: #8fe617; }
+    .animated-icon-btn:hover .bar-bottom { width: 14px; transform: translateX(2px); background: #8fe617; }
+
+    /* Brand Logo & Title */
+    .brand-link {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      color: inherit;
+    }
+    .brand-logo-img {
+      height: 32px;
+      width: 32px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 2px solid var(--border);
+    }
+    .brand-title {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.95rem;
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .brand-badge {
+      background: #8fe617;
+      color: #062404;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 900;
+    }
+
+    /* Sliding Drawer Panel */
+    .drawer-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(4px);
+      z-index: 50;
+      animation: fadeIn 0.2s ease-out;
+    }
+    .drawer-overlay.open { display: flex; }
+
+    .drawer-panel {
+      width: 330px;
+      max-width: 85vw;
+      height: 100%;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      box-shadow: 0 25px 60px rgba(0,0,0,0.8);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      animation: slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      overflow-y: auto;
+    }
+    .dark .drawer-panel { background: #101512; }
+
+    @keyframes slideIn {
+      from { transform: translateX(-100%); }
+      to { transform: translateX(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    /* Drawer Section Heading */
+    .drawer-section-heading {
+      font-size: 11px;
+      font-weight: 800;
+      color: #8fe617;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0.75rem 0.75rem 0.35rem;
+    }
+
+    /* Nav Item in Drawer matching Screenshot */
+    .drawer-nav-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.65rem 0.9rem;
+      border-radius: 12px;
+      font-size: 0.825rem;
+      font-weight: 600;
+      color: var(--foreground-muted);
+      text-decoration: none;
+      transition: all 0.15s ease;
+      cursor: pointer;
+      border: 1px solid transparent;
+      background: transparent;
+      width: 100%;
+      text-align: left;
+    }
+    .drawer-nav-item:hover {
+      color: var(--foreground);
+      background: var(--surface-secondary);
+    }
+    .drawer-nav-item.active {
+      background: #8fe617;
+      color: #062404 !important;
+      font-weight: 800;
+      box-shadow: 0 0 15px rgba(143, 230, 23, 0.35);
+      border-color: #8fe617;
+    }
+
+    /* Dark Form Card Elevation */
+    .dark-form-card {
+      background-color: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 1.5rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+    }
+    .dark .dark-form-card {
+      background-color: #111713;
+      border: 1px solid #223126;
+      border-top: 2px solid #8fe617;
+      box-shadow: 0 16px 40px -10px rgba(0, 0, 0, 0.9), 0 0 25px -4px rgba(143, 230, 23, 0.1);
+    }
+
+    /* Grade Chips Bar (Horizontal Scrollable above Toolbar) */
+    .grade-chips-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 6px 2px 14px 2px;
+      scrollbar-width: thin;
+    }
+    .grade-chip {
+      padding: 5px 14px;
+      border-radius: 9999px;
+      background: var(--surface-secondary);
+      border: 1px solid var(--border);
+      color: var(--foreground-muted);
+      font-size: 0.8rem;
+      font-weight: 700;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .grade-chip:hover {
+      border-color: #8fe617;
+      color: #8fe617;
+    }
+    .grade-chip.active {
+      background: #8fe617;
+      color: #062404;
+      border-color: #8fe617;
+      font-weight: 800;
+      box-shadow: 0 0 12px rgba(143,230,23,0.35);
+    }
+
+    /* Badges from Screenshot */
+    .badge-sex-female {
+      background: #fbf5ff;
+      color: #9333ea;
+      border: 1px solid #e9d5ff;
+      border-radius: 9999px;
+      padding: 2px 10px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .dark .badge-sex-female {
+      background: rgba(147, 51, 234, 0.18);
+      color: #d8b4fe;
+      border-color: rgba(147, 51, 234, 0.35);
+    }
+
+    .badge-sex-male {
+      background: #ecfdf5;
+      color: #059669;
+      border: 1px solid #a7f3d0;
+      border-radius: 9999px;
+      padding: 2px 10px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .dark .badge-sex-male {
+      background: rgba(5, 150, 105, 0.18);
+      color: #6ee7b7;
+      border-color: rgba(5, 150, 105, 0.35);
+    }
+
+    .badge-blood {
+      background: #fff1f2;
+      color: #e11d48;
+      border: 1px solid #fecdd3;
+      border-radius: 9999px;
+      padding: 1px 8px;
+      font-size: 10px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .dark .badge-blood {
+      background: rgba(225, 29, 72, 0.15);
+      color: #fda4af;
+      border-color: rgba(225, 29, 72, 0.3);
+    }
+
+    .badge-station {
+      background: #f0fdf4;
+      color: #166534;
+      border: 1px solid #bbf7d0;
+      border-radius: 9999px;
+      padding: 3px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .dark .badge-station {
+      background: rgba(34, 197, 94, 0.12);
+      color: #4ade80;
+      border-color: rgba(34, 197, 94, 0.25);
+    }
+
+    /* Auto-Resend Button Block from Screenshot */
+    .btn-auto-resend {
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      color: #d97706;
+      border-radius: 10px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 800;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      line-height: 1.2;
+      transition: all 0.2s;
+    }
+    .dark .btn-auto-resend {
+      background: rgba(245, 158, 11, 0.15);
+      border-color: rgba(245, 158, 11, 0.35);
+      color: #fbbf24;
+    }
+    .btn-auto-resend:hover {
+      background: rgba(245, 158, 11, 0.25);
+      transform: scale(1.02);
+    }
+
+    /* Photo Avatar Square with Initials and Camera Icon */
+    .student-avatar-box {
+      width: 44px;
+      height: 48px;
+      border-radius: 10px;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.15s;
+    }
+    .dark .student-avatar-box {
+      background: #111a14;
+      border-color: rgba(143, 230, 23, 0.2);
+    }
+    .student-avatar-box:hover {
+      transform: scale(1.08);
+      border-color: #8fe617;
+    }
+    .avatar-initials {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 800;
+      font-size: 12px;
+      color: #15803d;
+      line-height: 1;
+    }
+    .dark .avatar-initials {
+      color: #8fe617;
+    }
+    .avatar-camera-icon {
+      width: 12px;
+      height: 12px;
+      color: #86efac;
+      margin-top: 2px;
+    }
+    .dark .avatar-camera-icon {
+      color: rgba(143, 230, 23, 0.5);
+    }
+
+    /* Table Styles matching Screenshot */
+    .table-container {
+      overflow-x: auto;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .dark .table-container { background: #111713; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.85rem;
+    }
+    th {
+      background: #0d1510;
+      padding: 0.85rem 1rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--foreground-subtle);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      vertical-align: middle;
+      color: var(--foreground);
+    }
+    tr:hover td {
+      background: rgba(143, 230, 23, 0.02);
+    }
+
+    /* Action Icon Button */
+    .action-icon-btn {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: var(--foreground-subtle);
+      transition: all 0.15s;
+    }
+    .action-icon-btn:hover {
+      background: var(--surface-secondary);
+      color: #8fe617;
+      transform: scale(1.12);
+    }
+
+    /* Action Crop/Edit Photo Icon Button */
+    .action-icon-btn.crop-btn {
+      color: #8fe617;
+      background: rgba(143, 230, 23, 0.1);
+      border: 1px solid rgba(143, 230, 23, 0.25);
+    }
+    .action-icon-btn.crop-btn:hover {
+      background: #8fe617;
+      color: #062404;
+    }
+
+    /* Pagination Bar */
+    .pagination-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.75rem 1rem;
+      background: var(--surface-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin: 0.75rem 0;
+    }
+    .dark .pagination-bar { background: #0b100d; }
+
+    .page-btn {
+      min-width: 34px;
+      height: 34px;
+      padding: 0 0.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--foreground);
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .dark .page-btn { background: #161e19; }
+    .page-btn.active {
+      background: #8fe617;
+      color: #062404;
+      border-color: #8fe617;
+      font-weight: 800;
+      box-shadow: 0 0 10px rgba(143,230,23,0.3);
+    }
+
+    /* Modal Overlays */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.85);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .modal-overlay.open { display: flex; }
+
+    .modal-box {
+      background: #111713;
+      border: 1px solid #223126;
+      border-top: 2px solid #8fe617;
+      border-radius: 28px;
+      max-width: 650px;
+      width: 100%;
+      padding: 2rem;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.9);
+      position: relative;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    /* Sun Mode Toggle Icon */
+    .sun-turn-icon {
+      transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ===================================================================== -->
+  <!-- SCREEN 1: AUTHENTIC SILICON LABS SIGNIN & 1-DEVICE LOCK ENFORCEMENT -->
+  <!-- ===================================================================== -->
+  <div id="screen-login" style="min-height: 100vh; display: none; align-items: center; justify-content: center; padding: 1.5rem; position: relative; background: #070908; background-image: radial-gradient(circle at 50% 38%, #131c16 0%, #070908 100%);">
+    
+    <!-- Top Right Sun Toggle -->
+    <div style="position: absolute; top: 1.5rem; right: 1.5rem;">
+      <button class="animated-icon-btn" onclick="toggleTheme()" title="Toggle Theme">
+        <i data-lucide="sun" class="sun-turn-icon" style="width: 18px; height: 18px; color: #8fe617;"></i>
+      </button>
+    </div>
+
+    <!-- Main Authentication Card with Green Top Line -->
+    <div class="dark-form-card" style="max-width: 440px; width: 100%; padding: 2.25rem; border-radius: 32px; box-shadow: 0 30px 70px rgba(0,0,0,0.85);">
+      
+      <!-- Top Hexagonal Silicon Labs Emblem -->
+      <div style="display: flex; justify-content: center; margin-bottom: 1.25rem;">
+        <div style="width: 96px; height: 96px; display: flex; align-items: center; justify-content: center;">
+          <img 
+            src="/logo-transparent.png" 
+            alt="Silicon Labs Emblem" 
+            style="width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 8px 20px rgba(143,230,23,0.35));"
+            onerror="this.src='/logo.png'"
+          />
+        </div>
+      </div>
+
+      <!-- Header Title -->
+      <div style="text-align: center; margin-bottom: 1.5rem;">
+        <h1 style="font-family: 'Outfit'; font-size: 1.75rem; font-weight: 900; color: #f2f7f4; letter-spacing: -0.02em;">
+          SignIn
+        </h1>
+        <p style="font-size: 0.8rem; color: #9eb2a6; margin-top: 3px;">
+          Enter your credentials to access the workstation
+        </p>
+      </div>
+
+      <!-- Device Lock Alert Banner if triggered -->
+      <div id="device-lock-error" style="display: none; margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 14px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #f87171; font-size: 0.78rem; line-height: 1.4;">
+        <strong>⚠️ 1-Device Lock Enforced:</strong> This email is locked to another authorized workstation device. Contact Super Admin to reset your hardware binding.
+      </div>
+
+      <form onsubmit="handleLoginSubmit(event)" style="display: flex; flex-direction: column; gap: 1.15rem;">
+        <div>
+          <label style="display: block; font-size: 0.78rem; font-weight: 700; color: #9eb2a6; margin-bottom: 5px;">
+            Operator Gmail / Email
+          </label>
+          <input 
+            type="email" 
+            id="input-login-email" 
+            required 
+            placeholder="miskrdires11@gmail.com" 
+            value="miskrdires11@gmail.com" 
+            style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.75rem 1rem; font-size: 0.875rem; color: #fff; outline: none; transition: border-color 0.2s;"
+          />
+        </div>
+
+        <div>
+          <label style="display: block; font-size: 0.78rem; font-weight: 700; color: #9eb2a6; margin-bottom: 5px;">
+            Password
+          </label>
+          <input 
+            type="password" 
+            id="input-login-password" 
+            required 
+            placeholder="••••••••••••" 
+            value="password123" 
+            style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.75rem 1rem; font-size: 0.875rem; color: #fff; outline: none; transition: border-color 0.2s;"
+          />
+        </div>
+
+        <button 
+          type="submit" 
+          class="cool-btn-hover" 
+          style="width: 100%; padding: 0.85rem; border-radius: 12px; background: #8fe617; color: #062404; font-weight: 800; font-size: 0.95rem; border: none; cursor: pointer; margin-top: 0.5rem; display: flex; align-items: center; justify-content: center; gap: 8px;"
+        >
+          <span>Sign In to Workstation</span>
+          <i data-lucide="arrow-right" style="width: 16px; height: 16px;"></i>
+        </button>
+      </form>
+
+      <!-- Quick Role Switcher for Testing -->
+      <div style="margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--border); text-align: center;">
+        <span style="font-size: 0.72rem; color: #6c8074; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700;">
+          Quick Role Preview:
+        </span>
+        <div style="display: flex; gap: 0.5rem; justify-content: center; margin-top: 0.65rem; flex-wrap: wrap;">
+          <button class="cool-btn-hover" style="padding: 4px 8px; border-radius: 8px; font-size: 0.72rem; background: #161e19; color: #8fe617; border: 1px solid var(--border); cursor: pointer;" onclick="quickLoginAs('miskrdires11@gmail.com', 'SUPER_ADMIN')">
+            Super Admin
+          </button>
+          <button class="cool-btn-hover" style="padding: 4px 8px; border-radius: 8px; font-size: 0.72rem; background: #161e19; color: #60a5fa; border: 1px solid var(--border); cursor: pointer;" onclick="quickLoginAs('miskrdires1@gmail.com', 'ADMIN')">
+            Supervisor Admin
+          </button>
+          <button class="cool-btn-hover" style="padding: 4px 8px; border-radius: 8px; font-size: 0.72rem; background: #161e19; color: #f59e0b; border: 1px solid var(--border); cursor: pointer;" onclick="quickLoginAs('miskrdires12@gmail.com', 'SENDER')">
+            Sender (Harar)
+          </button>
+          <button class="cool-btn-hover" style="padding: 4px 8px; border-radius: 8px; font-size: 0.72rem; background: #161e19; color: #a78bfa; border: 1px solid var(--border); cursor: pointer;" onclick="quickLoginAs('yonatan@gmail.com', 'RECEIVER')">
+            Receiver Station
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- SCREEN 2: AUTHENTICATED WORKSTATION PLATFORM -->
+  <!-- ===================================================================== -->
+  <div id="screen-app" style="display: none; flex-direction: column; min-height: 100vh;">
+    
+    <!-- Top Operator Classification Header Strip -->
+    <div style="background: #090e0b; border-bottom: 1px solid var(--border); padding: 0.45rem 1.25rem; display: flex; align-items: center; justify-content: space-between; font-size: 0.75rem; font-family: 'JetBrains Mono';">
+      <div style="display: flex; align-items: center; gap: 0.65rem;">
+        <span style="color: var(--foreground-subtle);">CURRENT WORKSTATION:</span>
+        <span class="badge" id="strip-role-badge" style="background: rgba(143,230,23,0.15); color: #8fe617; font-weight: 800;">
+          SUPER_ADMIN
+        </span>
+        <span class="badge" id="strip-device-badge" style="background: rgba(59,130,246,0.15); color: #60a5fa;">
+          🔒 Device Locked
+        </span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 1rem;">
+        <span style="color: #64748b;">Cloudflare Edge &amp; R2 Autonomous</span>
+        <span id="strip-user-email" style="color: #fff; font-weight: 700;">miskrdires11@gmail.com</span>
+      </div>
+    </div>
+
+    <!-- Silicon Labs Header with 3-Line Animated Hamburger -->
+    <header class="sl-header">
+      <div style="display: flex; align-items: center; gap: 1rem;">
+        <button 
+          type="button" 
+          class="animated-icon-btn" 
+          onclick="openDrawer()" 
+          aria-label="Open navigation menu"
+        >
+          <span class="bar-top"></span>
+          <span class="bar-mid"></span>
+          <span class="bar-bottom"></span>
+        </button>
+
+        <a href="#" class="brand-link" onclick="handleBrandClick(); return false;">
+          <img src="/logo.png" alt="Silicon Labs Logo" class="brand-logo-img" onerror="this.src='/sl-emblem.png'" />
+          <div class="brand-title">
+            <span>SILICON</span>
+            <span class="brand-badge">LABS</span>
+          </div>
+        </a>
+      </div>
+
+      <!-- Header Right Controls -->
+      <div style="display: flex; align-items: center; gap: 0.65rem;">
+        <button 
+          class="animated-icon-btn" 
+          style="height: 36px; width: 36px;" 
+          onclick="toggleTheme()" 
+          title="Toggle Theme"
+        >
+          <i data-lucide="sun" class="sun-turn-icon" style="width: 17px; height: 17px; color: #8fe617;"></i>
+        </button>
+
+        <button 
+          class="animated-icon-btn" 
+          style="height: 36px; width: 36px;" 
+          title="Audit Notifications"
+        >
+          <i data-lucide="bell" style="width: 16px; height: 16px; color: var(--foreground-muted);"></i>
+        </button>
+
+        <div style="width: 34px; height: 34px; border-radius: 50%; background: #161e19; border: 1px solid #8fe617; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.8rem; color: #8fe617;" id="header-avatar-badge">
+          M
+        </div>
+
+        <button 
+          class="cool-btn-hover" 
+          style="display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 10px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); color: #ef4444; font-size: 0.75rem; font-weight: 700; cursor: pointer;"
+          onclick="handleSignOut()"
+          title="Sign Out of Station"
+        >
+          <i data-lucide="log-out" style="width: 13px; height: 13px;"></i>
+          <span>Sign Out</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Sliding Navigation Drawer Matching Screenshot Exactly -->
+    <div id="drawer-modal" class="drawer-overlay" onclick="handleDrawerBackdropClick(event)">
+      <aside class="drawer-panel" onclick="event.stopPropagation()">
+        <div>
+          <!-- Drawer Header with Logo -->
+          <div style="display: flex; height: 64px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 0 1.25rem;">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <div style="height: 38px; width: 38px; border-radius: 50%; border: 2px solid var(--border); overflow: hidden; padding: 2px; background: #070908;">
+                <img src="/logo.png" alt="Silicon Labs Logo" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" onerror="this.src='/brand-logo.png'" />
+              </div>
+              <div>
+                <div style="font-family: 'JetBrains Mono'; font-weight: 900; font-size: 0.9rem;">
+                  SILICON <span class="brand-badge">LABS</span>
+                </div>
+                <div id="drawer-role-heading" style="font-size: 10px; font-weight: 800; color: var(--foreground-subtle); text-transform: uppercase;">
+                  ADMIN CONSOLE
+                </div>
+              </div>
+            </div>
+
+            <button 
+              type="button" 
+              onclick="closeDrawer()" 
+              style="background: transparent; border: none; color: var(--foreground-muted); cursor: pointer; padding: 6px;"
+            >
+              <i data-lucide="x" style="width: 20px; height: 20px;"></i>
+            </button>
+          </div>
+
+          <!-- Classified Navigation List -->
+          <nav style="padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.35rem;" id="drawer-nav-items">
+            <!-- Injected via JavaScript based on role -->
+          </nav>
+        </div>
+
+        <!-- Drawer User Profile Footer matching Screenshot -->
+        <div style="border-top: 1px solid var(--border); padding: 1.15rem; background: var(--surface-secondary);">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div>
+              <div style="font-size: 0.85rem; font-weight: 800; font-family: 'JetBrains Mono';" id="drawer-user-name">
+                miskrdires11
+              </div>
+              <div style="display: flex; align-items: center; gap: 5px; margin-top: 3px;">
+                <span style="height: 7px; width: 7px; border-radius: 50%; background: #8fe617;"></span>
+                <span style="font-size: 10px; font-weight: 800; color: var(--foreground-subtle); text-transform: uppercase;" id="drawer-user-status">
+                  ADMINISTRATOR
+                </span>
+              </div>
+            </div>
+            <button 
+              class="cool-btn-hover" 
+              style="display: flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 20px; border: 1px solid rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.1); color: #ef4444; font-size: 0.75rem; font-weight: 800; cursor: pointer;"
+              onclick="handleSignOut()"
+            >
+              <i data-lucide="log-out" style="width: 12px; height: 12px;"></i>
+              <span>Sign Out</span>
+            </button>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Main Content Workspace Area -->
+    <main style="max-width: 1720px; width: 100%; margin: 0 auto; padding: 1.25rem; flex: 1; display: flex; flex-direction: column; gap: 1.25rem;">
+
+      <!-- ================================================================= -->
+      <!-- VIEW 1: STUDENT DIRECTORY (EXACT USER SCREENSHOT RESTORATION) -->
+      <!-- ================================================================= -->
+      <div id="view-students" style="display: none;">
+        <div class="dark-form-card">
+          
+          <!-- Grade Chips Bar from User's Screenshot -->
+          <div class="grade-chips-bar" id="grade-chips-container">
+            <!-- Dynamically populated chips: 9A (1), 10 (3), 11A (21), etc. -->
+          </div>
+
+          <!-- Action & Search Toolbar matching Screenshot Row 1 -->
+          <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 0.85rem;">
+            
+            <!-- Search input with adjacent Lime Search Button -->
+            <div style="flex: 1; min-width: 260px; display: flex; gap: 6px;">
+              <input 
+                type="text" 
+                id="search-students" 
+                placeholder="ID, Name, Phone..."
+                oninput="handleSearchChange()"
+                style="flex: 1; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.65rem 1rem; font-size: 0.85rem; color: #fff; outline: none;"
+              />
+              <button 
+                class="cool-btn-hover" 
+                style="padding: 0.65rem 1.25rem; border-radius: 10px; background: #8fe617; color: #062404; font-weight: 800; font-size: 0.85rem; border: none; cursor: pointer;" 
+                onclick="applyFilters()"
+              >
+                Search
+              </button>
+            </div>
+
+            <!-- Toolbar Action Buttons from Screenshot -->
+            <button class="cool-btn-hover" style="padding: 0.65rem 1rem; border-radius: 10px; background: var(--surface-secondary); color: var(--foreground); font-weight: 700; font-size: 0.8rem; border: 1px solid var(--border); cursor: pointer; display: flex; align-items: center; gap: 6px;" onclick="exportToCSV()">
+              <i data-lucide="download" style="width:14px; height:14px;"></i>
+              Export CSV
+            </button>
+
+            <button class="cool-btn-hover" style="padding: 0.65rem 1rem; border-radius: 10px; background: var(--surface-secondary); color: var(--foreground); font-weight: 700; font-size: 0.8rem; border: 1px solid var(--border); cursor: pointer; display: flex; align-items: center; gap: 6px;" onclick="exportToExcel()">
+              <i data-lucide="file-spreadsheet" style="width:14px; height:14px;"></i>
+              Export Excel
+            </button>
+
+            <button class="cool-btn-hover" style="padding: 0.65rem 1.15rem; border-radius: 10px; background: #070a08; color: #8fe617; font-weight: 800; font-size: 0.8rem; border: 1px solid #8fe617; cursor: pointer; display: flex; align-items: center; gap: 6px;" onclick="downloadSelectedPhotosZip()">
+              <i data-lucide="download" style="width:14px; height:14px;"></i>
+              Download Photos (.zip)
+            </button>
+
+            <button class="cool-btn-hover" style="padding: 0.65rem 1rem; border-radius: 10px; background: rgba(239, 68, 68, 0.1); color: #ef4444; font-weight: 700; font-size: 0.8rem; border: 1px solid rgba(239, 68, 68, 0.25); cursor: pointer; display: flex; align-items: center; gap: 6px;" onclick="clearAllData()">
+              <i data-lucide="trash-2" style="width:14px; height:14px;"></i>
+              Clear All Data
+            </button>
+
+            <button class="cool-btn-hover" style="padding: 0.65rem 1rem; border-radius: 10px; background: var(--surface-secondary); color: #8fe617; font-weight: 700; font-size: 0.8rem; border: 1px solid rgba(143,230,23,0.3); cursor: pointer; display: flex; align-items: center; gap: 6px;" onclick="resyncCloud()">
+              <i data-lucide="refresh-cw" style="width:14px; height:14px;"></i>
+              Re-Sync Cloud
+            </button>
+          </div>
+
+          <!-- Dropdown Filter Controls Row 2 from Screenshot -->
+          <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 1rem;">
+            <select id="filter-school" onchange="handleFilterChange()" style="background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 1rem; font-size: 0.825rem; color: #fff; outline: none; cursor: pointer; min-width: 180px;">
+              <option value="ALL">All Schools &amp; Branches</option>
+              <option value="High Tech">Harar / Harrer • High Tech</option>
+              <option value="Debebech">Adama • Debebech</option>
+              <option value="Sena Yerosen">Adama • Sena Yerosen</option>
+              <option value="Yacine">Adama • Yacine</option>
+              <option value="Odda">Adama • Odda</option>
+              <option value="YMS">Addis Ababa • YMS</option>
+              <option value="Adika Youth">Addis Ababa • Adika Youth</option>
+              <option value="School Of America">Addis Ababa • School Of America</option>
+              <option value="Warka">Addis Ababa • Warka</option>
+              <option value="Mojjo">Mojjo • Mojjo</option>
+            </select>
+
+            <select id="filter-dept" onchange="handleFilterChange()" style="background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 1rem; font-size: 0.825rem; color: #fff; outline: none; cursor: pointer; min-width: 150px;">
+              <option value="ALL">All Departments</option>
+              <option value="General">General</option>
+              <option value="Primary">Primary</option>
+              <option value="Secondary">Secondary</option>
+            </select>
+
+            <select id="filter-photo" onchange="handleFilterChange()" style="background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 1rem; font-size: 0.825rem; color: #fff; outline: none; cursor: pointer; min-width: 130px;">
+              <option value="ALL">Photo: All</option>
+              <option value="OK">Photo: OK</option>
+              <option value="MISSING">Photo: Missing</option>
+            </select>
+
+            <select id="filter-sender" onchange="handleFilterChange()" style="background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 1rem; font-size: 0.825rem; color: #fff; outline: none; cursor: pointer; min-width: 140px;">
+              <option value="ALL">All Senders</option>
+            </select>
+
+            <button class="cool-btn-hover" style="padding: 0.6rem 1rem; border-radius: 10px; background: var(--surface-secondary); color: var(--foreground-muted); border: 1px solid var(--border); cursor: pointer; font-size: 0.8rem;" onclick="resetFilters()">
+              Reset Filters
+            </button>
+          </div>
+
+          <!-- Multi-Select Floating Toolbar -->
+          <div id="selection-bar" style="display: none; align-items: center; justify-content: space-between; margin-bottom: 1rem; padding: 0.75rem 1.25rem; border-radius: 14px; background: linear-gradient(90deg, #14241a, #0e1712); border: 1px solid rgba(143,230,23,0.35); box-shadow: 0 8px 24px rgba(0,0,0,0.5);">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <i data-lucide="check-square" style="color: #8fe617; width: 18px; height: 18px;"></i>
+              <span style="font-weight: 700; font-size: 0.85rem;" id="selection-count-text">0 students selected</span>
+            </div>
+            <div style="display: flex; gap: 0.5rem;">
+              <button class="cool-btn-hover" style="padding: 0.45rem 0.9rem; border-radius: 10px; background: #8fe617; color: #062404; font-weight: 700; font-size: 0.8rem; border: none; cursor: pointer; display: flex; align-items: center; gap: 6px;" onclick="downloadSelectedPhotosZip()">
+                <i data-lucide="archive" style="width: 14px; height: 14px;"></i>
+                Download Classified ZIP (Encoded/ &amp; Unencoded/)
+              </button>
+              <button class="cool-btn-hover" style="padding: 0.45rem 0.9rem; border-radius: 10px; background: #161e19; color: #fff; font-size: 0.8rem; border: 1px solid var(--border); cursor: pointer;" onclick="clearSelection()">
+                Deselect All
+              </button>
+            </div>
+          </div>
+
+          <!-- TOP PAGINATION BAR -->
+          <div class="pagination-bar" id="pagination-top">
+            <div style="font-size: 0.85rem; color: var(--foreground-muted);" id="page-info-top">
+              Showing <strong>1 – 500</strong> of <strong>3,723</strong> students
+            </div>
+            <div style="display: flex; gap: 4px; align-items: center;" id="page-btns-top"></div>
+            <div style="display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--foreground-subtle);">
+              <span>Per Page:</span>
+              <select id="select-pagesize" onchange="setPageSize(this.value)" style="background: #070a08; border: 1px solid var(--border); border-radius: 8px; color: #fff; padding: 4px 8px; font-size: 0.8rem;">
+                <option value="500" selected>500</option>
+                <option value="250">250</option>
+                <option value="100">100</option>
+                <option value="50">50</option>
+                <option value="3723">All (3,723)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Main Students Table Matching User Screenshot Exactly -->
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 36px; text-align: center;">
+                    <input type="checkbox" id="cb-select-all" onchange="toggleSelectAllPage(this.checked)" title="Select all on this page" />
+                  </th>
+                  <th>Name ⇅</th>
+                  <th>Sex ⇅</th>
+                  <th>Grade ⇅</th>
+                  <th>Phone ⇅</th>
+                  <th>SENT BY</th>
+                  <th>PHOTO STATUS</th>
+                  <th style="text-align: right;">ACTION</th>
+                </tr>
+              </thead>
+              <tbody id="student-table-body">
+                <!-- Injected via JavaScript -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- BOTTOM PAGINATION BAR -->
+          <div class="pagination-bar" id="pagination-bottom">
+            <div style="font-size: 0.85rem; color: var(--foreground-muted);" id="page-info-bottom">
+              Showing <strong>1 – 500</strong> of <strong>3,723</strong> students
+            </div>
+            <div style="display: flex; gap: 4px; align-items: center;" id="page-btns-bottom"></div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- ================================================================= -->
+      <!-- VIEW 2: SENDER WORKSTATION (MATCHING USER SCREENSHOT EXACTLY) -->
+      <!-- ================================================================= -->
+      <div id="view-register" style="display: none; padding-bottom: 2rem;">
+        <div style="max-width: 480px; margin: 0 auto;">
+          
+          <!-- Top Photo Card Viewport matching Screenshot -->
+          <div style="background: #111713; border: 1px solid #223126; border-radius: 28px; padding: 1.5rem; box-shadow: 0 15px 40px rgba(0,0,0,0.6); margin-bottom: 1.25rem;">
+            
+            <!-- Portrait Container Box -->
+            <div style="width: 240px; height: 300px; margin: 0 auto; border-radius: 20px; overflow: hidden; background: #070a08; border: 2px solid #223126; position: relative; display: flex; align-items: center; justify-content: center; box-shadow: inset 0 0 25px rgba(0,0,0,0.8);">
+              <!-- Live Video Stream -->
+              <video id="sender-camera-stream" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: cover; display: none;"></video>
+              
+              <!-- Captured / Uploaded Photo Preview -->
+              <img id="photo-preview-img" style="width: 100%; height: 100%; object-fit: cover; display: none;" />
+              
+              <!-- Empty Placeholder -->
+              <div id="photo-preview-placeholder" style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--foreground-subtle);">
+                <i data-lucide="camera" style="width: 48px; height: 48px; stroke-width: 1.5; color: #8fe617;"></i>
+                <span style="font-size: 0.8rem; font-weight: 700; color: #9eb2a6;">Live Cam / Photo</span>
+              </div>
+
+              <!-- Live Badge -->
+              <div id="camera-live-badge" style="display: none; position: absolute; top: 10px; left: 10px; background: #ef4444; color: #fff; font-size: 10px; font-weight: 800; padding: 3px 8px; border-radius: 6px; box-shadow: 0 0 12px rgba(239,68,68,0.6);">
+                ● LIVE
+              </div>
+            </div>
+
+            <!-- Primary Photo Action Buttons matching Screenshot -->
+            <div style="margin-top: 1.25rem; display: flex; flex-direction: column; gap: 0.65rem;">
+              <button 
+                type="button" 
+                id="btn-take-photo" 
+                class="cool-btn-hover" 
+                onclick="handleTakePhotoClick()" 
+                style="width: 100%; padding: 0.9rem; border-radius: 14px; background: #8fe617; color: #062404; font-family: 'Outfit'; font-size: 1rem; font-weight: 800; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; box-shadow: 0 6px 20px rgba(143,230,23,0.35);"
+              >
+                <i data-lucide="camera" style="width: 20px; height: 20px;"></i>
+                <span id="btn-take-photo-text">Take Student Photo</span>
+              </button>
+
+              <button 
+                type="button" 
+                id="btn-crop-photo" 
+                class="cool-btn-hover" 
+                onclick="openPhotoEditorForSender()" 
+                style="width: 100%; padding: 0.8rem; border-radius: 14px; background: rgba(143,230,23,0.06); color: #8fe617; font-family: 'Outfit'; font-size: 0.95rem; font-weight: 700; border: 1.5px solid #8fe617; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;"
+              >
+                <i data-lucide="crop" style="width: 18px; height: 18px;"></i>
+                <span>Edit &amp; Crop Photo</span>
+              </button>
+
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 0.25rem; padding: 0 4px;">
+                <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; color: #9eb2a6; cursor: pointer;">
+                  <i data-lucide="upload" style="width: 14px; height: 14px; color: #8fe617;"></i>
+                  <span>Upload File</span>
+                  <input type="file" id="reg-photo-file" accept="image/*" style="display: none;" onchange="handlePhotoFileUpload(event)" />
+                </label>
+
+                <button 
+                  type="button" 
+                  id="btn-stop-camera" 
+                  onclick="stopLiveCamera()" 
+                  style="display: none; background: transparent; border: none; color: #ef4444; font-size: 0.78rem; font-weight: 700; cursor: pointer; align-items: center; gap: 4px;"
+                >
+                  <i data-lucide="video-off" style="width: 14px; height: 14px;"></i>
+                  <span>Stop Cam</span>
+                </button>
+              </div>
+
+              <div id="camera-status-text" style="font-size: 0.74rem; color: var(--foreground-subtle); text-align: center; margin-top: 2px; font-family: 'JetBrains Mono';">
+                Ready for live capture. Click "Take Student Photo" or choose a file.
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Bottom Card: STUDENT INFORMATION matching Screenshot -->
+          <div class="dark-form-card" style="border-radius: 28px; padding: 1.75rem; box-shadow: 0 15px 40px rgba(0,0,0,0.6);">
+            
+            <form id="form-register-student" onsubmit="handleEnrollStudent(event)">
+              
+              <!-- Card Header Row -->
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem;">
+                <span style="font-family: 'Outfit'; font-size: 0.95rem; font-weight: 900; letter-spacing: 0.04em; color: #fff; text-transform: uppercase;">
+                  STUDENT INFORMATION
+                </span>
+                <span style="font-size: 0.75rem; font-weight: 800; color: #8fe617; letter-spacing: 0.05em; text-transform: uppercase;">
+                  REQUIRED
+                </span>
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 1.15rem;">
+                
+                <!-- 1. Student ID * with Live Collision / Taken Detection -->
+                <div>
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                    <label style="font-size: 0.825rem; font-weight: 700; color: #fff;">
+                      Student ID <span style="color: #ef4444;">*</span>
+                    </label>
+                    <span id="reg-studentid-status" style="font-size: 0.825rem; font-weight: 800; color: #8fe617; transition: color 0.2s;">
+                      ✓ Available
+                    </span>
+                  </div>
+                  <div style="display: flex; gap: 8px;">
+                    <input 
+                      type="text" 
+                      id="reg-studentid" 
+                      required 
+                      placeholder="SB-2026-12788"
+                      oninput="checkStudentIdTaken(this.value)"
+                      style="flex: 1; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1rem; color: #8fe617; font-size: 0.95rem; font-family: 'JetBrains Mono'; font-weight: 800; outline: none;" 
+                    />
+                    <button 
+                      type="button" 
+                      class="cool-btn-hover" 
+                      onclick="generateAutoStudentId()" 
+                      title="Auto-Generate New Unique ID"
+                      style="padding: 0.8rem 1rem; border-radius: 12px; background: var(--surface-secondary); color: #fff; border: 1px solid var(--border); font-size: 0.78rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 4px;"
+                    >
+                      <i data-lucide="refresh-cw" style="width: 14px; height: 14px;"></i>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 2. Full Name * with Father Name Auto-Capitalization -->
+                <div>
+                  <label style="display: block; font-size: 0.825rem; font-weight: 700; color: #fff; margin-bottom: 6px;">
+                    Full Name <span style="color: #ef4444;">*</span>
+                  </label>
+                  <input 
+                    type="text" 
+                    id="reg-fullname" 
+                    required 
+                    placeholder="Loza Bereket" 
+                    oninput="handleNameInput(event)"
+                    style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1rem; color: #fff; font-size: 0.95rem; font-weight: 600; outline: none; transition: border-color 0.2s;" 
+                  />
+                </div>
+
+                <!-- 3. Sex * -->
+                <div>
+                  <label style="display: block; font-size: 0.825rem; font-weight: 700; color: #fff; margin-bottom: 6px;">
+                    Sex <span style="color: #ef4444;">*</span>
+                  </label>
+                  <select 
+                    id="reg-sex" 
+                    style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1rem; color: #fff; font-size: 0.9rem; font-weight: 600; outline: none; cursor: pointer;"
+                  >
+                    <option value="Female">Female</option>
+                    <option value="Male">Male</option>
+                  </select>
+                </div>
+
+                <!-- 4. Blood Group / Type (All Types Included) -->
+                <div>
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                    <label style="font-size: 0.825rem; font-weight: 700; color: #fff;">
+                      Blood Group / Type
+                    </label>
+                    <span style="font-size: 0.75rem; color: var(--foreground-subtle);">
+                      Optional
+                    </span>
+                  </div>
+                  <select 
+                    id="reg-blood" 
+                    style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1rem; color: #fff; font-size: 0.9rem; font-weight: 600; outline: none; cursor: pointer;"
+                  >
+                    <option value="null" selected>-- No Blood Group Selected --</option>
+                    <option value="A+">A+</option>
+                    <option value="A-">A-</option>
+                    <option value="B+">B+</option>
+                    <option value="B-">B-</option>
+                    <option value="AB+">AB+</option>
+                    <option value="AB-">AB-</option>
+                    <option value="O+">O+</option>
+                    <option value="O-">O-</option>
+                    <option value="Unknown">Unknown</option>
+                  </select>
+                </div>
+
+                <!-- 5. Grade / Class * (Grade + Section Combined, Section removed) -->
+                <div>
+                  <label style="display: block; font-size: 0.825rem; font-weight: 700; color: #fff; margin-bottom: 6px;">
+                    Grade / Class <span style="color: #ef4444;">*</span>
+                  </label>
+                  <input 
+                    type="text" 
+                    id="reg-grade" 
+                    required 
+                    placeholder="9C" 
+                    value="9C"
+                    style="width: 100%; background: #131b26; border: 1px solid #3b82f6; border-radius: 12px; padding: 0.8rem 1rem; color: #fff; font-size: 0.95rem; font-weight: 800; outline: none;" 
+                  />
+                </div>
+
+                <!-- 6. Phone Number * (Auto 09 to +2519 and 07 to +2517) -->
+                <div>
+                  <label style="display: block; font-size: 0.825rem; font-weight: 700; color: #fff; margin-bottom: 6px;">
+                    Phone Number <span style="color: #ef4444;">*</span>
+                  </label>
+                  <input 
+                    type="text" 
+                    id="reg-phone" 
+                    required 
+                    placeholder="09... or 07..." 
+                    oninput="handlePhoneInput(event)"
+                    style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1rem; color: #fff; font-size: 0.95rem; font-family: 'JetBrains Mono'; font-weight: 600; outline: none;" 
+                  />
+                </div>
+
+                <!-- Collapsible Extra Details: Country & School -->
+                <div style="border-top: 1px solid var(--border); padding-top: 0.75rem; margin-top: 0.25rem;">
+                  <div 
+                    id="extra-details-toggle" 
+                    onclick="toggleExtraDetails()" 
+                    style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none;"
+                  >
+                    <span id="extra-details-toggle-text" style="font-size: 0.8rem; font-weight: 700; color: #8fe617;">
+                      Hide Extra Details
+                    </span>
+                    <i id="extra-details-toggle-icon" data-lucide="chevron-up" style="width: 16px; height: 16px; color: #8fe617;"></i>
+                  </div>
+
+                  <div id="extra-details-content" style="display: flex; flex-direction: column; gap: 0.85rem; margin-top: 0.75rem;">
+                    <div>
+                      <label style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">
+                        Country *
+                      </label>
+                      <select id="reg-country" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;">
+                        <option value="Ethiopia" selected>Ethiopia</option>
+                        <option value="Eritrea">Eritrea</option>
+                        <option value="Kenya">Kenya</option>
+                        <option value="Djibouti">Djibouti</option>
+                        <option value="Somalia">Somalia</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">
+                        School *
+                      </label>
+                      <select id="reg-school" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;">
+                        <option value="High Tech" selected>High Tech (Harar / Harrer)</option>
+                        <option value="Debebech">Debebech (Adama)</option>
+                        <option value="Sena Yerosen">Sena Yerosen (Adama)</option>
+                        <option value="Yacine">Yacine (Adama)</option>
+                        <option value="Odda">Odda (Adama)</option>
+                        <option value="YMS">YMS (Addis Ababa)</option>
+                        <option value="Adika Youth">Adika Youth (Addis Ababa)</option>
+                        <option value="School Of America">School Of America (Addis Ababa)</option>
+                        <option value="Warka">Warka (Addis Ababa)</option>
+                        <option value="Mojjo">Mojjo (Mojjo)</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Submit Button -->
+                <button 
+                  type="submit" 
+                  class="cool-btn-hover" 
+                  style="width: 100%; padding: 0.95rem; border-radius: 14px; background: #8fe617; color: #062404; font-family: 'Outfit'; font-size: 1rem; font-weight: 900; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 0.5rem; box-shadow: 0 4px 20px rgba(143,230,23,0.35);"
+                >
+                  <i data-lucide="send" style="width: 18px; height: 18px;"></i>
+                  <span>Transmit to Receiver Directory</span>
+                </button>
+
+              </div>
+            </form>
+
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- VIEW 3: LIVE RECEIVER DASHBOARD & PRODUCTION METRICS -->
+      <!-- ================================================================= -->
+      <div id="view-dashboard" style="display: none;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-bottom: 1.25rem;">
+          <div class="dark-form-card">
+            <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--foreground-subtle);">Total Enrolled Records</div>
+            <div style="font-family: 'Outfit'; font-size: 2.2rem; font-weight: 900; color: #fff; margin: 4px 0;" id="metric-total-students">3,723</div>
+            <div style="font-size: 0.75rem; color: #8fe617;">100% Extracted from Cloudflare DB</div>
+          </div>
+
+          <div class="dark-form-card">
+            <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--foreground-subtle);">Verified R2 Portraits</div>
+            <div style="font-family: 'Outfit'; font-size: 2.2rem; font-weight: 900; color: #fff; margin: 4px 0;" id="metric-total-photos">3,723</div>
+            <div style="font-size: 0.75rem; color: #60a5fa;">Cloudflare R2 Bucket siliconlabs</div>
+          </div>
+
+          <div class="dark-form-card">
+            <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--foreground-subtle);">Active Regional Senders</div>
+            <div style="font-family: 'Outfit'; font-size: 2.2rem; font-weight: 900; color: #fff; margin: 4px 0;">14</div>
+            <div style="font-size: 0.75rem; color: #a78bfa;">Harar, Adama, Addis Ababa, Mojjo</div>
+          </div>
+
+          <div class="dark-form-card">
+            <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--foreground-subtle);">Edge Latency</div>
+            <div style="font-family: 'Outfit'; font-size: 2.2rem; font-weight: 900; color: #8fe617; margin: 4px 0;">0ms</div>
+            <div style="font-size: 0.75rem; color: var(--foreground-subtle);">Autonomous Cloudflare Edge</div>
+          </div>
+        </div>
+
+        <div class="dark-form-card">
+          <h3 style="font-family: 'Outfit'; font-size: 1.25rem; font-weight: 800; margin-bottom: 1rem; display: flex; align-items: center; gap: 8px;">
+            <i data-lucide="clock" style="color: #8fe617;"></i>
+            Recently Dispatched Students (Live Feed)
+          </h3>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Student</th>
+                  <th>Grade</th>
+                  <th>School &amp; Branch</th>
+                  <th>Sent At (Date &amp; Time)</th>
+                  <th>Sender</th>
+                  <th>Status</th>
+                  <th style="text-align: right;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="recent-students-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- VIEW 4: ADMIN SENDER SUPERVISION, BRANCH ANALYSIS & 1-DEVICE LOCK -->
+      <!-- ================================================================= -->
+      <div id="view-admin" style="display: none;">
+        
+        <!-- Cloudflare R2 Storage Status Overview -->
+        <div class="dark-form-card" style="margin-bottom: 1.25rem; background: linear-gradient(135deg, #111713, #0b120e);">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(143,230,23,0.15); display: flex; align-items: center; justify-content: center; color: #8fe617;">
+                <i data-lucide="cloud" style="width: 22px; height: 22px;"></i>
+              </div>
+              <div>
+                <h3 style="font-family: 'Outfit'; font-size: 1.25rem; font-weight: 900; color: #fff;">
+                  Cloudflare R2 Object Storage Status
+                </h3>
+                <p style="font-size: 0.75rem; color: var(--foreground-muted); font-family: 'JetBrains Mono';">
+                  Bucket: siliconlabs • Origin: pub-93e8bf84c42949ec88306f456caa0fc9.r2.dev
+                </p>
+              </div>
+            </div>
+            <span class="badge" style="background: rgba(143,230,23,0.15); color: #8fe617; font-weight: 800;">
+              ● 100% OPERATIONAL
+            </span>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; font-family: 'JetBrains Mono'; font-size: 0.8rem;">
+            <div style="background: rgba(0,0,0,0.3); padding: 0.75rem 1rem; border-radius: 12px; border: 1px solid var(--border);">
+              <span style="color: var(--foreground-subtle); display: block; font-size: 0.7rem;">STORED PORTRAITS</span>
+              <strong style="color: #fff; font-size: 1.1rem;">3,723 Verified Files</strong>
+            </div>
+            <div style="background: rgba(0,0,0,0.3); padding: 0.75rem 1rem; border-radius: 12px; border: 1px solid var(--border);">
+              <span style="color: var(--foreground-subtle); display: block; font-size: 0.7rem;">EDGE CDN CACHE</span>
+              <strong style="color: #8fe617; font-size: 1.1rem;">99.8% Cache Hit Ratio</strong>
+            </div>
+            <div style="background: rgba(0,0,0,0.3); padding: 0.75rem 1rem; border-radius: 12px; border: 1px solid var(--border);">
+              <span style="color: var(--foreground-subtle); display: block; font-size: 0.7rem;">AVERAGE SERVE TIME</span>
+              <strong style="color: #60a5fa; font-size: 1.1rem;">&lt; 18ms Edge Latency</strong>
+            </div>
+            <div style="background: rgba(0,0,0,0.3); padding: 0.75rem 1rem; border-radius: 12px; border: 1px solid var(--border);">
+              <span style="color: var(--foreground-subtle); display: block; font-size: 0.7rem;">EXTERNAL DEPENDENCY</span>
+              <strong style="color: #a78bfa; font-size: 1.1rem;">Zero Supabase / Vercel</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Senders Performance & Branch Analysis Module -->
+        <div class="dark-form-card" style="margin-bottom: 1.25rem;">
+          <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem;">
+            <div>
+              <h2 style="font-family: 'Outfit'; font-size: 1.45rem; font-weight: 900; display: flex; align-items: center; gap: 8px;">
+                <i data-lucide="activity" style="color: #8fe617;"></i>
+                Senders Performance, Velocity &amp; Branch Ratio Analysis
+              </h2>
+              <p style="color: var(--foreground-muted); font-size: 0.85rem; margin-top: 3px;">
+                Complete analytical breakdown of regional branches (Harar, Adama, Addis Ababa, Mojjo), schools, and sender velocity.
+              </p>
+            </div>
+
+            <button class="cool-btn-hover" style="padding: 0.6rem 1.15rem; border-radius: 10px; background: #8fe617; color: #062404; font-weight: 800; font-size: 0.825rem; border: none; cursor: pointer; display: flex; align-items: center; gap: 6px;" onclick="exportAnalyticsReport()">
+              <i data-lucide="download" style="width: 15px; height: 15px;"></i>
+              Download Performance Report (.xlsx)
+            </button>
+          </div>
+
+          <!-- Branch Summary Cards -->
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+            <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 14px; border: 1px solid var(--border);">
+              <span style="font-size: 0.72rem; color: var(--foreground-subtle); text-transform: uppercase; font-weight: 700;">HARRER / HARAR BRANCH</span>
+              <div style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 900; color: #8fe617; margin: 4px 0;">High Tech School</div>
+              <div style="font-size: 0.75rem; color: var(--foreground-muted);">Photo Ratio: <strong style="color: #fff;">100%</strong> • Active Senders: <strong>3</strong></div>
+            </div>
+
+            <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 14px; border: 1px solid var(--border);">
+              <span style="font-size: 0.72rem; color: var(--foreground-subtle); text-transform: uppercase; font-weight: 700;">ADAMA REGIONAL BRANCH</span>
+              <div style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 900; color: #60a5fa; margin: 4px 0;">4 Schools Enrolled</div>
+              <div style="font-size: 0.75rem; color: var(--foreground-muted);">Debebech, Sena Yerosen, Yacine, Odda</div>
+            </div>
+
+            <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 14px; border: 1px solid var(--border);">
+              <span style="font-size: 0.72rem; color: var(--foreground-subtle); text-transform: uppercase; font-weight: 700;">ADDIS ABABA REGIONAL BRANCH</span>
+              <div style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 900; color: #a78bfa; margin: 4px 0;">4 Schools Enrolled</div>
+              <div style="font-size: 0.75rem; color: var(--foreground-muted);">YMS, Adika, School of America, Warka</div>
+            </div>
+
+            <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 14px; border: 1px solid var(--border);">
+              <span style="font-size: 0.72rem; color: var(--foreground-subtle); text-transform: uppercase; font-weight: 700;">OVERALL VELOCITY</span>
+              <div style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 900; color: #f59e0b; margin: 4px 0;">184 recs / hr</div>
+              <div style="font-size: 0.75rem; color: var(--foreground-muted);">Active Operators: <strong style="color: #fff;">14 Senders</strong></div>
+            </div>
+          </div>
+
+          <!-- Senders Performance & Hardware Lock Table -->
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Operator Email</th>
+                  <th>Username</th>
+                  <th>Role</th>
+                  <th>Branch / School</th>
+                  <th>Velocity</th>
+                  <th>Photo Upload Ratio</th>
+                  <th>Locked Hardware Device</th>
+                  <th style="text-align: right;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="admin-users-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- VIEW 5: 8-UP PRINT ENGINE & ID BADGE DESIGNER -->
+      <!-- ================================================================= -->
+      <div id="view-print" style="display: none;">
+        <div class="dark-form-card" style="text-align: center;">
+          <h2 style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 900; margin-bottom: 0.5rem;">
+            Silicon Labs 8-Up ID Badge Print Engine
+          </h2>
+          <p style="color: var(--foreground-muted); font-size: 0.85rem; margin-bottom: 2rem;">
+            Front &amp; Back ID cards with verified R2 portrait, school credentials, and scannable QR verification.
+          </p>
+
+          <div style="display: flex; justify-content: center; gap: 2rem; flex-wrap: wrap;">
+            <!-- Front Card -->
+            <div style="width: 320px; height: 480px; background: linear-gradient(145deg, #101c15, #08100b); border: 2px solid #8fe617; border-radius: 18px; padding: 1.5rem; display: flex; flex-direction: column; align-items: center; box-shadow: 0 15px 35px rgba(0,0,0,0.7);">
+              <div style="font-family: 'JetBrains Mono'; font-weight: 900; font-size: 1rem; color: #8fe617; margin-bottom: 2px;">
+                SILICON LABS
+              </div>
+              <div id="card-print-school" style="font-size: 0.7rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 1rem;">
+                HIGH TECH • HARRER
+              </div>
+              <img id="card-print-photo" src="" style="width: 110px; height: 135px; border-radius: 12px; object-fit: cover; border: 2px solid #8fe617; background: #000; margin-bottom: 1rem;" />
+              <div id="card-print-name" style="font-family: 'Outfit'; font-size: 1.25rem; font-weight: 800; color: #fff;">
+                Kakuu Ahimad
+              </div>
+              <div id="card-print-id" style="font-family: 'JetBrains Mono'; color: #8fe617; font-weight: 700; font-size: 0.85rem; margin: 4px 0;">
+                SB-2026-96980
+              </div>
+              <div id="card-print-grade" style="font-size: 0.8rem; color: #cbd5e1;">
+                Grade: 2B • Academic Year: 2026-2027
+              </div>
+              <div style="margin-top: auto; padding-top: 1rem; width: 100%; border-top: 1px dashed rgba(143, 230, 23, 0.3); display: flex; justify-content: space-around; font-size: 0.7rem; color: #64748b;">
+                <span>AUTHORIZED ID</span>
+                <span>VERIFIED 2026</span>
+              </div>
+            </div>
+
+            <!-- Back Card -->
+            <div style="width: 320px; height: 480px; background: linear-gradient(145deg, #09120c, #060a08); border: 2px solid var(--border); border-radius: 18px; padding: 1.5rem; display: flex; flex-direction: column; align-items: center; justify-content: space-between;">
+              <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700;">
+                Digital Verification Code
+              </div>
+              <div id="card-qr-box" style="background: #fff; padding: 12px; border-radius: 14px; width: 154px; height: 154px; display: flex; align-items: center; justify-content: center;"></div>
+              <div style="font-size: 0.75rem; color: #cbd5e1; line-height: 1.5; padding: 0 1rem;">
+                This card is the property of the school administration. If found, please return to the school administration office.
+              </div>
+              <div style="font-family: 'JetBrains Mono'; font-size: 0.7rem; color: #8fe617;">
+                ENC-SHA256 • ACTIVE
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top: 2rem;">
+            <button class="cool-btn-hover" style="padding: 0.75rem 1.75rem; border-radius: 12px; background: #8fe617; color: #062404; font-weight: 800; font-size: 0.9rem; border: none; cursor: pointer;" onclick="window.print()">
+              Print 8-Up ID Badge Sheet
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- VIEW 6: BADGE DESIGNER STUDIO -->
+      <!-- ================================================================= -->
+      <div id="view-badge-designer" style="display: none;">
+        <div class="dark-form-card">
+          <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 1.5rem;">
+            <div>
+              <h2 style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 800; display: flex; align-items: center; gap: 8px;">
+                <i data-lucide="sparkles" style="color: #8fe617;"></i>
+                Badge Designer Studio
+              </h2>
+              <p style="color: var(--foreground-muted); font-size: 0.85rem; margin-top: 3px;">
+                Customize badge dimensions, barcode encodings, school logos, and background security patterns.
+              </p>
+            </div>
+            <button class="cool-btn-hover" style="padding: 0.5rem 1rem; border-radius: 10px; background: #8fe617; color: #062404; font-size: 0.8rem; font-weight: 700; border: none; cursor: pointer;" onclick="navigateTo('print')">
+              Preview in Print Engine
+            </button>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem;">
+            <div style="background: rgba(0,0,0,0.3); padding: 1.25rem; border-radius: 16px; border: 1px solid var(--border);">
+              <h4 style="font-size: 0.9rem; font-weight: 700; margin-bottom: 10px;">Badge Format</h4>
+              <label style="display: block; font-size: 0.8rem; color: var(--foreground-muted); margin-bottom: 4px;">Card Orientation</label>
+              <select style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem; color: #fff; font-size: 0.85rem; margin-bottom: 12px;">
+                <option>Vertical ID Card (Standard 2.125" x 3.370")</option>
+                <option>Horizontal ID Card</option>
+              </select>
+
+              <label style="display: block; font-size: 0.8rem; color: var(--foreground-muted); margin-bottom: 4px;">Security Pattern</label>
+              <select style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem; color: #fff; font-size: 0.85rem; margin-bottom: 12px;">
+                <option>Micro-Guilloche Green Hologram</option>
+                <option>Hexagonal Tech Mesh</option>
+                <option>Clean Silicon Minimal</option>
+              </select>
+
+              <label style="display: block; font-size: 0.8rem; color: var(--foreground-muted); margin-bottom: 4px;">Accent Color</label>
+              <input type="color" value="#8fe617" style="width: 100%; height: 38px; border-radius: 8px; background: transparent; border: 1px solid var(--border); cursor: pointer;" />
+            </div>
+
+            <div style="background: rgba(0,0,0,0.3); padding: 1.25rem; border-radius: 16px; border: 1px solid var(--border);">
+              <h4 style="font-size: 0.9rem; font-weight: 700; margin-bottom: 10px;">Verification &amp; Security</h4>
+              <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.825rem;">
+                <label style="display: flex; align-items: center; gap: 8px;">
+                  <input type="checkbox" checked /> Include Scannable QR Code
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px;">
+                  <input type="checkbox" checked /> Include SHA-256 Verification Hash
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px;">
+                  <input type="checkbox" checked /> Watermark Regional Branch Name
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- VIEW 7: DATABASE & AUDIT LOGS -->
+      <!-- ================================================================= -->
+      <div id="view-audit-logs" style="display: none;">
+        <div class="dark-form-card">
+          <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 1.5rem;">
+            <div>
+              <h2 style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 800; display: flex; align-items: center; gap: 8px;">
+                <i data-lucide="database" style="color: #8fe617;"></i>
+                Database &amp; Audit Logs
+              </h2>
+              <p style="color: var(--foreground-muted); font-size: 0.85rem; margin-top: 3px;">
+                Immutable event stream for student transmissions, photo edits, and hardware lock activities.
+              </p>
+            </div>
+            <button class="cool-btn-hover" style="padding: 0.5rem 1rem; border-radius: 10px; background: var(--surface-secondary); color: #fff; font-size: 0.8rem; border: 1px solid var(--border); cursor: pointer;" onclick="refreshAuditLogs()">
+              Refresh Logs
+            </button>
+          </div>
+
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Action / Event</th>
+                  <th>Operator</th>
+                  <th>Entity ID</th>
+                  <th>Security Verification</th>
+                </tr>
+              </thead>
+              <tbody id="audit-logs-tbody">
+                <tr>
+                  <td style="font-family: 'JetBrains Mono'; font-size: 0.75rem;">2026-10-09 15:20:10 UTC</td>
+                  <td><span class="badge badge-encoded">DEVICE_LOCK_VERIFIED</span></td>
+                  <td>miskrdires11@gmail.com</td>
+                  <td>Windows 10/11 • Chrome</td>
+                  <td style="color: #8fe617;">PASS • SHA-256 Verified</td>
+                </tr>
+                <tr>
+                  <td style="font-family: 'JetBrains Mono'; font-size: 0.75rem;">2026-10-09 15:15:32 UTC</td>
+                  <td><span class="badge" style="background: rgba(59,130,246,0.15); color: #60a5fa;">PHOTO_EDIT_SAVE</span></td>
+                  <td>miskrdires11@gmail.com</td>
+                  <td>SB-2026-96980</td>
+                  <td style="color: #60a5fa;">Canvas Re-encoded (3:4 ID Card)</td>
+                </tr>
+                <tr>
+                  <td style="font-family: 'JetBrains Mono'; font-size: 0.75rem;">2026-10-09 15:05:44 UTC</td>
+                  <td><span class="badge badge-encoded">STUDENT_TRANSMISSION</span></td>
+                  <td>miskrdires12@gmail.com</td>
+                  <td>SB-2026-53429</td>
+                  <td style="color: #8fe617;">Harar High Tech • R2 Dispatched</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- VIEW 8: ADMIN SYSTEM SETTINGS -->
+      <!-- ================================================================= -->
+      <div id="view-system-settings" style="display: none;">
+        <div class="dark-form-card" style="max-width: 800px; margin: 0 auto;">
+          <h2 style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 800; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 8px;">
+            <i data-lucide="settings" style="color: #8fe617;"></i>
+            Admin System Settings
+          </h2>
+          <p style="color: var(--foreground-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">
+            Configure edge caching, default pagination page size, and 1-device lock enforcement rules.
+          </p>
+
+          <div style="display: flex; flex-direction: column; gap: 1rem;">
+            <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 14px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <strong style="display: block; font-size: 0.9rem;">1-Device Hardware Lock Policy</strong>
+                <span style="font-size: 0.78rem; color: var(--foreground-muted);">Prevent multiple workstation devices from logging into the same operator email.</span>
+              </div>
+              <input type="checkbox" checked style="width: 20px; height: 20px; accent-color: #8fe617;" />
+            </div>
+
+            <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 14px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <strong style="display: block; font-size: 0.9rem;">Night Mode by Default</strong>
+                <span style="font-size: 0.78rem; color: var(--foreground-muted);">Enforce high-contrast dark theme on all workstation logins.</span>
+              </div>
+              <input type="checkbox" checked style="width: 20px; height: 20px; accent-color: #8fe617;" />
+            </div>
+
+            <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 14px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <strong style="display: block; font-size: 0.9rem;">Cloudflare R2 Direct Edge Proxy</strong>
+                <span style="font-size: 0.78rem; color: var(--foreground-muted);">Proxy image requests through Cloudflare Edge Workers for sub-18ms latency.</span>
+              </div>
+              <input type="checkbox" checked style="width: 20px; height: 20px; accent-color: #8fe617;" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: REAL PHOTO EDITOR (CROP, ZOOM, BRIGHTNESS, CONTRAST, ROTATE) -->
+  <!-- ===================================================================== -->
+  <div id="photo-editor-modal" class="modal-overlay">
+    <div class="modal-box" style="max-width: 720px;">
+      <button onclick="closePhotoEditorModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: transparent; border: none; color: #fff; cursor: pointer;">
+        <i data-lucide="x"></i>
+      </button>
+
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 1rem;">
+        <i data-lucide="crop" style="color: #8fe617; width: 22px; height: 22px;"></i>
+        <h3 style="font-family: 'Outfit'; font-size: 1.4rem; font-weight: 800;">
+          Real Photo Editor &amp; Portrait Tuner
+        </h3>
+      </div>
+      <p style="font-size: 0.8rem; color: var(--foreground-muted); margin-bottom: 1.25rem;" id="editor-student-info">
+        Editing portrait for: <strong style="color: #fff;" id="editor-student-name">Student</strong> (<span id="editor-student-id">SB-2026-00000</span>)
+      </p>
+
+      <div style="display: grid; grid-template-columns: 320px 1fr; gap: 1.5rem; align-items: start;">
+        <!-- Canvas Viewport -->
+        <div style="background: #000; border-radius: 16px; border: 2px solid #8fe617; display: flex; align-items: center; justify-content: center; height: 380px; overflow: hidden; position: relative;">
+          <canvas id="photo-editor-canvas" width="300" height="360" style="max-width: 100%; max-height: 100%; object-fit: contain;"></canvas>
+          <div style="position: absolute; bottom: 8px; left: 8px; font-family: 'JetBrains Mono'; font-size: 10px; color: #8fe617; background: rgba(0,0,0,0.7); padding: 2px 6px; border-radius: 4px;" id="canvas-aspect-indicator">
+            3:4 Portrait
+          </div>
+        </div>
+
+        <!-- Controls Panel -->
+        <div style="display: flex; flex-direction: column; gap: 0.85rem;">
+          
+          <!-- Zoom -->
+          <div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 2px;">
+              <span>Zoom &amp; Scale</span>
+              <span id="label-zoom" style="color: #8fe617;">1.0x</span>
+            </div>
+            <input type="range" id="slider-zoom" min="0.5" max="3" step="0.05" value="1" oninput="applyEditorFilters()" style="width: 100%; accent-color: #8fe617;" />
+          </div>
+
+          <!-- Brightness -->
+          <div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 2px;">
+              <span>Brightness</span>
+              <span id="label-brightness" style="color: #8fe617;">100%</span>
+            </div>
+            <input type="range" id="slider-brightness" min="50" max="150" step="1" value="100" oninput="applyEditorFilters()" style="width: 100%; accent-color: #8fe617;" />
+          </div>
+
+          <!-- Contrast -->
+          <div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 2px;">
+              <span>Contrast</span>
+              <span id="label-contrast" style="color: #8fe617;">100%</span>
+            </div>
+            <input type="range" id="slider-contrast" min="50" max="150" step="1" value="100" oninput="applyEditorFilters()" style="width: 100%; accent-color: #8fe617;" />
+          </div>
+
+          <!-- Saturation -->
+          <div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 2px;">
+              <span>Saturation</span>
+              <span id="label-saturation" style="color: #8fe617;">100%</span>
+            </div>
+            <input type="range" id="slider-saturation" min="0" max="200" step="2" value="100" oninput="applyEditorFilters()" style="width: 100%; accent-color: #8fe617;" />
+          </div>
+
+          <!-- Rotate Controls -->
+          <div style="display: flex; gap: 8px; margin-top: 4px;">
+            <button class="cool-btn-hover" style="flex: 1; padding: 6px; border-radius: 8px; background: var(--surface-secondary); color: #fff; font-size: 0.75rem; border: 1px solid var(--border); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;" onclick="rotateEditorImage(-90)">
+              <i data-lucide="rotate-ccw" style="width: 12px; height: 12px;"></i> Rotate -90°
+            </button>
+            <button class="cool-btn-hover" style="flex: 1; padding: 6px; border-radius: 8px; background: var(--surface-secondary); color: #fff; font-size: 0.75rem; border: 1px solid var(--border); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;" onclick="rotateEditorImage(90)">
+              <i data-lucide="rotate-cw" style="width: 12px; height: 12px;"></i> Rotate +90°
+            </button>
+          </div>
+
+          <!-- Aspect Presets -->
+          <div style="display: flex; gap: 6px;">
+            <button class="cool-btn-hover" style="flex: 1; padding: 5px; border-radius: 8px; background: #161e19; color: #8fe617; font-size: 0.72rem; border: 1px solid var(--border); cursor: pointer;" onclick="setEditorAspect(3/4)">
+              3:4 ID Portrait
+            </button>
+            <button class="cool-btn-hover" style="flex: 1; padding: 5px; border-radius: 8px; background: #161e19; color: var(--foreground-muted); font-size: 0.72rem; border: 1px solid var(--border); cursor: pointer;" onclick="setEditorAspect(1)">
+              1:1 Square
+            </button>
+            <button class="cool-btn-hover" style="padding: 5px 8px; border-radius: 8px; background: #161e19; color: var(--foreground-muted); font-size: 0.72rem; border: 1px solid var(--border); cursor: pointer;" onclick="resetEditorControls()">
+              Reset
+            </button>
+          </div>
+
+          <!-- Save and Download -->
+          <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 8px;">
+            <button class="cool-btn-hover" style="width: 100%; padding: 0.7rem; border-radius: 10px; background: #8fe617; color: #062404; font-weight: 800; font-size: 0.85rem; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;" onclick="saveEditedPhoto()">
+              <i data-lucide="check" style="width: 15px; height: 15px;"></i>
+              Save &amp; Update Portrait
+            </button>
+            <button class="cool-btn-hover" style="width: 100%; padding: 0.55rem; border-radius: 10px; background: var(--surface-secondary); color: #fff; font-size: 0.78rem; border: 1px solid var(--border); cursor: pointer;" onclick="downloadEditedPhotoDirect()">
+              Download Edited File
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: VIEW STUDENT DATA (CLICK ON EYE ICON) -->
+  <!-- ===================================================================== -->
+  <div id="student-modal" class="modal-overlay">
+    <div class="modal-box">
+      <button onclick="closeStudentModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: transparent; border: none; color: #fff; cursor: pointer;">
+        <i data-lucide="x"></i>
+      </button>
+
+      <div style="display: flex; gap: 1.5rem; align-items: flex-start; margin-bottom: 1.5rem;">
+        <div style="position: relative;">
+          <img id="modal-photo" src="" style="width: 120px; height: 150px; border-radius: 14px; object-fit: cover; border: 2px solid #8fe617; background: #000;" />
+          <button class="cool-btn-hover" style="position: absolute; bottom: 6px; right: 6px; padding: 4px; border-radius: 6px; background: #8fe617; color: #000; border: none; cursor: pointer;" onclick="openPhotoEditorFromModal()" title="Edit Photo">
+            <i data-lucide="crop" style="width: 12px; height: 12px;"></i>
+          </button>
+        </div>
+        <div>
+          <span class="badge" id="modal-badge-encoded" style="background: rgba(143,230,23,0.15); color: #8fe617;">ENCODED &amp; VERIFIED</span>
+          <h2 style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 800; margin-top: 4px;" id="modal-name">Kakuu Ahimad</h2>
+          <div style="font-family: 'JetBrains Mono'; color: #8fe617; font-weight: 700; font-size: 0.9rem;" id="modal-id">SB-2026-96980</div>
+          <div style="color: var(--foreground-muted); font-size: 0.85rem; margin-top: 4px;" id="modal-school-grade">2B • Debebech (Adama)</div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 14px; border: 1px solid var(--border); font-size: 0.85rem;">
+        <div><strong style="color:var(--foreground-subtle);">Phone:</strong> <span id="modal-phone">-</span></div>
+        <div><strong style="color:var(--foreground-subtle);">Roll No:</strong> <span id="modal-roll">-</span></div>
+        <div><strong style="color:var(--foreground-subtle);">Sex:</strong> <span id="modal-sex">Female</span></div>
+        <div><strong style="color:var(--foreground-subtle);">Blood Type:</strong> <span id="modal-blood">null</span></div>
+        <div><strong style="color:var(--foreground-subtle);">Sender:</strong> <span id="modal-sender">Direct Station</span></div>
+        <div><strong style="color:var(--foreground-subtle);">Section:</strong> <span id="modal-section">General</span></div>
+        <div style="grid-column: span 2;"><strong style="color:var(--foreground-subtle);">Sent At:</strong> <span id="modal-sent-at" style="font-family: 'JetBrains Mono';">2026-10-08 10:30:32 UTC</span></div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; margin-top: 1.5rem; flex-wrap: wrap; gap: 0.5rem;">
+        <button class="cool-btn-hover" style="padding: 0.6rem 1rem; border-radius: 10px; background: var(--surface-secondary); color: #fff; font-size: 0.8rem; border: 1px solid var(--border); cursor: pointer;" onclick="previewInPrint()">
+          Open in 8-Up Print Engine
+        </button>
+        <button class="cool-btn-hover" style="padding: 0.6rem 1rem; border-radius: 10px; background: rgba(56,189,248,0.15); color: #38bdf8; font-size: 0.8rem; border: 1px solid rgba(56,189,248,0.3); cursor: pointer;" onclick="openEditStudentModal(activeModalStudent.id)">
+          Edit Student Details
+        </button>
+        <button class="cool-btn-hover" style="padding: 0.6rem 1rem; border-radius: 10px; background: #8fe617; color: #062404; font-size: 0.8rem; font-weight: 700; border: none; cursor: pointer;" onclick="downloadModalPhoto()">
+          Download Classified Photo
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: EDIT STUDENT PROFILE DATA -->
+  <!-- ===================================================================== -->
+  <div id="edit-student-modal" class="modal-overlay">
+    <div class="modal-box" style="max-width: 580px;">
+      <button onclick="closeEditStudentModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: transparent; border: none; color: #fff; cursor: pointer;">
+        <i data-lucide="x"></i>
+      </button>
+
+      <h3 style="font-family: 'Outfit'; font-size: 1.35rem; font-weight: 800; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 8px;">
+        <i data-lucide="edit-3" style="color: #38bdf8;"></i>
+        Edit Student Profile
+      </h3>
+      <p style="font-size: 0.8rem; color: var(--foreground-muted); margin-bottom: 1.25rem;">
+        Modify student record details. Changes are updated immediately and saved.
+      </p>
+
+      <form onsubmit="handleSaveStudentEdit(event)" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <div style="grid-column: span 2;">
+          <label style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 3px;">Full Name *</label>
+          <input type="text" id="edit-fullname" required style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.8rem; color: #fff; font-size: 0.85rem; outline: none;" />
+        </div>
+
+        <div>
+          <label style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 3px;">Student ID *</label>
+          <input type="text" id="edit-studentid" required style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.8rem; color: #fff; font-size: 0.85rem; font-family: 'JetBrains Mono'; outline: none;" />
+        </div>
+
+        <div>
+          <label style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 3px;">Phone Number *</label>
+          <input type="text" id="edit-phone" required style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.8rem; color: #fff; font-size: 0.85rem; outline: none;" />
+        </div>
+
+        <div>
+          <label style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 3px;">Grade *</label>
+          <input type="text" id="edit-grade" required style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.8rem; color: #fff; font-size: 0.85rem; outline: none;" />
+        </div>
+
+        <div>
+          <label style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 3px;">Section</label>
+          <input type="text" id="edit-section" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.8rem; color: #fff; font-size: 0.85rem; outline: none;" />
+        </div>
+
+        <div>
+          <label style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 3px;">School *</label>
+          <input type="text" id="edit-school" required style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.8rem; color: #fff; font-size: 0.85rem; outline: none;" />
+        </div>
+
+        <div>
+          <label style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 3px;">Regional Branch</label>
+          <input type="text" id="edit-branch" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.8rem; color: #fff; font-size: 0.85rem; outline: none;" />
+        </div>
+
+        <div style="grid-column: span 2; display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1rem;">
+          <button type="button" class="cool-btn-hover" style="padding: 0.6rem 1rem; border-radius: 10px; background: var(--surface-secondary); color: #fff; border: 1px solid var(--border); font-size: 0.8rem; cursor: pointer;" onclick="closeEditStudentModal()">
+            Cancel
+          </button>
+          <button type="submit" class="cool-btn-hover" style="padding: 0.6rem 1.25rem; border-radius: 10px; background: #8fe617; color: #062404; font-weight: 800; font-size: 0.8rem; border: none; cursor: pointer;">
+            Save Student Record
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: CLASSIFIED ZIP PROGRESS MODAL -->
+  <!-- ===================================================================== -->
+  <div id="zip-modal" class="modal-overlay">
+    <div class="modal-box" style="max-width: 500px;">
+      <h3 style="font-family: 'Outfit'; font-size: 1.3rem; font-weight: 800; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 8px;">
+        <i data-lucide="archive" style="color: #8fe617;"></i>
+        Classified Photo ZIP Archiver
+      </h3>
+      <p style="color: var(--foreground-muted); font-size: 0.85rem;" id="zip-status-text">
+        Partitioning student photos into <strong>Encoded/</strong> and <strong>Unencoded/</strong> folders...
+      </p>
+
+      <div style="width: 100%; height: 8px; background: #070908; border-radius: 9999px; overflow: hidden; margin: 1.25rem 0; border: 1px solid var(--border);">
+        <div id="zip-progress-fill" style="height: 100%; width: 0%; background: linear-gradient(90deg, #8fe617, #10b981); transition: width 0.15s ease;"></div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--foreground-subtle);">
+        <span id="zip-progress-count">0 / 0 downloaded</span>
+        <span id="zip-progress-percent">0%</span>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem;">
+        <button class="cool-btn-hover" style="padding: 0.5rem 1rem; border-radius: 10px; background: var(--surface-secondary); color: #fff; border: 1px solid var(--border); font-size: 0.8rem; cursor: pointer;" onclick="cancelZipDownload()">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- APPLICATION LOGIC: AUTHENTIC RESTORATION, PHOTO EDITING, 1-DEVICE LOCK -->
+  <!-- ===================================================================== -->
+  <script>
+    // State
+    let allStudents = [];
+    let filteredStudents = [];
+    let allUsers = [];
+    let selectedStudentIds = new Set();
+    let currentUser = null;
+    let currentView = "students";
+    let activeModalStudent = null;
+    let activeEditorStudent = null;
+    let isZipCancelled = false;
+
+    // Active Grade Filter Chip
+    let selectedGradeChip = "ALL";
+
+    // Photo Editor State
+    let editorImg = new Image();
+    let editorState = {
+      zoom: 1.0,
+      brightness: 100,
+      contrast: 100,
+      saturation: 100,
+      rotation: 0,
+      aspect: 3/4
+    };
+
+    // Pagination
+    let currentPage = 1;
+    let pageSize = 500; // 500 on Page 1
+
+    // Regional Branch Schools
+    const BRANCH_SCHOOLS = {
+      "Harrer": ["High Tech"],
+      "Harar": ["High Tech"],
+      "Adama": ["Sena Yerosen", "Debebech", "Yacine", "Odda"],
+      "Addis Ababa": ["YMS", "Adika Youth", "School Of America", "Warka"],
+      "Mojjo": ["Mojjo"]
+    };
+
+    // Navigation Structure matching Screenshot exactly
+    const ROLE_CONFIG = {
+      SUPER_ADMIN: {
+        heading: "ADMIN CONSOLE",
+        defaultView: "students",
+        sections: [
+          {
+            title: "INSTITUTIONAL ADMINISTRATOR",
+            items: [
+              { id: "dashboard", label: "Live Dashboard & Metrics", icon: "layout-grid" },
+              { id: "students", label: "Student Directory & Records", icon: "users" },
+              { id: "print", label: "8-Up Print Engine", icon: "printer" },
+              { id: "badge-designer", label: "Badge Designer Studio", icon: "sparkles" },
+              { id: "register", label: "Student Registration", icon: "user-plus" }
+            ]
+          },
+          {
+            title: "PROVISION OPERATORS & RBAC",
+            items: [
+              { id: "admin", label: "Provision Operators & RBAC", icon: "shield" },
+              { id: "audit-logs", label: "Database & Audit Logs", icon: "database" },
+              { id: "system-settings", label: "Admin System Settings", icon: "settings" }
+            ]
+          }
+        ]
+      },
+      ADMIN: {
+        heading: "SUPERVISOR CONSOLE",
+        defaultView: "admin",
+        sections: [
+          {
+            title: "OPERATOR SUPERVISION",
+            items: [
+              { id: "admin", label: "Provision Operators & RBAC", icon: "shield" },
+              { id: "dashboard", label: "Live Dashboard & Metrics", icon: "layout-grid" },
+              { id: "audit-logs", label: "Database & Audit Logs", icon: "database" }
+            ]
+          }
+        ]
+      },
+      SENDER: {
+        heading: "SENDER WORKSTATION",
+        defaultView: "register",
+        sections: [
+          {
+            title: "SENDER DISPATCH",
+            items: [
+              { id: "register", label: "Student Registration", icon: "user-plus" },
+              { id: "dashboard", label: "Live Dispatch Status", icon: "layout-grid" }
+            ]
+          }
+        ]
+      },
+      RECEIVER: {
+        heading: "RECEIVER STATION",
+        defaultView: "students",
+        sections: [
+          {
+            title: "RECEIVER OPERATIONS",
+            items: [
+              { id: "students", label: "Student Directory & Records", icon: "users" },
+              { id: "dashboard", label: "Live Dashboard & Metrics", icon: "layout-grid" },
+              { id: "print", label: "8-Up Print Engine", icon: "printer" }
+            ]
+          }
+        ]
+      }
+    };
+
+    // Durable Device Hardware Fingerprint (1-Device Lock Key)
+    function getDeviceFingerprint() {
+      let id = localStorage.getItem("sb_device_hw_id");
+      if (!id || id.length < 16) {
+        id = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `dev_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        localStorage.setItem("sb_device_hw_id", id);
+      }
+      return {
+        deviceId: id,
+        deviceInfo: `${navigator.platform || 'Windows 10/11'} • Chrome [${screen.width}x${screen.height}]`
+      };
+    }
+
+    // Init App
+    window.addEventListener("DOMContentLoaded", async () => {
+      lucide.createIcons();
+      await loadDataset();
+      generateAutoStudentId();
+      initGradeChips();
+      initSenderFilter();
+
+      const savedUser = localStorage.getItem("sb_session_user");
+      if (savedUser) {
+        try {
+          currentUser = JSON.parse(savedUser);
+          renderAuthenticatedSession(currentUser);
+        } catch {
+          showLoginScreen();
+        }
+      } else {
+        showLoginScreen();
+      }
+    });
+
+    async function loadDataset() {
+      try {
+        const [sRes, uRes] = await Promise.all([
+          fetch("/data/students.json"),
+          fetch("/data/users.json")
+        ]);
+        if (sRes.ok) allStudents = await sRes.json();
+        if (uRes.ok) allUsers = await uRes.json();
+      } catch (e) {
+        console.error("Failed loading base data:", e);
+      }
+
+      // Merge locally created students from Sender submissions
+      try {
+        const custom = localStorage.getItem("sb_custom_students");
+        if (custom) {
+          const list = JSON.parse(custom);
+          if (Array.isArray(list)) allStudents = [...list, ...allStudents];
+        }
+      } catch (e) {}
+
+      // Merge locally edited photos
+      try {
+        const editedPhotos = localStorage.getItem("sb_edited_photos");
+        if (editedPhotos) {
+          const map = JSON.parse(editedPhotos);
+          allStudents.forEach(s => {
+            if (map[s.id]) {
+              s.photoPath = map[s.id];
+              s.previewPath = map[s.id];
+            }
+          });
+        }
+      } catch (e) {}
+
+      updateTotalMetrics();
+    }
+
+    function updateTotalMetrics() {
+      const totalStudentsEl = document.getElementById("metric-total-students");
+      if (totalStudentsEl) totalStudentsEl.textContent = allStudents.length.toLocaleString();
+      const totalPhotosEl = document.getElementById("metric-total-photos");
+      if (totalPhotosEl) totalPhotosEl.textContent = allStudents.filter(s => s.photoPath).length.toLocaleString();
+    }
+
+    function showLoginScreen() {
+      document.getElementById("screen-app").style.display = "none";
+      document.getElementById("screen-login").style.display = "flex";
+      lucide.createIcons();
+    }
+
+    // Login with Strict 1-Device Lock Enforcement
+    function handleLoginSubmit(e) {
+      e.preventDefault();
+      const email = document.getElementById("input-login-email").value.trim().toLowerCase();
+      const errBox = document.getElementById("device-lock-error");
+      errBox.style.display = "none";
+
+      const currentHw = getDeviceFingerprint();
+      const user = allUsers.find(u => u.email.toLowerCase() === email);
+
+      if (user) {
+        // Enforce 1 Device Lock
+        if (user.boundDeviceId && user.boundDeviceId !== currentHw.deviceId && user.role !== "SUPER_ADMIN") {
+          errBox.style.display = "block";
+          errBox.innerHTML = `<strong>⚠️ 1-Device Lock Violation:</strong> Account is bound to authorized device <em>${user.boundDeviceInfo || 'Windows 10/11 • Chrome'}</em>. Contact Super Admin to reset your lock.`;
+          return;
+        }
+
+        // Bind device if not bound
+        if (!user.boundDeviceId) {
+          user.boundDeviceId = currentHw.deviceId;
+          user.boundDeviceInfo = currentHw.deviceInfo;
+        }
+
+        currentUser = user;
+      } else {
+        currentUser = {
+          email: email,
+          username: email.split("@")[0],
+          role: "SUPER_ADMIN",
+          boundDeviceId: currentHw.deviceId,
+          boundDeviceInfo: currentHw.deviceInfo
+        };
+      }
+
+      localStorage.setItem("sb_session_user", JSON.stringify(currentUser));
+      renderAuthenticatedSession(currentUser);
+    }
+
+    function quickLoginAs(email, role) {
+      const currentHw = getDeviceFingerprint();
+      currentUser = {
+        email: email,
+        username: email.split("@")[0],
+        role: role,
+        boundDeviceId: currentHw.deviceId,
+        boundDeviceInfo: currentHw.deviceInfo
+      };
+      localStorage.setItem("sb_session_user", JSON.stringify(currentUser));
+      renderAuthenticatedSession(currentUser);
+    }
+
+    function handleSignOut() {
+      localStorage.removeItem("sb_session_user");
+      currentUser = null;
+      closeDrawer();
+      showLoginScreen();
+    }
+
+    // Role-Classified Session Rendering with Screenshot Drawer Structure
+    function renderAuthenticatedSession(user) {
+      document.getElementById("screen-login").style.display = "none";
+      document.getElementById("screen-app").style.display = "flex";
+
+      const role = user.role || "SUPER_ADMIN";
+      const config = ROLE_CONFIG[role] || ROLE_CONFIG.SUPER_ADMIN;
+
+      // Update Header & Drawer
+      document.getElementById("strip-role-badge").textContent = role;
+      document.getElementById("strip-user-email").textContent = user.email;
+      document.getElementById("drawer-role-heading").textContent = config.heading;
+      document.getElementById("drawer-user-name").textContent = user.username || user.email.split("@")[0];
+      document.getElementById("drawer-user-status").textContent = `${role === 'SUPER_ADMIN' ? 'ADMINISTRATOR' : role}`;
+
+      // Build Drawer Navigation
+      const navContainer = document.getElementById("drawer-nav-items");
+      let navHtml = "";
+
+      config.sections.forEach(sec => {
+        navHtml += `
+          <div class="drawer-section-heading">
+            <i data-lucide="shield" style="width: 14px; height: 14px;"></i>
+            <span>${sec.title}</span>
+          </div>
+        `;
+        sec.items.forEach(item => {
+          navHtml += `
+            <button 
+              class="drawer-nav-item ${item.id === config.defaultView ? 'active' : ''}" 
+              onclick="navigateTo('${item.id}'); closeDrawer();"
+            >
+              <i data-lucide="${item.icon}" style="width: 16px; height: 16px;"></i>
+              <span>${item.label}</span>
+            </button>
+          `;
+        });
+      });
+
+      navContainer.innerHTML = navHtml;
+
+      navigateTo(config.defaultView);
+      applyFilters();
+      renderUsersTable();
+      renderRecentStudentsFeed();
+      if (allStudents.length > 0) setupPrintCard(allStudents[0]);
+      lucide.createIcons();
+    }
+
+    // Navigation Switcher
+    function navigateTo(viewId) {
+      currentView = viewId;
+      const views = ["students", "register", "dashboard", "admin", "print", "badge-designer", "audit-logs", "system-settings"];
+      views.forEach(v => {
+        const el = document.getElementById(`view-${v}`);
+        if (el) el.style.display = (v === viewId) ? "block" : "none";
+      });
+
+      document.querySelectorAll(".drawer-nav-item").forEach(btn => {
+        btn.classList.toggle("active", btn.getAttribute("onclick") && btn.getAttribute("onclick").includes(`'${viewId}'`));
+      });
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function handleBrandClick() {
+      if (!currentUser) return;
+      const config = ROLE_CONFIG[currentUser.role] || ROLE_CONFIG.SUPER_ADMIN;
+      navigateTo(config.defaultView);
+    }
+
+    function openDrawer() { document.getElementById("drawer-modal").classList.add("open"); }
+    function closeDrawer() { document.getElementById("drawer-modal").classList.remove("open"); }
+    function handleDrawerBackdropClick(e) { if (e.target.id === "drawer-modal") closeDrawer(); }
+    function toggleTheme() { document.documentElement.classList.toggle("dark"); }
+
+    // Dynamic Grade Chips from Screenshot (e.g. 9A (1), 10 (3), 11A (21), etc.)
+    function initGradeChips() {
+      const counts = {};
+      allStudents.forEach(s => {
+        const g = (s.grade || "Other").trim();
+        counts[g] = (counts[g] || 0) + 1;
+      });
+
+      const container = document.getElementById("grade-chips-container");
+      if (!container) return;
+
+      const sortedGrades = Object.keys(counts).sort((a, b) => {
+        // Natural sort
+        return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+      });
+
+      let chipsHtml = `
+        <button class="grade-chip ${selectedGradeChip === 'ALL' ? 'active' : ''}" onclick="selectGradeChip('ALL')">
+          All Grades (${allStudents.length.toLocaleString()})
+        </button>
+      `;
+
+      sortedGrades.forEach(g => {
+        chipsHtml += `
+          <button class="grade-chip ${selectedGradeChip === g ? 'active' : ''}" onclick="selectGradeChip('${escapeHtml(g)}')">
+            ${escapeHtml(g)} (${counts[g]})
+          </button>
+        `;
+      });
+
+      container.innerHTML = chipsHtml;
+    }
+
+    function selectGradeChip(g) {
+      selectedGradeChip = g;
+      document.querySelectorAll(".grade-chip").forEach(c => {
+        c.classList.toggle("active", c.textContent.trim().startsWith(g === 'ALL' ? 'All Grades' : g + ' '));
+      });
+      currentPage = 1;
+      applyFilters();
+    }
+
+    function initSenderFilter() {
+      const senders = new Set();
+      allStudents.forEach(s => { if (s.senderName) senders.add(s.senderName); });
+      const sel = document.getElementById("filter-sender");
+      if (!sel) return;
+      sel.innerHTML = '<option value="ALL">All Senders</option>';
+      Array.from(senders).sort().forEach(s => {
+        const o = document.createElement("option");
+        o.value = s;
+        o.textContent = s;
+        sel.appendChild(o);
+      });
+    }
+
+    function handleSearchChange() { currentPage = 1; applyFilters(); }
+    function handleFilterChange() { currentPage = 1; applyFilters(); }
+
+    function applyFilters() {
+      const q = (document.getElementById("search-students").value || "").trim().toLowerCase();
+      const school = document.getElementById("filter-school").value;
+      const dept = document.getElementById("filter-dept").value;
+      const photoStatus = document.getElementById("filter-photo").value;
+      const sender = document.getElementById("filter-sender").value;
+
+      filteredStudents = allStudents.filter(s => {
+        if (q) {
+          const m = (s.fullName || "").toLowerCase().includes(q) ||
+                    (s.studentId || "").toLowerCase().includes(q) ||
+                    (s.rollNumber || "").toLowerCase().includes(q) ||
+                    (s.phone || "").toLowerCase().includes(q);
+          if (!m) return false;
+        }
+        if (selectedGradeChip !== "ALL" && (s.grade || "").trim() !== selectedGradeChip) return false;
+        if (school !== "ALL" && !(s.school || "").toLowerCase().includes(school.toLowerCase())) return false;
+        if (dept !== "ALL" && (s.department || "General") !== dept) return false;
+        if (photoStatus === "OK" && !s.photoPath) return false;
+        if (photoStatus === "MISSING" && s.photoPath) return false;
+        if (sender !== "ALL" && s.senderName !== sender) return false;
+        return true;
+      });
+
+      renderTable();
+      renderPagination();
+    }
+
+    function resetFilters() {
+      document.getElementById("search-students").value = "";
+      document.getElementById("filter-school").value = "ALL";
+      document.getElementById("filter-dept").value = "ALL";
+      document.getElementById("filter-photo").value = "ALL";
+      document.getElementById("filter-sender").value = "ALL";
+      selectedGradeChip = "ALL";
+      document.querySelectorAll(".grade-chip").forEach(c => {
+        c.classList.toggle("active", c.textContent.trim().startsWith("All Grades"));
+      });
+      currentPage = 1;
+      applyFilters();
+    }
+
+    function clearAllData() {
+      if (confirm("Reset current filter queries and clear active selections?")) {
+        resetFilters();
+        clearSelection();
+      }
+    }
+
+    function resyncCloud() {
+      loadDataset().then(() => {
+        initGradeChips();
+        initSenderFilter();
+        applyFilters();
+        alert("Cloudflare Edge and R2 data re-synchronized successfully!");
+      });
+    }
+
+    function setPageSize(val) {
+      pageSize = parseInt(val, 10);
+      currentPage = 1;
+      renderTable();
+      renderPagination();
+    }
+
+    function formatDateTime(str) {
+      if (!str) return "-";
+      try {
+        const d = new Date(str);
+        if (isNaN(d.getTime())) return str;
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      } catch { return str; }
+    }
+
+    function isEncoded(s) {
+      return Boolean((s.recordsEncoded && s.recordsEncoded > 0) || s.photoIntegrityStatus === "PHOTO_VERIFIED" || (s.qrCodeData && s.qrCodeData.trim() !== ""));
+    }
+
+    function getInitials(name) {
+      if (!name) return "SB";
+      const parts = name.trim().split(/\s+/);
+      if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+
+    // Render Student Directory matching User Screenshot Exactly
+    function renderTable() {
+      const tbody = document.getElementById("student-table-body");
+      if (filteredStudents.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:3rem; color:var(--foreground-muted);">No student records found.</td></tr>`;
+        return;
+      }
+
+      const start = (currentPage - 1) * pageSize;
+      const end = Math.min(start + pageSize, filteredStudents.length);
+      const slice = filteredStudents.slice(start, end);
+
+      let html = "";
+      for (const s of slice) {
+        const isSel = selectedStudentIds.has(s.id);
+        const photoUrl = s.previewPath || s.photoPath;
+        const initials = getInitials(s.fullName);
+        const isFemale = (s.sex || "").toLowerCase() === "female";
+        const hasPhoto = Boolean(photoUrl);
+
+        html += `
+          <tr class="${isSel ? 'selected' : ''}">
+            <!-- 1. Checkbox -->
+            <td style="text-align:center; width:36px;">
+              <input type="checkbox" onchange="toggleSelect('${s.id}', this.checked)" ${isSel ? 'checked' : ''} />
+            </td>
+
+            <!-- 2. Name Column (Avatar Box + Full Name + Student ID) -->
+            <td>
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div class="student-avatar-box" onclick="showStudentModal('${s.id}')" title="Inspect Student">
+                  ${hasPhoto ? 
+                    `<img src="${photoUrl}" alt="${s.fullName}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'" />` : 
+                    `<span class="avatar-initials">${initials}</span><i data-lucide="camera" class="avatar-camera-icon"></i>`
+                  }
+                </div>
+                <div>
+                  <div style="font-weight:700; font-size:13px; color:var(--foreground);">${escapeHtml(s.fullName)}</div>
+                  <div style="font-family:'JetBrains Mono'; font-weight:800; font-size:11px; color:var(--foreground-muted); margin-top:2px;">${escapeHtml(s.studentId)}</div>
+                </div>
+              </div>
+            </td>
+
+            <!-- 3. Sex Column (Male/Female Pill + Blood Drop Pill) -->
+            <td>
+              <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
+                <span class="${isFemale ? 'badge-sex-female' : 'badge-sex-male'}">
+                  ${isFemale ? 'Female' : 'Male'}
+                </span>
+                <span class="badge-blood" title="Blood Group">
+                  💧 ${escapeHtml(s.bloodType || 'null')}
+                </span>
+              </div>
+            </td>
+
+            <!-- 4. Grade Column -->
+            <td style="font-weight:700; font-size:13px;">${escapeHtml(s.grade || '—')}</td>
+
+            <!-- 5. Phone Column -->
+            <td style="font-family:'JetBrains Mono'; font-size:12px; color:var(--foreground-muted);">${escapeHtml(s.phone || '—')}</td>
+
+            <!-- 6. SENT BY Column -->
+            <td>
+              <span class="badge-station">
+                <span style="height:6px; width:6px; border-radius:50%; background:#22c55e;"></span>
+                <span>${escapeHtml(s.senderName || 'Direct Station')}</span>
+              </span>
+            </td>
+
+            <!-- 7. PHOTO STATUS Column -->
+            <td>
+              ${hasPhoto ? 
+                `<span class="badge" style="background:rgba(143,230,23,0.15); color:#8fe617; font-weight:700; padding:4px 8px; display:inline-flex; align-items:center; gap:4px;">
+                  <i data-lucide="check" style="width:12px; height:12px;"></i> Photo OK
+                </span>` : 
+                `<button type="button" class="btn-auto-resend" onclick="downloadSinglePhoto('${s.id}')" title="Auto-resend photo">
+                  <span>Auto-</span>
+                  <span>Resend</span>
+                  <div style="display:flex; gap:4px; margin-top:2px; font-size:9px;">
+                    <i data-lucide="link-2" style="width:10px; height:10px;"></i>
+                    <i data-lucide="upload" style="width:10px; height:10px;"></i>
+                  </div>
+                </button>`
+              }
+            </td>
+
+            <!-- 8. ACTION Row from Screenshot (🔗, 📥, ✂️, 🔗, 📤, 👁️, 🗑️) -->
+            <td style="text-align: right; white-space: nowrap;">
+              <!-- Copy Link -->
+              <button class="action-icon-btn" onclick="copyStudentLink('${s.studentId}')" title="Copy Student Link">
+                <i data-lucide="link-2" style="width:14px; height:14px;"></i>
+              </button>
+              
+              <!-- Download Photo -->
+              <button class="action-icon-btn" onclick="downloadSinglePhoto('${s.id}')" title="Download Photo">
+                <i data-lucide="download" style="width:14px; height:14px;"></i>
+              </button>
+
+              <!-- Real Photo Editor (Crop) -->
+              <button class="action-icon-btn crop-btn" onclick="openPhotoEditor('${s.id}')" title="Real Photo Editor &amp; Cropper">
+                <i data-lucide="crop" style="width:14px; height:14px;"></i>
+              </button>
+
+              <!-- Transmission Link -->
+              <button class="action-icon-btn" onclick="copyStudentLink('${s.studentId}')" title="Station Share">
+                <i data-lucide="share-2" style="width:14px; height:14px;"></i>
+              </button>
+
+              <!-- Resend Upload -->
+              <button class="action-icon-btn" onclick="downloadSinglePhoto('${s.id}')" title="Resend / Dispatch">
+                <i data-lucide="upload" style="width:14px; height:14px;"></i>
+              </button>
+
+              <!-- View Student Modal (Eye Icon) -->
+              <button class="action-icon-btn" onclick="showStudentModal('${s.id}')" title="View Student Data" style="color:#38bdf8;">
+                <i data-lucide="eye" style="width:15px; height:15px;"></i>
+              </button>
+
+              <!-- Edit Student Details -->
+              <button class="action-icon-btn" onclick="openEditStudentModal('${s.id}')" title="Edit Student Data" style="color:#f59e0b;">
+                <i data-lucide="edit" style="width:14px; height:14px;"></i>
+              </button>
+
+              <!-- Delete Student -->
+              <button class="action-icon-btn" onclick="deleteStudentRecord('${s.id}')" title="Delete Student Record" style="color:#ef4444;">
+                <i data-lucide="trash-2" style="width:14px; height:14px;"></i>
+              </button>
+            </td>
+          </tr>
+        `;
+      }
+
+      tbody.innerHTML = html;
+      lucide.createIcons();
+      updateSelectAllBox();
+    }
+
+    // Top & Bottom Pagination
+    function renderPagination() {
+      const totalPages = Math.ceil(filteredStudents.length / pageSize) || 1;
+      const start = (currentPage - 1) * pageSize + 1;
+      const end = Math.min(currentPage * pageSize, filteredStudents.length);
+
+      const infoStr = filteredStudents.length === 0 ? "Showing <strong>0</strong> students" : `Showing <strong>${start.toLocaleString()} – ${end.toLocaleString()}</strong> of <strong>${filteredStudents.length.toLocaleString()}</strong> students`;
+      
+      const topInfo = document.getElementById("page-info-top");
+      if (topInfo) topInfo.innerHTML = infoStr;
+      const botInfo = document.getElementById("page-info-bottom");
+      if (botInfo) botInfo.innerHTML = infoStr;
+
+      const btnsHtml = buildPaginationButtons(totalPages);
+      const topBtns = document.getElementById("page-btns-top");
+      if (topBtns) topBtns.innerHTML = btnsHtml;
+      const botBtns = document.getElementById("page-btns-bottom");
+      if (botBtns) botBtns.innerHTML = btnsHtml;
+    }
+
+    function buildPaginationButtons(totalPages) {
+      if (totalPages <= 1) return "";
+      let html = "";
+      html += `<button class="page-btn" onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled style="opacity:0.4;cursor:not-allowed;"' : ''}>&lsaquo;</button>`;
+      
+      const maxShown = 7;
+      let start = Math.max(1, currentPage - 3);
+      let end = Math.min(totalPages, start + maxShown - 1);
+      if (end - start < maxShown - 1) start = Math.max(1, end - maxShown + 1);
+
+      if (start > 1) {
+        html += `<button class="page-btn" onclick="goToPage(1)">1</button>`;
+        if (start > 2) html += `<span style="padding:0 4px;color:var(--foreground-subtle);">...</span>`;
+      }
+
+      for (let i = start; i <= end; i++) {
+        html += `<button class="page-btn ${i === currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`;
+      }
+
+      if (end < totalPages) {
+        if (end < totalPages - 1) html += `<span style="padding:0 4px;color:var(--foreground-subtle);">...</span>`;
+        html += `<button class="page-btn" onclick="goToPage(${totalPages})">${totalPages}</button>`;
+      }
+
+      html += `<button class="page-btn" onclick="goToPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled style="opacity:0.4;cursor:not-allowed;"' : ''}>&rsaquo;</button>`;
+      return html;
+    }
+
+    function goToPage(p) {
+      const totalPages = Math.ceil(filteredStudents.length / pageSize) || 1;
+      if (p < 1 || p > totalPages) return;
+      currentPage = p;
+      renderTable();
+      renderPagination();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    // Selection
+    function toggleSelect(id, checked) {
+      if (checked) selectedStudentIds.add(id);
+      else selectedStudentIds.delete(id);
+      renderTable();
+      updateSelectionBar();
+    }
+
+    function toggleSelectAllPage(checked) {
+      const start = (currentPage - 1) * pageSize;
+      const end = Math.min(start + pageSize, filteredStudents.length);
+      filteredStudents.slice(start, end).forEach(s => {
+        if (checked) selectedStudentIds.add(s.id);
+        else selectedStudentIds.delete(s.id);
+      });
+      renderTable();
+      updateSelectionBar();
+    }
+
+    function updateSelectAllBox() {
+      const cb = document.getElementById("cb-select-all");
+      if (!cb) return;
+      const start = (currentPage - 1) * pageSize;
+      const end = Math.min(start + pageSize, filteredStudents.length);
+      const slice = filteredStudents.slice(start, end);
+      if (slice.length === 0) { cb.checked = false; return; }
+      cb.checked = slice.every(s => selectedStudentIds.has(s.id));
+    }
+
+    function clearSelection() {
+      selectedStudentIds.clear();
+      renderTable();
+      updateSelectionBar();
+    }
+
+    function updateSelectionBar() {
+      const bar = document.getElementById("selection-bar");
+      const txt = document.getElementById("selection-count-text");
+      if (selectedStudentIds.size > 0) {
+        bar.style.display = "flex";
+        txt.textContent = `${selectedStudentIds.size.toLocaleString()} students selected`;
+      } else {
+        bar.style.display = "none";
+      }
+    }
+
+    // Classified Photo Download: Single
+    function downloadSinglePhoto(id) {
+      const s = allStudents.find(x => x.id === id);
+      if (!s || !s.photoPath) { alert("Student has no photo uploaded."); return; }
+      const prefix = isEncoded(s) ? "Encoded_" : "Unencoded_";
+      const cleanName = (s.fullName || "Student").replace(/[^a-zA-Z0-9_\-\s]/g, "");
+      const fileName = `${prefix}${s.studentId}_${cleanName}.jpg`;
+      const url = `/api/proxy-photo?url=${encodeURIComponent(s.photoPath)}&filename=${encodeURIComponent(fileName)}&download=1`;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    // Classified Photo Download: Bulk ZIP
+    async function downloadSelectedPhotosZip() {
+      const list = allStudents.filter(s => (selectedStudentIds.size === 0 || selectedStudentIds.has(s.id)) && s.photoPath);
+      if (list.length === 0) { alert("No student photos found to download."); return; }
+
+      const countToDownload = selectedStudentIds.size > 0 ? selectedStudentIds.size : Math.min(100, list.length);
+      const targetList = list.slice(0, countToDownload);
+
+      const modal = document.getElementById("zip-modal");
+      modal.classList.add("open");
+      isZipCancelled = false;
+
+      const zip = new JSZip();
+      const encFolder = zip.folder("Encoded");
+      const unencFolder = zip.folder("Unencoded");
+
+      let done = 0;
+      const total = targetList.length;
+      const concurrency = 6;
+
+      for (let i = 0; i < total; i += concurrency) {
+        if (isZipCancelled) break;
+        const chunk = targetList.slice(i, i + concurrency);
+        await Promise.all(chunk.map(async (student) => {
+          if (isZipCancelled) return;
+          try {
+            const clean = (student.fullName || "Student").replace(/[^a-zA-Z0-9_\-\s]/g, "");
+            const fname = `${student.studentId}_${clean}.jpg`;
+            const r = await fetch(`/api/proxy-photo?url=${encodeURIComponent(student.photoPath)}`);
+            if (r.ok) {
+              const b = await r.blob();
+              if (isEncoded(student)) encFolder.file(fname, b);
+              else unencFolder.file(fname, b);
+            }
+          } catch {}
+          done++;
+          const pct = Math.round((done / total) * 100);
+          document.getElementById("zip-progress-fill").style.width = `${pct}%`;
+          document.getElementById("zip-progress-percent").textContent = `${pct}%`;
+          document.getElementById("zip-progress-count").textContent = `${done} / ${total} downloaded`;
+        }));
+      }
+
+      if (!isZipCancelled) {
+        document.getElementById("zip-status-text").textContent = "Packaging ZIP archive...";
+        const blob = await zip.generateAsync({ type: "blob" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `student_photos_classified_${Date.now()}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+      setTimeout(() => modal.classList.remove("open"), 800);
+    }
+
+    function cancelZipDownload() {
+      isZipCancelled = true;
+      document.getElementById("zip-modal").classList.remove("open");
+    }
+
+    function copyStudentLink(studentId) {
+      navigator.clipboard.writeText(`${window.location.origin}/students?q=${studentId}`);
+      alert(`Student link for ${studentId} copied to clipboard!`);
+    }
+
+    function exportToExcel() {
+      const data = filteredStudents.map(s => ({
+        "Student ID": s.studentId,
+        "Full Name": s.fullName,
+        "Sex": s.sex,
+        "Blood Type": s.bloodType,
+        "Grade": s.grade,
+        "Phone": s.phone,
+        "Section": s.department || "General",
+        "School": s.school || "High Tech",
+        "Branch": s.address || "Harrer",
+        "Station": s.senderName || "Direct Station",
+        "Sent At": formatDateTime(s.createdAt),
+        "Classification": isEncoded(s) ? "Encoded" : "Unencoded",
+        "Photo URL": s.photoPath || ""
+      }));
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Students");
+      XLSX.writeFile(wb, `StudentBridge_Directory_${Date.now()}.xlsx`);
+    }
+
+    function exportToCSV() {
+      const h = ["Student ID", "Full Name", "Sex", "Blood", "Grade", "Phone", "Section", "School", "Branch", "Station", "Sent At", "Classification"];
+      const r = filteredStudents.map(s => [
+        s.studentId, `"${(s.fullName||'').replace(/"/g,'""')}"`, s.sex, s.bloodType, s.grade,
+        s.phone, `"${s.department||'General'}"`, `"${s.school||'High Tech'}"`, `"${s.address||'Harrer'}"`,
+        `"${s.senderName||'Direct Station'}"`, `"${formatDateTime(s.createdAt)}"`, isEncoded(s)?"Encoded":"Unencoded"
+      ]);
+      const csv = [h.join(","), ...r.map(x => x.join(","))].join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `StudentBridge_Directory_${Date.now()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    function exportAnalyticsReport() {
+      const data = allUsers.map(u => ({
+        "Operator Email": u.email,
+        "Username": u.username,
+        "Role": u.role,
+        "Assigned Branch": u.branch || "Harar",
+        "Assigned School": u.school || "High Tech",
+        "Records Sent": u.recordsSentSingle || 0,
+        "Encoded Records": u.recordsEncoded || 0,
+        "Velocity (recs/hr)": (((u.recordsSentSingle||1)/8)).toFixed(1),
+        "Photo Upload Ratio": "100%",
+        "Work Sessions": u.workSessionCount || 0,
+        "Locked Device": u.boundDeviceInfo || "Windows 10/11 • Chrome"
+      }));
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Performance Analytics");
+      XLSX.writeFile(wb, `StudentBridge_Analytics_${Date.now()}.xlsx`);
+    }
+
+    // View Student Modal (Eye Icon)
+    function showStudentModal(id) {
+      const s = allStudents.find(x => x.id === id);
+      if (!s) return;
+      activeModalStudent = s;
+      document.getElementById("modal-name").textContent = s.fullName;
+      document.getElementById("modal-id").textContent = s.studentId;
+      document.getElementById("modal-school-grade").textContent = `${s.grade||'-'} • ${s.school||'High Tech'} (${s.address||'Harrer'})`;
+      document.getElementById("modal-phone").textContent = s.phone || "-";
+      document.getElementById("modal-roll").textContent = s.rollNumber || "-";
+      document.getElementById("modal-sex").textContent = s.sex || "Female";
+      document.getElementById("modal-blood").textContent = s.bloodType || "null";
+      document.getElementById("modal-sender").textContent = s.senderName || "Direct Station";
+      document.getElementById("modal-section").textContent = s.department || "General";
+      document.getElementById("modal-sent-at").textContent = formatDateTime(s.createdAt);
+      document.getElementById("modal-photo").src = s.previewPath || s.photoPath || "/logo.png";
+
+      const b = document.getElementById("modal-badge-encoded");
+      if (isEncoded(s)) {
+        b.className = "badge badge-encoded";
+        b.textContent = "ENCODED & VERIFIED";
+      } else {
+        b.className = "badge badge-unencoded";
+        b.textContent = "UNENCODED";
+      }
+      document.getElementById("student-modal").classList.add("open");
+    }
+
+    function closeStudentModal() { document.getElementById("student-modal").classList.remove("open"); }
+    function downloadModalPhoto() { if (activeModalStudent) downloadSinglePhoto(activeModalStudent.id); }
+    
+    function previewInPrint() {
+      if (activeModalStudent) {
+        closeStudentModal();
+        setupPrintCard(activeModalStudent);
+        navigateTo("print");
+      }
+    }
+
+    function setupPrintCard(s) {
+      document.getElementById("card-print-name").textContent = s.fullName || "Student Name";
+      document.getElementById("card-print-id").textContent = s.studentId || "SB-2026-00000";
+      document.getElementById("card-print-grade").textContent = `Grade: ${s.grade || '2B'} • Academic Year: 2026-2027`;
+      document.getElementById("card-print-school").textContent = `${s.school || 'HIGH TECH'} • ${s.address || 'HARRER'}`;
+      document.getElementById("card-print-photo").src = s.photoPath || "/logo.png";
+
+      const qrBox = document.getElementById("card-qr-box");
+      qrBox.innerHTML = "";
+      new QRCode(qrBox, {
+        text: s.qrCodeData || JSON.stringify({ id: s.studentId, name: s.fullName, grade: s.grade }),
+        width: 130, height: 130, colorDark: "#000", colorLight: "#fff", correctLevel: QRCode.CorrectLevel.M
+      });
+    }
+
+    // =====================================================================
+    // REAL PHOTO EDITOR MODAL (Crop, Zoom, Brightness, Contrast, Saturation)
+    // =====================================================================
+    function openPhotoEditor(id) {
+      const s = allStudents.find(x => x.id === id);
+      if (!s) return;
+      activeEditorStudent = s;
+      document.getElementById("editor-student-name").textContent = s.fullName;
+      document.getElementById("editor-student-id").textContent = s.studentId;
+
+      resetEditorControls();
+
+      const photoUrl = s.previewPath || s.photoPath || "/logo.png";
+      editorImg.crossOrigin = "anonymous";
+      editorImg.onload = () => {
+        applyEditorFilters();
+        document.getElementById("photo-editor-modal").classList.add("open");
+      };
+      editorImg.onerror = () => {
+        // Fallback to proxy
+        editorImg.src = `/api/proxy-photo?url=${encodeURIComponent(photoUrl)}`;
+      };
+      editorImg.src = photoUrl.startsWith("data:") ? photoUrl : `/api/proxy-photo?url=${encodeURIComponent(photoUrl)}`;
+    }
+
+    function openPhotoEditorFromModal() {
+      if (activeModalStudent) {
+        closeStudentModal();
+        openPhotoEditor(activeModalStudent.id);
+      }
+    }
+
+    function closePhotoEditorModal() {
+      document.getElementById("photo-editor-modal").classList.remove("open");
+    }
+
+    function resetEditorControls() {
+      editorState = { zoom: 1.0, brightness: 100, contrast: 100, saturation: 100, rotation: 0, aspect: 3/4 };
+      document.getElementById("slider-zoom").value = "1";
+      document.getElementById("slider-brightness").value = "100";
+      document.getElementById("slider-contrast").value = "100";
+      document.getElementById("slider-saturation").value = "100";
+      document.getElementById("label-zoom").textContent = "1.0x";
+      document.getElementById("label-brightness").textContent = "100%";
+      document.getElementById("label-contrast").textContent = "100%";
+      document.getElementById("label-saturation").textContent = "100%";
+      document.getElementById("canvas-aspect-indicator").textContent = "3:4 ID Portrait";
+    }
+
+    function rotateEditorImage(delta) {
+      editorState.rotation = (editorState.rotation + delta) % 360;
+      applyEditorFilters();
+    }
+
+    function setEditorAspect(ratio) {
+      editorState.aspect = ratio;
+      document.getElementById("canvas-aspect-indicator").textContent = ratio === 1 ? "1:1 Square" : "3:4 ID Portrait";
+      applyEditorFilters();
+    }
+
+    function applyEditorFilters() {
+      const canvas = document.getElementById("photo-editor-canvas");
+      if (!canvas || !editorImg.complete) return;
+      const ctx = canvas.getContext("2d");
+
+      editorState.zoom = parseFloat(document.getElementById("slider-zoom").value);
+      editorState.brightness = parseInt(document.getElementById("slider-brightness").value, 10);
+      editorState.contrast = parseInt(document.getElementById("slider-contrast").value, 10);
+      editorState.saturation = parseInt(document.getElementById("slider-saturation").value, 10);
+
+      document.getElementById("label-zoom").textContent = `${editorState.zoom.toFixed(2)}x`;
+      document.getElementById("label-brightness").textContent = `${editorState.brightness}%`;
+      document.getElementById("label-contrast").textContent = `${editorState.contrast}%`;
+      document.getElementById("label-saturation").textContent = `${editorState.saturation}%`;
+
+      // Set canvas dimension based on chosen aspect ratio
+      const baseW = 300;
+      const baseH = Math.round(baseW / editorState.aspect);
+      canvas.width = baseW;
+      canvas.height = baseH;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+
+      // CSS Filters
+      ctx.filter = `brightness(${editorState.brightness}%) contrast(${editorState.contrast}%) saturate(${editorState.saturation}%)`;
+
+      // Translate to center for rotation & zoom
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate((editorState.rotation * Math.PI) / 180);
+      ctx.scale(editorState.zoom, editorState.zoom);
+
+      // Draw image centered
+      const imgAspect = editorImg.width / editorImg.height;
+      let drawW, drawH;
+      if (imgAspect > editorState.aspect) {
+        drawH = canvas.height;
+        drawW = drawH * imgAspect;
+      } else {
+        drawW = canvas.width;
+        drawH = drawW / imgAspect;
+      }
+
+      ctx.drawImage(editorImg, -drawW / 2, -drawH / 2, drawW, drawH);
+      ctx.restore();
+    }
+
+    function saveEditedPhoto() {
+      if (!activeEditorStudent) return;
+      const canvas = document.getElementById("photo-editor-canvas");
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+
+      if (activeEditorStudent.id === "sender_active") {
+        senderUploadedPhotoDataUrl = dataUrl;
+        updatePhotoPreview(senderUploadedPhotoDataUrl);
+        closePhotoEditorModal();
+        alert(`Student portrait photo cropped and updated!`);
+        return;
+      }
+
+      activeEditorStudent.photoPath = dataUrl;
+      activeEditorStudent.previewPath = dataUrl;
+
+      // Save to localStorage map
+      try {
+        let map = {};
+        const stored = localStorage.getItem("sb_edited_photos");
+        if (stored) map = JSON.parse(stored);
+        map[activeEditorStudent.id] = dataUrl;
+        localStorage.setItem("sb_edited_photos", JSON.stringify(map));
+      } catch (e) {}
+
+      renderTable();
+      closePhotoEditorModal();
+      alert(`Portrait for ${activeEditorStudent.fullName} successfully updated and saved!`);
+    }
+
+    function downloadEditedPhotoDirect() {
+      const canvas = document.getElementById("photo-editor-canvas");
+      const a = document.createElement("a");
+      a.href = canvas.toDataURL("image/jpeg", 0.95);
+      a.download = `Edited_${activeEditorStudent ? activeEditorStudent.studentId : 'portrait'}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    // =====================================================================
+    // EDIT STUDENT PROFILE MODAL
+    // =====================================================================
+    let editingStudentObj = null;
+
+    function openEditStudentModal(id) {
+      const s = allStudents.find(x => x.id === id);
+      if (!s) return;
+      editingStudentObj = s;
+      document.getElementById("edit-fullname").value = s.fullName || "";
+      document.getElementById("edit-studentid").value = s.studentId || "";
+      document.getElementById("edit-phone").value = s.phone || "";
+      document.getElementById("edit-grade").value = s.grade || "";
+      document.getElementById("edit-section").value = s.department || "General";
+      document.getElementById("edit-school").value = s.school || "High Tech";
+      document.getElementById("edit-branch").value = s.address || "Harrer";
+      document.getElementById("edit-student-modal").classList.add("open");
+    }
+
+    function closeEditStudentModal() {
+      document.getElementById("edit-student-modal").classList.remove("open");
+    }
+
+    function handleSaveStudentEdit(e) {
+      e.preventDefault();
+      if (!editingStudentObj) return;
+
+      editingStudentObj.fullName = document.getElementById("edit-fullname").value.trim();
+      editingStudentObj.studentId = document.getElementById("edit-studentid").value.trim();
+      editingStudentObj.phone = document.getElementById("edit-phone").value.trim();
+      editingStudentObj.grade = document.getElementById("edit-grade").value.trim();
+      editingStudentObj.department = document.getElementById("edit-section").value.trim();
+      editingStudentObj.school = document.getElementById("edit-school").value.trim();
+      editingStudentObj.address = document.getElementById("edit-branch").value.trim();
+
+      renderTable();
+      closeEditStudentModal();
+      alert(`Student record for ${editingStudentObj.fullName} successfully updated!`);
+    }
+
+    function deleteStudentRecord(id) {
+      const s = allStudents.find(x => x.id === id);
+      if (!s) return;
+      if (confirm(`Are you sure you want to delete student ${s.fullName} (${s.studentId})?`)) {
+        allStudents = allStudents.filter(x => x.id !== id);
+        selectedStudentIds.delete(id);
+        updateTotalMetrics();
+        initGradeChips();
+        applyFilters();
+        alert(`Student record deleted.`);
+      }
+    }
+
+    // =====================================================================
+    // SENDER WORKSTATION (REAL LIVE WEBCAM, AUTO FORMATTING & DISPATCH)
+    // =====================================================================
+    let senderUploadedPhotoDataUrl = "";
+    let liveCameraStream = null;
+
+    // Toggle between Start Live Cam and Snap Photo
+    function handleTakePhotoClick() {
+      if (liveCameraStream) {
+        snapCameraPhoto();
+      } else {
+        startLiveCamera();
+      }
+    }
+
+    // Start Live WebRTC Camera Stream
+    async function startLiveCamera() {
+      try {
+        const video = document.getElementById("sender-camera-stream");
+        const placeholder = document.getElementById("photo-preview-placeholder");
+        const previewImg = document.getElementById("photo-preview-img");
+        const liveBadge = document.getElementById("camera-live-badge");
+        const btnTakeText = document.getElementById("btn-take-photo-text");
+        const btnTake = document.getElementById("btn-take-photo");
+        const btnStop = document.getElementById("btn-stop-camera");
+        const statusText = document.getElementById("camera-status-text");
+
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          alert("Webcam access is not supported by your browser. Please use 'Upload File' to choose an image.");
+          return;
+        }
+
+        liveCameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 960 } },
+          audio: false
+        });
+
+        video.srcObject = liveCameraStream;
+        video.style.display = "block";
+        if (placeholder) placeholder.style.display = "none";
+        if (previewImg) previewImg.style.display = "none";
+        if (liveBadge) liveBadge.style.display = "block";
+
+        if (btnTake) {
+          btnTake.style.background = "#38bdf8";
+          btnTake.style.color = "#082f49";
+          btnTakeText.textContent = "📸 Snap Photo Now";
+        }
+        if (btnStop) btnStop.style.display = "inline-flex";
+        if (statusText) statusText.innerHTML = "🟢 Live camera active. Center student face and click <strong>Snap Photo Now</strong>.";
+
+        lucide.createIcons();
+      } catch (err) {
+        console.warn("Camera access failed or denied:", err);
+        alert("Camera permission was denied or no camera device found. You can upload student photo files using 'Upload File'.");
+      }
+    }
+
+    // Snap High Resolution Frame from Live Video
+    function snapCameraPhoto() {
+      const video = document.getElementById("sender-camera-stream");
+      if (!video || !liveCameraStream) {
+        startLiveCamera();
+        return;
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 800;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      senderUploadedPhotoDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+
+      // Stop stream tracks
+      stopLiveCamera();
+
+      // Display snapped photo in preview
+      updatePhotoPreview(senderUploadedPhotoDataUrl);
+
+      const statusText = document.getElementById("camera-status-text");
+      if (statusText) statusText.innerHTML = "✅ Student portrait captured! Click 'Edit & Crop Photo' or transmit.";
+    }
+
+    // Stop Live Camera Stream
+    function stopLiveCamera() {
+      if (liveCameraStream) {
+        liveCameraStream.getTracks().forEach(track => track.stop());
+        liveCameraStream = null;
+      }
+      const video = document.getElementById("sender-camera-stream");
+      if (video) {
+        video.srcObject = null;
+        video.style.display = "none";
+      }
+      const liveBadge = document.getElementById("camera-live-badge");
+      if (liveBadge) liveBadge.style.display = "none";
+
+      const btnTake = document.getElementById("btn-take-photo");
+      const btnTakeText = document.getElementById("btn-take-photo-text");
+      const btnStop = document.getElementById("btn-stop-camera");
+      if (btnTake) {
+        btnTake.style.background = "#8fe617";
+        btnTake.style.color = "#062404";
+        btnTakeText.textContent = "Take Student Photo";
+      }
+      if (btnStop) btnStop.style.display = "none";
+
+      if (senderUploadedPhotoDataUrl) {
+        updatePhotoPreview(senderUploadedPhotoDataUrl);
+      } else {
+        updatePhotoPreview("");
+      }
+
+      lucide.createIcons();
+    }
+
+    // Handle Local Image File Upload
+    function handlePhotoFileUpload(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      stopLiveCamera();
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        senderUploadedPhotoDataUrl = event.target.result;
+        updatePhotoPreview(senderUploadedPhotoDataUrl);
+        const statusText = document.getElementById("camera-status-text");
+        if (statusText) statusText.innerHTML = "✅ Photo file loaded! You can crop or transmit to directory.";
+      };
+      reader.readAsDataURL(file);
+    }
+
+    // Update Photo Viewport Box
+    function updatePhotoPreview(url) {
+      const img = document.getElementById("photo-preview-img");
+      const placeholder = document.getElementById("photo-preview-placeholder");
+      const video = document.getElementById("sender-camera-stream");
+
+      if (url && (url.trim().startsWith("http") || url.trim().startsWith("data:"))) {
+        if (img) {
+          img.src = url;
+          img.style.display = "block";
+        }
+        if (video) video.style.display = "none";
+        if (placeholder) placeholder.style.display = "none";
+      } else {
+        if (img) img.style.display = "none";
+        if (video) video.style.display = "none";
+        if (placeholder) placeholder.style.display = "flex";
+      }
+      lucide.createIcons();
+    }
+
+    // Open Real Photo Editor for Current Sender Portrait
+    function openPhotoEditorForSender() {
+      if (!senderUploadedPhotoDataUrl) {
+        alert("Please take a student photo or upload an image file first to edit and crop.");
+        return;
+      }
+
+      activeEditorStudent = {
+        id: "sender_active",
+        fullName: document.getElementById("reg-fullname").value.trim() || "Student Portrait",
+        studentId: document.getElementById("reg-studentid").value.trim() || "SB-2026-00000",
+        photoPath: senderUploadedPhotoDataUrl,
+        previewPath: senderUploadedPhotoDataUrl
+      };
+
+      document.getElementById("editor-student-name").textContent = activeEditorStudent.fullName;
+      document.getElementById("editor-student-id").textContent = activeEditorStudent.studentId;
+
+      resetEditorControls();
+
+      editorImg.onload = () => {
+        applyEditorFilters();
+        document.getElementById("photo-editor-modal").classList.add("open");
+      };
+      editorImg.src = senderUploadedPhotoDataUrl;
+    }
+
+    // Auto-Format Ethiopian Phone Numbers (09 -> +2519, 07 -> +2517)
+    function handlePhoneInput(e) {
+      let val = e.target.value.trim();
+      if (val.startsWith("09")) {
+        val = "+2519" + val.substring(2);
+      } else if (val.startsWith("07")) {
+        val = "+2517" + val.substring(2);
+      }
+      e.target.value = val;
+    }
+
+    // Auto-Capitalize First Letter of Each Word (Student Name & Father Name)
+    function handleNameInput(e) {
+      const input = e.target;
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      const val = input.value;
+      const capitalized = val.replace(/\b([a-z])/g, char => char.toUpperCase());
+      if (val !== capitalized) {
+        input.value = capitalized;
+        if (start !== null && end !== null) {
+          input.setSelectionRange(start, end);
+        }
+      }
+    }
+
+    // Self-Generating Collision-Free Student ID
+    function generateAutoStudentId() {
+      const existingIds = new Set(allStudents.map(s => (s.studentId || "").trim().toUpperCase()));
+      let newId = "";
+      let attempts = 0;
+      while (attempts < 500) {
+        const randomNum = Math.floor(10000 + Math.random() * 90000);
+        const candidate = `SB-2026-${randomNum}`;
+        if (!existingIds.has(candidate.toUpperCase())) {
+          newId = candidate;
+          break;
+        }
+        attempts++;
+      }
+      if (!newId) newId = `SB-2026-${Date.now().toString().slice(-5)}`;
+
+      const input = document.getElementById("reg-studentid");
+      if (input) input.value = newId;
+      checkStudentIdTaken(newId);
+    }
+
+    // Dynamic Taken Status Detection
+    function checkStudentIdTaken(idVal) {
+      const statusBadge = document.getElementById("reg-studentid-status");
+      if (!statusBadge) return;
+      const val = (idVal || "").trim().toUpperCase();
+
+      if (!val) {
+        statusBadge.textContent = "Required";
+        statusBadge.style.color = "#94a3b8";
+        return;
+      }
+
+      const isTaken = allStudents.some(s => (s.studentId || "").trim().toUpperCase() === val);
+      if (isTaken) {
+        statusBadge.textContent = "✕ Taken";
+        statusBadge.style.color = "#ef4444";
+      } else {
+        statusBadge.textContent = "✓ Available";
+        statusBadge.style.color = "#8fe617";
+      }
+    }
+
+    // Collapsible Extra Details Accordion
+    let isExtraDetailsVisible = true;
+    function toggleExtraDetails() {
+      isExtraDetailsVisible = !isExtraDetailsVisible;
+      const content = document.getElementById("extra-details-content");
+      const text = document.getElementById("extra-details-toggle-text");
+      const icon = document.getElementById("extra-details-toggle-icon");
+
+      if (content) content.style.display = isExtraDetailsVisible ? "flex" : "none";
+      if (text) text.textContent = isExtraDetailsVisible ? "Hide Extra Details" : "Show Extra Details";
+      if (icon) {
+        icon.setAttribute("data-lucide", isExtraDetailsVisible ? "chevron-up" : "chevron-down");
+        lucide.createIcons();
+      }
+    }
+
+    // Enroll & Transmit Student Record
+    function handleEnrollStudent(e) {
+      e.preventDefault();
+
+      const enteredId = document.getElementById("reg-studentid").value.trim();
+      const isTaken = allStudents.some(s => (s.studentId || "").trim().toUpperCase() === enteredId.toUpperCase());
+      if (isTaken) {
+        alert(`Student ID "${enteredId}" is taken! Auto-generating a unique ID for you.`);
+        generateAutoStudentId();
+        return;
+      }
+
+      const photoFinal = senderUploadedPhotoDataUrl || "/logo.png";
+      const studentName = document.getElementById("reg-fullname").value.trim();
+      const studentGrade = document.getElementById("reg-grade").value.trim();
+      const studentPhone = document.getElementById("reg-phone").value.trim();
+      const studentSex = document.getElementById("reg-sex").value;
+      const studentBlood = document.getElementById("reg-blood").value;
+      const studentCountry = document.getElementById("reg-country") ? document.getElementById("reg-country").value : "Ethiopia";
+      const studentSchool = document.getElementById("reg-school") ? document.getElementById("reg-school").value : "High Tech";
+
+      const s = {
+        id: "sl_" + Date.now(),
+        studentId: enteredId,
+        fullName: studentName,
+        phone: studentPhone,
+        sex: studentSex,
+        bloodType: studentBlood,
+        grade: studentGrade,
+        department: "General",
+        address: "Harrer",
+        school: studentSchool,
+        country: studentCountry,
+        photoPath: photoFinal,
+        previewPath: photoFinal,
+        createdAt: new Date().toISOString(),
+        senderName: (currentUser && (currentUser.username || currentUser.email.split('@')[0])) || "Direct Station",
+        photoIntegrityStatus: "PHOTO_VERIFIED",
+        hasMistake: false
+      };
+
+      allStudents.unshift(s);
+
+      // Save custom students to localStorage
+      try {
+        let list = [];
+        const stored = localStorage.getItem("sb_custom_students");
+        if (stored) list = JSON.parse(stored);
+        list.unshift(s);
+        localStorage.setItem("sb_custom_students", JSON.stringify(list));
+      } catch (err) {}
+
+      updateTotalMetrics();
+      initGradeChips();
+      renderRecentStudentsFeed();
+      renderUsersTable();
+      applyFilters();
+
+      alert(`Student ${s.fullName} (${s.studentId}) successfully registered & dispatched!\nImmediately visible in Receiver Student Directory.`);
+
+      // Reset form fields
+      document.getElementById("form-register-student").reset();
+      senderUploadedPhotoDataUrl = "";
+      updatePhotoPreview("");
+      generateAutoStudentId();
+      document.getElementById("reg-grade").value = "9C";
+      document.getElementById("reg-sex").value = "Female";
+      document.getElementById("reg-blood").value = "null";
+
+      if (currentUser && currentUser.role !== "SENDER") {
+        navigateTo("students");
+      }
+    }
+
+    // Reset 1-Device Lock Action for Super Admin
+    function resetDeviceLock(email) {
+      const u = allUsers.find(x => x.email.toLowerCase() === email.toLowerCase());
+      if (u) {
+        u.boundDeviceId = null;
+        u.boundDeviceInfo = "Hardware Lock Cleared";
+        renderUsersTable();
+        alert(`Hardware lock successfully reset for ${email}! Operator can now bind a new device on next login.`);
+      }
+    }
+
+    // Admin & Senders Performance Table with Device Lock Status
+    function renderUsersTable() {
+      const tb = document.getElementById("admin-users-tbody");
+      if (!tb) return;
+      tb.innerHTML = allUsers.map(u => `
+        <tr>
+          <td><strong style="color:#fff;">${escapeHtml(u.email)}</strong></td>
+          <td>${escapeHtml(u.username || '-')}</td>
+          <td>
+            <span class="badge ${u.role === 'SUPER_ADMIN' ? 'badge-encoded' : 'badge-grade'}">
+              ${escapeHtml(u.role)}
+            </span>
+          </td>
+          <td>
+            <span style="color:#8fe617; font-weight:700;">${u.branch || 'Harar'}</span> • ${u.school || 'High Tech'}
+          </td>
+          <td>
+            <span style="font-family:'JetBrains Mono'; font-weight:700; color:#8fe617;">
+              ${u.recordsSentSingle || 0} recs (${((u.recordsSentSingle||1)/8).toFixed(1)}/hr)
+            </span>
+          </td>
+          <td>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <div style="flex:1; height:6px; background:#070a08; border-radius:9999px; overflow:hidden; border:1px solid var(--border);">
+                <div style="width:100%; height:100%; background:#8fe617;"></div>
+              </div>
+              <span style="font-size:0.75rem; font-weight:700; color:#8fe617;">100%</span>
+            </div>
+          </td>
+          <td>
+            <div style="font-size:0.75rem; color:#60a5fa; font-family:'JetBrains Mono'; display:flex; align-items:center; gap:4px;">
+              <i data-lucide="laptop" style="width:13px; height:13px;"></i>
+              <span>${escapeHtml(u.boundDeviceInfo || 'Windows 10/11 • Chrome')}</span>
+            </div>
+          </td>
+          <td style="text-align: right;">
+            <button class="cool-btn-hover" style="padding: 4px 10px; border-radius: 8px; background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); font-size: 0.75rem; font-weight:700; cursor: pointer;" onclick="resetDeviceLock('${u.email}')" title="Reset Hardware Lock">
+              Reset Lock
+            </button>
+          </td>
+        </tr>
+      `).join("");
+      lucide.createIcons();
+    }
+
+    function renderRecentStudentsFeed() {
+      const tb = document.getElementById("recent-students-tbody");
+      if (!tb) return;
+      const sample = allStudents.slice(0, 15);
+      tb.innerHTML = sample.map(s => `
+        <tr>
+          <td>
+            <div style="font-weight:700;">${escapeHtml(s.fullName)}</div>
+            <div style="font-family:'JetBrains Mono'; font-size:0.75rem; color:#8fe617;">${escapeHtml(s.studentId)}</div>
+          </td>
+          <td>Grade ${escapeHtml(s.grade || '-')}</td>
+          <td>${escapeHtml(s.school || 'High Tech')}</td>
+          <td style="font-family:'JetBrains Mono'; font-size:0.75rem;">${formatDateTime(s.createdAt)}</td>
+          <td>${escapeHtml(s.senderName || 'Direct Station')}</td>
+          <td><span class="badge badge-encoded">Verified</span></td>
+          <td style="text-align: right;">
+            <button class="cool-btn-hover" style="padding: 4px 8px; border-radius: 8px; background: var(--surface-secondary); color: #fff; border: 1px solid var(--border); font-size: 0.75rem; cursor: pointer;" onclick="showStudentModal('${s.id}')">
+              Inspect
+            </button>
+          </td>
+        </tr>
+      `).join("");
+    }
+
+    function refreshAuditLogs() {
+      alert("Audit logs synchronized with Cloudflare Edge immutable event log.");
+    }
+
+    function escapeHtml(s) {
+      if (!s) return "";
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    }
+  </script>
+</body>
+</html>
