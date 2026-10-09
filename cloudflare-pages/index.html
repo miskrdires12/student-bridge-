@@ -1,0 +1,2074 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Student Bridge — Cloudflare Edge Edition</title>
+  <meta name="description" content="High Performance Student Directory & ID Badging Platform running natively on Cloudflare Pages" />
+  
+  <!-- Modern Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <!-- External Client Libraries (JSZip for classified ZIP downloads, SheetJS for Excel, QRCode for badges) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Core Theme Styles -->
+  <style>
+    :root {
+      --bg-base: #080c0a;
+      --bg-surface: #0f1612;
+      --bg-surface-elevated: #16221c;
+      --bg-glass: rgba(15, 22, 18, 0.75);
+      --border-subtle: rgba(143, 230, 23, 0.12);
+      --border-focus: rgba(143, 230, 23, 0.4);
+      --brand: #8fe617;
+      --brand-hover: #a1f72a;
+      --brand-glow: rgba(143, 230, 23, 0.25);
+      --text-main: #f0f7f3;
+      --text-muted: #8c9e94;
+      --text-dim: #5c6e64;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --info: #3b82f6;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 18px;
+      --radius-xl: 24px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+      background-image: 
+        radial-gradient(circle at 10% 20%, rgba(143, 230, 23, 0.04) 0%, transparent 40%),
+        radial-gradient(circle at 90% 80%, rgba(59, 130, 246, 0.03) 0%, transparent 40%);
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: var(--bg-base);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #1c2c23;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--brand);
+    }
+
+    /* Layout & Header */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: var(--bg-glass);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0.75rem 1.5rem;
+    }
+
+    .nav-container {
+      max-width: 1700px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.5rem;
+    }
+
+    .brand-block {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .brand-logo {
+      width: 42px;
+      height: 42px;
+      background: linear-gradient(135deg, #182c1f, #0d1a12);
+      border: 1px solid var(--border-focus);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--brand);
+      box-shadow: 0 0 15px var(--brand-glow);
+    }
+
+    .brand-title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .edge-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      padding: 2px 7px;
+      border-radius: 9999px;
+      background: rgba(143, 230, 23, 0.12);
+      color: var(--brand);
+      border: 1px solid rgba(143, 230, 23, 0.25);
+      text-transform: uppercase;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+
+    .nav-tabs {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      background: rgba(0, 0, 0, 0.35);
+      padding: 4px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .nav-tab {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.5rem 0.9rem;
+      border-radius: var(--radius-sm);
+      font-size: 0.825rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: all 0.15s ease;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+    }
+
+    .nav-tab:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .nav-tab.active {
+      color: var(--brand);
+      background: rgba(143, 230, 23, 0.12);
+      border: 1px solid rgba(143, 230, 23, 0.2);
+    }
+
+    .badge-count {
+      background: rgba(143, 230, 23, 0.2);
+      color: var(--brand);
+      font-size: 0.68rem;
+      padding: 1px 6px;
+      border-radius: 9999px;
+      font-weight: 700;
+    }
+
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.4rem 0.75rem;
+      border-radius: var(--radius-md);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .user-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #8fe617, #06b6d4);
+      color: #000;
+      font-weight: 800;
+      font-size: 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .user-info {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .user-email {
+      font-size: 0.775rem;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .user-role-badge {
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: var(--brand);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      max-width: 1700px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    /* Cards & Containers */
+    .glass-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    }
+
+    /* Stat Cards Banner */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1rem;
+    }
+
+    .stat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 1rem 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+
+    .stat-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-focus);
+    }
+
+    .stat-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(143, 230, 23, 0.1);
+      color: var(--brand);
+    }
+
+    .stat-content h3 {
+      font-size: 0.775rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .stat-content .value {
+      font-family: 'Outfit', sans-serif;
+      font-size: 1.65rem;
+      font-weight: 700;
+      color: var(--text-main);
+      line-height: 1.2;
+    }
+
+    .stat-content .sub {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+    }
+
+    /* Controls Bar */
+    .controls-wrapper {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .search-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .search-box {
+      flex: 1;
+      min-width: 280px;
+      position: relative;
+    }
+
+    .search-box input {
+      width: 100%;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 0.75rem 1rem 0.75rem 2.6rem;
+      font-size: 0.9rem;
+      color: var(--text-main);
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .search-box input:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 12px var(--brand-glow);
+    }
+
+    .search-box .icon {
+      position: absolute;
+      left: 0.85rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-dim);
+      pointer-events: none;
+    }
+
+    .filter-select {
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 0.75rem 1rem;
+      font-size: 0.85rem;
+      color: var(--text-main);
+      outline: none;
+      cursor: pointer;
+      min-width: 140px;
+    }
+
+    .filter-select:focus {
+      border-color: var(--brand);
+    }
+
+    .filter-select option {
+      background: var(--bg-surface-elevated);
+      color: var(--text-main);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.7rem 1.1rem;
+      border-radius: var(--radius-md);
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.15s ease;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--brand);
+      color: #050b07;
+      box-shadow: 0 0 16px var(--brand-glow);
+    }
+
+    .btn-primary:hover {
+      background: var(--brand-hover);
+      box-shadow: 0 0 22px rgba(143, 230, 23, 0.4);
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: var(--bg-surface-elevated);
+      border-color: var(--border-subtle);
+      color: var(--text-main);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--brand);
+      color: var(--brand);
+      background: rgba(143, 230, 23, 0.08);
+    }
+
+    .btn-sm {
+      padding: 0.4rem 0.75rem;
+      font-size: 0.75rem;
+      border-radius: var(--radius-sm);
+    }
+
+    /* Floating Multi-Select Toolbar */
+    .selection-bar {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      background: linear-gradient(90deg, #14241a, #111a14);
+      border: 1px solid var(--border-focus);
+      border-radius: var(--radius-md);
+      padding: 0.75rem 1.25rem;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+      animation: slideDown 0.2s ease-out;
+    }
+
+    @keyframes slideDown {
+      from { transform: translateY(-10px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    /* Pagination Bars (Top & Bottom) */
+    .pagination-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.75rem 1rem;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+    }
+
+    .pagination-info {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .pagination-info strong {
+      color: var(--text-main);
+    }
+
+    .pagination-pages {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+
+    .page-btn {
+      min-width: 34px;
+      height: 34px;
+      padding: 0 0.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-surface);
+      color: var(--text-main);
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .page-btn:hover:not(:disabled) {
+      border-color: var(--brand);
+      color: var(--brand);
+    }
+
+    .page-btn.active {
+      background: var(--brand);
+      color: #000;
+      border-color: var(--brand);
+      font-weight: 800;
+      box-shadow: 0 0 10px var(--brand-glow);
+    }
+
+    .page-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    /* Table Styles */
+    .table-container {
+      overflow-x: auto;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-surface);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.85rem;
+    }
+
+    th {
+      background: #0d1510;
+      padding: 0.85rem 1rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-subtle);
+      white-space: nowrap;
+    }
+
+    td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+      vertical-align: middle;
+      color: var(--text-main);
+    }
+
+    tr:hover td {
+      background: rgba(143, 230, 23, 0.02);
+    }
+
+    tr.selected td {
+      background: rgba(143, 230, 23, 0.06);
+    }
+
+    /* Photo thumbnail */
+    .student-avatar {
+      width: 44px;
+      height: 52px;
+      border-radius: 6px;
+      object-fit: cover;
+      border: 1px solid var(--border-subtle);
+      background: #070d09;
+      cursor: pointer;
+      transition: transform 0.15s, border-color 0.15s;
+    }
+
+    .student-avatar:hover {
+      transform: scale(1.1);
+      border-color: var(--brand);
+    }
+
+    /* Badges */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+
+    .badge-grade {
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .badge-encoded {
+      background: rgba(143, 230, 23, 0.12);
+      color: var(--brand);
+      border: 1px solid rgba(143, 230, 23, 0.3);
+    }
+
+    .badge-unencoded {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .badge-time {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      color: #94a3b8;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    /* Modals & Overlays */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+
+    .modal-overlay.open {
+      display: flex;
+    }
+
+    .modal-content {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-focus);
+      border-radius: var(--radius-xl);
+      max-width: 600px;
+      width: 100%;
+      padding: 2rem;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8);
+      position: relative;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 1.25rem;
+      right: 1.25rem;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+
+    .modal-close:hover {
+      color: var(--text-main);
+    }
+
+    /* Progress bar */
+    .progress-bar-container {
+      width: 100%;
+      height: 10px;
+      background: rgba(0, 0, 0, 0.5);
+      border-radius: 9999px;
+      overflow: hidden;
+      margin: 1rem 0;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #8fe617, #10b981);
+      width: 0%;
+      transition: width 0.15s ease;
+      box-shadow: 0 0 10px var(--brand);
+    }
+
+    /* Forms */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      margin-bottom: 1.1rem;
+    }
+
+    .form-group label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .form-control {
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 0.75rem 1rem;
+      font-size: 0.9rem;
+      color: var(--text-main);
+      outline: none;
+    }
+
+    .form-control:focus {
+      border-color: var(--brand);
+    }
+
+    /* Views */
+    .view-container {
+      display: none;
+    }
+    .view-container.active {
+      display: block;
+    }
+
+    /* Print ID Badge Card */
+    .id-card-preview {
+      width: 320px;
+      height: 480px;
+      background: linear-gradient(145deg, #101c15, #08100b);
+      border: 2px solid var(--brand);
+      border-radius: 16px;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      box-shadow: 0 15px 35px rgba(0,0,0,0.6);
+      margin: 0 auto;
+      position: relative;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header>
+    <div class="nav-container">
+      <a href="#" class="brand-block" onclick="switchView('students'); return false;">
+        <div class="brand-logo">
+          <i data-lucide="graduation-cap"></i>
+        </div>
+        <div>
+          <div class="brand-title">
+            Student Bridge
+            <span class="edge-badge">Cloudflare Edge</span>
+          </div>
+        </div>
+      </a>
+
+      <!-- Primary Navigation Tabs -->
+      <nav class="nav-tabs">
+        <button class="nav-tab active" id="tab-students" onclick="switchView('students')">
+          <i data-lucide="users"></i>
+          Students
+          <span class="badge-count" id="header-student-count">3,723</span>
+        </button>
+        <button class="nav-tab" id="tab-admin" onclick="switchView('admin')">
+          <i data-lucide="shield-check"></i>
+          Super Admin
+        </button>
+        <button class="nav-tab" id="tab-sender" onclick="switchView('sender')">
+          <i data-lucide="send"></i>
+          Sender Portal
+        </button>
+        <button class="nav-tab" id="tab-receiver" onclick="switchView('receiver')">
+          <i data-lucide="inbox"></i>
+          Receiver Review
+        </button>
+        <button class="nav-tab" id="tab-print" onclick="switchView('print')">
+          <i data-lucide="printer"></i>
+          Print Engine
+        </button>
+      </nav>
+
+      <!-- Authenticated User Profile -->
+      <div class="user-pill">
+        <div class="user-avatar" id="user-avatar-initials">MD</div>
+        <div class="user-info">
+          <span class="user-email" id="header-user-email">miskrdires11@gmail.com</span>
+          <span class="user-role-badge" id="header-user-role">SUPER_ADMIN</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="showSwitchUserModal()" title="Switch User or Device">
+          <i data-lucide="log-out" style="width:14px; height:14px;"></i>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Area -->
+  <main>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 1: STUDENTS DIRECTORY (500 PER PAGE, TOP/BOTTOM PAGINATION, ETC) -->
+    <!-- ===================================================================== -->
+    <div id="view-students" class="view-container active">
+      
+      <!-- Metrics Cards Banner -->
+      <div class="stats-grid" style="margin-bottom: 1.25rem;">
+        <div class="stat-card">
+          <div class="stat-icon"><i data-lucide="graduation-cap"></i></div>
+          <div class="stat-content">
+            <h3>Total Real Students</h3>
+            <div class="value" id="stat-total-students">3,723</div>
+            <div class="sub">100% Extracted from Cloudflare DB</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon"><i data-lucide="image"></i></div>
+          <div class="stat-content">
+            <h3>Verified R2 Portraits</h3>
+            <div class="value" id="stat-verified-photos">3,723</div>
+            <div class="sub">Hosted on Cloudflare R2 CDN</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon"><i data-lucide="layers"></i></div>
+          <div class="stat-content">
+            <h3>Per-Page Capacity</h3>
+            <div class="value">500</div>
+            <div class="sub">First Page: 1–500 • Full Navigation</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon"><i data-lucide="cpu"></i></div>
+          <div class="stat-content">
+            <h3>Cloudflare Edge</h3>
+            <div class="value" style="color:var(--brand); font-size:1.4rem;">0ms Latency</div>
+            <div class="sub">No Supabase • No Vercel</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Controls & Filter Card -->
+      <div class="glass-card controls-wrapper">
+        <div class="search-row">
+          <div class="search-box">
+            <i data-lucide="search" class="icon" style="width:18px; height:18px;"></i>
+            <input 
+              type="text" 
+              id="search-input" 
+              placeholder="Search by student name, ID (e.g. SB-2026-34955), roll number, school, phone..." 
+              oninput="handleSearchInput()"
+            />
+          </div>
+
+          <!-- Dynamic Grade Filter with Counts -->
+          <select id="filter-grade" class="filter-select" onchange="applyFilters()">
+            <option value="ALL">All Grades (All)</option>
+          </select>
+
+          <!-- School / Branch Filter (Includes Harar / High Tech) -->
+          <select id="filter-school" class="filter-select" onchange="applyFilters()">
+            <option value="ALL">All Schools</option>
+            <option value="High Tech">Harar • High Tech</option>
+            <option value="Debebech">Adama • Debebech</option>
+            <option value="Sena Yerosen">Adama • Sena Yerosen</option>
+            <option value="Yacine">Adama • Yacine</option>
+            <option value="Odda">Adama • Odda</option>
+            <option value="YMS">Addis Ababa • YMS</option>
+            <option value="Adika Youth">Addis Ababa • Adika Youth</option>
+            <option value="School Of America">Addis Ababa • School Of America</option>
+            <option value="Warka">Addis Ababa • Warka</option>
+            <option value="Mojjo">Mojjo • Mojjo</option>
+          </select>
+
+          <!-- Sender Filter -->
+          <select id="filter-sender" class="filter-select" onchange="applyFilters()">
+            <option value="ALL">All Senders</option>
+          </select>
+
+          <!-- Photo Status Filter -->
+          <select id="filter-photo" class="filter-select" onchange="applyFilters()">
+            <option value="ALL">All Photo Statuses</option>
+            <option value="HAS_PHOTO">Has Photo</option>
+            <option value="MISSING_PHOTO">Missing Photo</option>
+          </select>
+
+          <!-- Export Actions -->
+          <button class="btn btn-secondary" onclick="exportToExcel()" title="Export filtered records to formatted Excel spreadsheet">
+            <i data-lucide="file-spreadsheet" style="width:16px; height:16px;"></i>
+            Excel
+          </button>
+          <button class="btn btn-secondary" onclick="exportToCSV()" title="Export to CSV">
+            <i data-lucide="download" style="width:16px; height:16px;"></i>
+            CSV
+          </button>
+          <button class="btn btn-secondary" onclick="resetFilters()">
+            <i data-lucide="rotate-ccw" style="width:16px; height:16px;"></i>
+            Reset
+          </button>
+        </div>
+
+        <!-- Floating Multi-Selection Action Bar (Classified ZIP Download) -->
+        <div id="selection-bar" class="selection-bar">
+          <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <i data-lucide="check-square" style="color:var(--brand); width:20px; height:20px;"></i>
+            <span style="font-weight: 700;" id="selection-count-text">0 students selected</span>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button class="btn btn-primary btn-sm" onclick="downloadSelectedPhotosZip()">
+              <i data-lucide="archive" style="width:16px; height:16px;"></i>
+              Download Classified ZIP (Encoded & Unencoded)
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="clearSelection()">
+              Deselect All
+            </button>
+          </div>
+        </div>
+
+        <!-- TOP PAGINATION BAR -->
+        <div class="pagination-bar" id="pagination-top">
+          <div class="pagination-info">
+            <span id="page-info-top">Showing <strong>1 – 500</strong> of <strong>3,723</strong> students</span>
+          </div>
+          <div class="pagination-pages" id="page-buttons-top">
+            <!-- Rendered by JS -->
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">
+            <span>Page Size:</span>
+            <select id="page-size-select" class="filter-select" style="min-width: 90px; padding: 0.35rem 0.6rem; font-size: 0.8rem;" onchange="changePageSize(this.value)">
+              <option value="500" selected>500</option>
+              <option value="250">250</option>
+              <option value="100">100</option>
+              <option value="50">50</option>
+              <option value="3723">All (3,723)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Main Students Table -->
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 40px; text-align: center;">
+                  <input type="checkbox" id="select-all-page-cb" onchange="toggleSelectAllPage(this.checked)" title="Select all on this page" />
+                </th>
+                <th style="width: 60px;">Photo</th>
+                <th>Student ID & Name</th>
+                <th>Grade</th>
+                <th>School & Branch</th>
+                <!-- Explicit Sent At Date & Time Column -->
+                <th>Sent At (Date & Time)</th>
+                <th>Sender</th>
+                <th>Encoding Status</th>
+                <th style="text-align: right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="students-table-body">
+              <tr>
+                <td colspan="9" style="text-align: center; padding: 3rem; color: var(--text-muted);">
+                  <div style="display: flex; flex-direction: column; align-items: center; gap: 1rem;">
+                    <i data-lucide="loader-2" class="animate-spin" style="width: 32px; height: 32px; color: var(--brand);"></i>
+                    <span>Loading 3,723 student records from Cloudflare Edge...</span>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- BOTTOM PAGINATION BAR -->
+        <div class="pagination-bar" id="pagination-bottom">
+          <div class="pagination-info">
+            <span id="page-info-bottom">Showing <strong>1 – 500</strong> of <strong>3,723</strong> students</span>
+          </div>
+          <div class="pagination-pages" id="page-buttons-bottom">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 2: SUPER ADMIN DASHBOARD & USER MANAGEMENT -->
+    <!-- ===================================================================== -->
+    <div id="view-admin" class="view-container">
+      <div class="glass-card" style="margin-bottom: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <div>
+            <h2 style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 700; color: var(--text-main);">
+              Super Admin Control Plane
+            </h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">
+              Managing all 19 staff accounts, regional senders, device locks, and Cloudflare R2 infrastructure.
+            </p>
+          </div>
+          <div class="edge-badge" style="font-size: 0.8rem; padding: 6px 12px;">
+            SUPER_ADMIN PRIVILEGES GRANTED
+          </div>
+        </div>
+
+        <!-- Infrastructure Diagnostic Cards -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon"><i data-lucide="cloud"></i></div>
+            <div class="stat-content">
+              <h3>Cloudflare Pages & Worker</h3>
+              <div class="value" style="color:var(--brand); font-size:1.25rem;">Active & Autonomous</div>
+              <div class="sub">student-bridge.pages.dev</div>
+            </div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-icon"><i data-lucide="hard-drive"></i></div>
+            <div class="stat-content">
+              <h3>Cloudflare R2 Bucket</h3>
+              <div class="value" style="color:var(--brand); font-size:1.25rem;">siliconlabs • 3,723 Photos</div>
+              <div class="sub">pub-93e8bf84c42949ec88306f456caa0fc9</div>
+            </div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-icon"><i data-lucide="shield-alert"></i></div>
+            <div class="stat-content">
+              <h3>Supabase & Vercel</h3>
+              <div class="value" style="color:#10b981; font-size:1.25rem;">100% Unlinked</div>
+              <div class="sub">Zero external points of failure</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Users & Staff Table -->
+      <div class="glass-card">
+        <h3 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+          <i data-lucide="users" style="color: var(--brand);"></i>
+          Registered Staff & Senders (19 Accounts)
+        </h3>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Bound Device</th>
+                <th>Sessions</th>
+                <th>Sent Records</th>
+                <th>Encoded Records</th>
+                <th style="text-align: right;">Admin Action</th>
+              </tr>
+            </thead>
+            <tbody id="users-table-body">
+              <!-- Rendered by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 3: SENDER PORTAL & REGISTRATION (INCLUDES HARAR / HIGH TECH) -->
+    <!-- ===================================================================== -->
+    <div id="view-sender" class="view-container">
+      <div class="glass-card" style="max-width: 800px; margin: 0 auto;">
+        <h2 style="font-family: 'Outfit'; font-size: 1.4rem; font-weight: 700; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+          <i data-lucide="user-plus" style="color: var(--brand);"></i>
+          Register Student (Sender Portal)
+        </h2>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">
+          Direct student enrollment with Regional Branch assignment (including <strong>Harar / Harrer • High Tech</strong>).
+        </p>
+
+        <form id="student-register-form" onsubmit="handleStudentRegister(event)">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div class="form-group">
+              <label>Full Student Name *</label>
+              <input type="text" id="reg-name" class="form-control" placeholder="e.g. Abebe Bikila" required />
+            </div>
+
+            <div class="form-group">
+              <label>Student ID *</label>
+              <input type="text" id="reg-id" class="form-control" placeholder="e.g. SB-2026-99001" required />
+            </div>
+
+            <div class="form-group">
+              <label>Phone Number *</label>
+              <input type="text" id="reg-phone" class="form-control" placeholder="+251912345678" required />
+            </div>
+
+            <div class="form-group">
+              <label>Sex *</label>
+              <select id="reg-sex" class="form-control">
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label>Grade & Section *</label>
+              <input type="text" id="reg-grade" class="form-control" placeholder="e.g. 9B, 10A, 12C" required />
+            </div>
+
+            <div class="form-group">
+              <label>Roll Number</label>
+              <input type="text" id="reg-roll" class="form-control" placeholder="e.g. 24" />
+            </div>
+
+            <!-- Regional Branch Selection with Harar / Harrer -->
+            <div class="form-group">
+              <label>Regional Campus / Branch *</label>
+              <select id="reg-branch" class="form-control" onchange="handleBranchChange(this.value)">
+                <option value="Harrer" selected>Harrer / Harar</option>
+                <option value="Adama">Adama</option>
+                <option value="Addis Ababa">Addis Ababa</option>
+                <option value="Mojjo">Mojjo</option>
+              </select>
+            </div>
+
+            <!-- School Selection (dynamically populated with High Tech for Harar) -->
+            <div class="form-group">
+              <label>School *</label>
+              <select id="reg-school" class="form-control">
+                <option value="High Tech">High Tech</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-top: 1rem;">
+            <label>Student Portrait Photo URL (or Cloudflare R2 Path)</label>
+            <input type="text" id="reg-photo" class="form-control" placeholder="https://pub-93e8bf84c42949ec88306f456caa0fc9.r2.dev/..." />
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; gap: 1rem; margin-top: 1.5rem;">
+            <button type="button" class="btn btn-secondary" onclick="generateRandomId()">Generate ID</button>
+            <button type="submit" class="btn btn-primary">
+              <i data-lucide="check-circle-2" style="width:16px; height:16px;"></i>
+              Enroll Student Now
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 4: RECEIVER REVIEW CENTER -->
+    <!-- ===================================================================== -->
+    <div id="view-receiver" class="view-container">
+      <div class="glass-card">
+        <h2 style="font-family: 'Outfit'; font-size: 1.4rem; font-weight: 700; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+          <i data-lucide="inbox" style="color: var(--brand);"></i>
+          Receiver Verification & Mistake Tracker
+        </h2>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">
+          Verify batches sent from campus senders, check ID accuracy, and mark records for correction.
+        </p>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Student</th>
+                <th>Grade</th>
+                <th>School</th>
+                <th>Sender</th>
+                <th>Sent At</th>
+                <th>Status</th>
+                <th>Mistake Flag</th>
+                <th style="text-align: right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="receiver-table-body">
+              <!-- Rendered by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 5: PRINT ENGINE & ID BADGE DESIGNER -->
+    <!-- ===================================================================== -->
+    <div id="view-print" class="view-container">
+      <div class="glass-card" style="text-align: center;">
+        <h2 style="font-family: 'Outfit'; font-size: 1.4rem; font-weight: 700; margin-bottom: 0.5rem;">
+          Student ID Card & Badge Print Engine
+        </h2>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 2rem;">
+          Automated front and back ID card generation with live portrait and scannable QR code.
+        </p>
+
+        <div style="display: flex; justify-content: center; gap: 2rem; flex-wrap: wrap;">
+          <!-- Front ID Card Preview -->
+          <div class="id-card-preview" id="card-preview-front">
+            <div style="font-family: 'Outfit'; font-weight: 800; font-size: 1.1rem; color: var(--brand); margin-bottom: 0.25rem;">
+              STUDENT BRIDGE
+            </div>
+            <div style="font-size: 0.7rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 1rem;" id="card-school-name">
+              HIGH TECH • HARRER
+            </div>
+
+            <img id="card-photo" src="" style="width: 110px; height: 135px; border-radius: 12px; object-fit: cover; border: 2px solid var(--brand); margin-bottom: 1rem; background: #000;" />
+
+            <div style="font-family: 'Outfit'; font-size: 1.25rem; font-weight: 700; color: #fff; margin-bottom: 0.2rem;" id="card-name">
+              Elemaa Giroo
+            </div>
+            <div style="font-family: 'JetBrains Mono'; font-size: 0.85rem; color: var(--brand); font-weight: 600; margin-bottom: 0.5rem;" id="card-id">
+              SB-2026-34955
+            </div>
+            <div style="font-size: 0.8rem; color: #cbd5e1;" id="card-grade">
+              Grade: 8B • Academic Year: 2026-2027
+            </div>
+
+            <div style="margin-top: auto; padding-top: 1rem; width: 100%; border-top: 1px dashed rgba(143, 230, 23, 0.3); display: flex; justify-content: space-around; font-size: 0.7rem; color: #64748b;">
+              <span>AUTHORIZED ID</span>
+              <span>VERIFIED 2026</span>
+            </div>
+          </div>
+
+          <!-- Back ID Card with QR Code Preview -->
+          <div class="id-card-preview" style="background: linear-gradient(145deg, #09120c, #060a08);">
+            <div style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 1.5rem; text-transform: uppercase;">
+              Digital Verification Code
+            </div>
+
+            <div id="card-qr-container" style="background: #fff; padding: 12px; border-radius: 12px; margin-bottom: 1.5rem; width: 154px; height: 154px; display: flex; align-items: center; justify-content: center;">
+              <!-- QR Code Canvas injected here -->
+            </div>
+
+            <div style="font-size: 0.75rem; color: #cbd5e1; line-height: 1.5; padding: 0 1rem;">
+              This card is the property of the school administration. If found, please return to the school administration office.
+            </div>
+
+            <div style="margin-top: auto; font-family: 'JetBrains Mono'; font-size: 0.7rem; color: var(--brand);">
+              ENC-SHA256 • ACTIVE
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 2rem;">
+          <button class="btn btn-primary" onclick="window.print()">
+            <i data-lucide="printer" style="width:16px; height:16px;"></i>
+            Print ID Card to PDF
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: CLASSIFIED PHOTO BUNDLE (ZIP) PROGRESS MODAL -->
+  <!-- ===================================================================== -->
+  <div id="zip-modal" class="modal-overlay">
+    <div class="modal-content">
+      <h3 style="font-family: 'Outfit'; font-size: 1.3rem; font-weight: 700; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+        <i data-lucide="archive" style="color: var(--brand);"></i>
+        Creating Classified Photo ZIP
+      </h3>
+      <p style="color: var(--text-muted); font-size: 0.85rem;" id="zip-status-text">
+        Downloading and classifying student photos into <strong>Encoded/</strong> and <strong>Unencoded/</strong> directories...
+      </p>
+
+      <div class="progress-bar-container">
+        <div id="zip-progress-fill" class="progress-bar-fill"></div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim);">
+        <span id="zip-progress-count">0 / 0 completed</span>
+        <span id="zip-progress-percent">0%</span>
+      </div>
+
+      <div style="margin-top: 1.5rem; display: flex; justify-content: flex-end;">
+        <button id="zip-cancel-btn" class="btn btn-secondary btn-sm" onclick="cancelZipDownload()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: STUDENT DETAILS & PHOTO INSPECTOR -->
+  <!-- ===================================================================== -->
+  <div id="student-modal" class="modal-overlay">
+    <div class="modal-content">
+      <button class="modal-close" onclick="closeStudentModal()">
+        <i data-lucide="x"></i>
+      </button>
+
+      <div style="display: flex; gap: 1.5rem; align-items: flex-start; margin-bottom: 1.5rem;">
+        <img id="modal-photo" src="" style="width: 120px; height: 150px; border-radius: 12px; object-fit: cover; border: 2px solid var(--brand); background: #000;" />
+        <div>
+          <div class="edge-badge" id="modal-status-badge">PHOTO_VERIFIED</div>
+          <h2 style="font-family: 'Outfit'; font-size: 1.4rem; font-weight: 700; margin-top: 0.35rem;" id="modal-name">Elemaa Giroo</h2>
+          <div style="font-family: 'JetBrains Mono'; color: var(--brand); font-weight: 600; font-size: 0.9rem;" id="modal-id">SB-2026-34955</div>
+          <div style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.35rem;" id="modal-grade-school">8B • Debebech (Adama)</div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 12px; border: 1px solid var(--border-subtle); font-size: 0.85rem;">
+        <div><strong style="color:var(--text-muted);">Phone:</strong> <span id="modal-phone">+251...</span></div>
+        <div><strong style="color:var(--text-muted);">Roll No:</strong> <span id="modal-roll">-</span></div>
+        <div><strong style="color:var(--text-muted);">Sex:</strong> <span id="modal-sex">Female</span></div>
+        <div><strong style="color:var(--text-muted);">Sender:</strong> <span id="modal-sender">abeni1</span></div>
+        <div style="grid-column: span 2;"><strong style="color:var(--text-muted);">Sent At:</strong> <span id="modal-sent-at" style="font-family: 'JetBrains Mono';">2026-10-08 10:30:32 UTC</span></div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; margin-top: 1.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="previewInPrintEngine()">
+          <i data-lucide="printer" style="width:14px; height:14px;"></i> View in Print Engine
+        </button>
+        <button class="btn btn-primary btn-sm" onclick="downloadCurrentModalPhoto()">
+          <i data-lucide="download" style="width:14px; height:14px;"></i> Download Classified Photo
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- JAVASCRIPT APPLICATION CORE (INSTANT CLIENT-SIDE LOGIC) -->
+  <!-- ===================================================================== -->
+  <script>
+    // Global State
+    let allStudents = [];
+    let filteredStudents = [];
+    let allUsers = [];
+    let selectedStudentIds = new Set();
+    let currentModalStudent = null;
+    let isZipCancelled = false;
+
+    // Pagination Configuration
+    let currentPage = 1;
+    let pageSize = 500; // Requirement: 500 in first page
+
+    // Current Authenticated User
+    let currentUser = {
+      email: "miskrdires11@gmail.com",
+      role: "SUPER_ADMIN",
+      username: "miskrdires11"
+    };
+
+    // Schools Mapping
+    const BRANCH_SCHOOLS = {
+      "Harrer": ["High Tech"],
+      "Harar": ["High Tech"],
+      "Adama": ["Sena Yerosen", "Debebech", "Yacine", "Odda"],
+      "Addis Ababa": ["YMS", "Adika Youth", "School Of America", "Warka"],
+      "Mojjo": ["Mojjo"]
+    };
+
+    // Initialize App
+    window.addEventListener("DOMContentLoaded", async () => {
+      lucide.createIcons();
+      await loadDataset();
+      initGradeFilter();
+      initSenderFilter();
+      applyFilters();
+      renderUsersTable();
+      renderReceiverTable();
+      if (allStudents.length > 0) {
+        setupCardPreview(allStudents[0]);
+      }
+    });
+
+    // Load 3,723 Students and 19 Users
+    async function loadDataset() {
+      try {
+        const [studentsRes, usersRes] = await Promise.all([
+          fetch("/data/students.json"),
+          fetch("/data/users.json")
+        ]);
+
+        if (studentsRes.ok) {
+          allStudents = await studentsRes.json();
+        } else {
+          console.warn("Could not load /data/students.json, falling back");
+        }
+
+        if (usersRes.ok) {
+          allUsers = await usersRes.json();
+        }
+      } catch (err) {
+        console.error("Data load error:", err);
+      }
+
+      // Update stat cards
+      document.getElementById("stat-total-students").textContent = allStudents.length.toLocaleString();
+      document.getElementById("stat-verified-photos").textContent = allStudents.filter(s => s.photoPath).length.toLocaleString();
+      document.getElementById("header-student-count").textContent = allStudents.length.toLocaleString();
+    }
+
+    // Populate Dynamic Grade Filter with Counts
+    function initGradeFilter() {
+      const gradeCounts = {};
+      allStudents.forEach(s => {
+        const g = s.grade || "Unknown";
+        gradeCounts[g] = (gradeCounts[g] || 0) + 1;
+      });
+
+      const select = document.getElementById("filter-grade");
+      select.innerHTML = '<option value="ALL">All Grades (All)</option>';
+
+      Object.keys(gradeCounts).sort().forEach(grade => {
+        const opt = document.createElement("option");
+        opt.value = grade;
+        opt.textContent = `Grade ${grade} (${gradeCounts[grade]})`;
+        select.appendChild(opt);
+      });
+    }
+
+    // Populate Dynamic Sender Filter
+    function initSenderFilter() {
+      const senders = new Set();
+      allStudents.forEach(s => {
+        if (s.senderName) senders.add(s.senderName);
+      });
+
+      const select = document.getElementById("filter-sender");
+      select.innerHTML = '<option value="ALL">All Senders</option>';
+
+      Array.from(senders).sort().forEach(sender => {
+        const opt = document.createElement("option");
+        opt.value = sender;
+        opt.textContent = sender;
+        select.appendChild(opt);
+      });
+    }
+
+    // Search and Multi-Filtering
+    function handleSearchInput() {
+      currentPage = 1;
+      applyFilters();
+    }
+
+    function applyFilters() {
+      const query = (document.getElementById("search-input").value || "").trim().toLowerCase();
+      const grade = document.getElementById("filter-grade").value;
+      const school = document.getElementById("filter-school").value;
+      const sender = document.getElementById("filter-sender").value;
+      const photoStatus = document.getElementById("filter-photo").value;
+
+      filteredStudents = allStudents.filter(s => {
+        // Text Search
+        if (query) {
+          const matchName = (s.fullName || "").toLowerCase().includes(query);
+          const matchId = (s.studentId || "").toLowerCase().includes(query);
+          const matchRoll = (s.rollNumber || "").toLowerCase().includes(query);
+          const matchSchool = (s.school || "").toLowerCase().includes(query);
+          const matchPhone = (s.phone || "").toLowerCase().includes(query);
+          const matchGrade = (s.grade || "").toLowerCase().includes(query);
+          if (!matchName && !matchId && !matchRoll && !matchSchool && !matchPhone && !matchGrade) {
+            return false;
+          }
+        }
+
+        // Grade Filter
+        if (grade !== "ALL" && s.grade !== grade) return false;
+
+        // School Filter
+        if (school !== "ALL" && !(s.school || "").toLowerCase().includes(school.toLowerCase())) return false;
+
+        // Sender Filter
+        if (sender !== "ALL" && s.senderName !== sender) return false;
+
+        // Photo Filter
+        if (photoStatus === "HAS_PHOTO" && !s.photoPath) return false;
+        if (photoStatus === "MISSING_PHOTO" && s.photoPath) return false;
+
+        return true;
+      });
+
+      renderTable();
+      renderPagination();
+    }
+
+    function resetFilters() {
+      document.getElementById("search-input").value = "";
+      document.getElementById("filter-grade").value = "ALL";
+      document.getElementById("filter-school").value = "ALL";
+      document.getElementById("filter-sender").value = "ALL";
+      document.getElementById("filter-photo").value = "ALL";
+      currentPage = 1;
+      applyFilters();
+    }
+
+    function changePageSize(size) {
+      pageSize = parseInt(size, 10);
+      currentPage = 1;
+      renderTable();
+      renderPagination();
+    }
+
+    // Format Date & Time cleanly
+    function formatDateTime(dateStr) {
+      if (!dateStr) return "-";
+      try {
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return dateStr;
+        const pad = (n) => String(n).padStart(2, "0");
+        const year = d.getFullYear();
+        const month = pad(d.getMonth() + 1);
+        const day = pad(d.getDate());
+        const hours = pad(d.getHours());
+        const mins = pad(d.getMinutes());
+        const secs = pad(d.getSeconds());
+        return `${year}-${month}-${day} ${hours}:${mins}:${secs}`;
+      } catch {
+        return dateStr;
+      }
+    }
+
+    // Determine if student is classified as Encoded or Unencoded
+    function isStudentEncoded(student) {
+      if (student.recordsEncoded && student.recordsEncoded > 0) return true;
+      if (student.photoIntegrityStatus === "PHOTO_VERIFIED") return true;
+      if (student.qrCodeData && student.qrCodeData.trim() !== "") return true;
+      return false;
+    }
+
+    // Render Students Table with 500 records on Page 1
+    function renderTable() {
+      const tbody = document.getElementById("students-table-body");
+      if (filteredStudents.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="9" style="text-align: center; padding: 3rem; color: var(--text-muted);">
+              No student records matching your query.
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      const startIndex = (currentPage - 1) * pageSize;
+      const endIndex = Math.min(startIndex + pageSize, filteredStudents.length);
+      const pageSlice = filteredStudents.slice(startIndex, endIndex);
+
+      let html = "";
+      for (const s of pageSlice) {
+        const isSelected = selectedStudentIds.has(s.id);
+        const encoded = isStudentEncoded(s);
+        const photoUrl = s.previewPath || s.photoPath || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop";
+        const formattedDate = formatDateTime(s.createdAt);
+
+        html += `
+          <tr class="${isSelected ? 'selected' : ''}">
+            <td style="text-align: center;">
+              <input type="checkbox" onchange="toggleSelectStudent('${s.id}', this.checked)" ${isSelected ? 'checked' : ''} />
+            </td>
+            <td>
+              <img 
+                src="${photoUrl}" 
+                class="student-avatar" 
+                alt="${s.fullName}" 
+                onclick="showStudentModal('${s.id}')"
+                loading="lazy"
+                onerror="this.src='https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop'"
+              />
+            </td>
+            <td>
+              <div style="font-weight: 700; color: #fff;">${escapeHtml(s.fullName)}</div>
+              <div style="display: flex; gap: 0.4rem; align-items: center; margin-top: 2px;">
+                <span class="badge" style="background: rgba(143,230,23,0.12); color: var(--brand); font-family: 'JetBrains Mono'; font-size: 0.7rem;">
+                  ${escapeHtml(s.studentId)}
+                </span>
+                ${s.rollNumber ? `<span style="font-size: 0.7rem; color: var(--text-dim);">Roll: ${escapeHtml(s.rollNumber)}</span>` : ''}
+              </div>
+            </td>
+            <td>
+              <span class="badge badge-grade">Grade ${escapeHtml(s.grade || '-')}</span>
+            </td>
+            <td>
+              <div style="font-weight: 500;">${escapeHtml(s.school || 'Unassigned')}</div>
+              <div style="font-size: 0.72rem; color: var(--text-dim);">${escapeHtml(s.address || 'Campus')}</div>
+            </td>
+            <!-- Sent At Column -->
+            <td>
+              <div class="badge-time">
+                <i data-lucide="clock" style="width:13px; height:13px; color:var(--brand);"></i>
+                <span>${formattedDate}</span>
+              </div>
+            </td>
+            <td>
+              <span class="badge" style="background: rgba(255,255,255,0.06); color: #cbd5e1;">
+                ${escapeHtml(s.senderName || 'system')}
+              </span>
+            </td>
+            <td>
+              ${encoded ? 
+                `<span class="badge badge-encoded"><i data-lucide="check" style="width:12px; height:12px;"></i> Encoded</span>` : 
+                `<span class="badge badge-unencoded">Unencoded</span>`
+              }
+            </td>
+            <td style="text-align: right; white-space: nowrap;">
+              <button class="btn btn-secondary btn-sm" onclick="downloadSinglePhoto('${s.id}')" title="Download Photo (Classified as Encoded/Unencoded)">
+                <i data-lucide="download" style="width:14px; height:14px;"></i>
+              </button>
+              <button class="btn btn-secondary btn-sm" onclick="showStudentModal('${s.id}')" title="Inspect Profile & QR">
+                <i data-lucide="eye" style="width:14px; height:14px;"></i>
+              </button>
+            </td>
+          </tr>
+        `;
+      }
+
+      tbody.innerHTML = html;
+      lucide.createIcons();
+      updateSelectAllPageCheckbox();
+    }
+
+    // Top and Bottom Pagination
+    function renderPagination() {
+      const totalPages = Math.ceil(filteredStudents.length / pageSize) || 1;
+      const startIndex = (currentPage - 1) * pageSize + 1;
+      const endIndex = Math.min(currentPage * pageSize, filteredStudents.length);
+      
+      const infoText = filteredStudents.length === 0 ? 
+        `Showing <strong>0</strong> of <strong>0</strong> students` :
+        `Showing <strong>${startIndex.toLocaleString()} – ${endIndex.toLocaleString()}</strong> of <strong>${filteredStudents.length.toLocaleString()}</strong> students`;
+
+      document.getElementById("page-info-top").innerHTML = infoText;
+      document.getElementById("page-info-bottom").innerHTML = infoText;
+
+      const renderButtons = () => {
+        let btns = '';
+        btns += `<button class="page-btn" onclick="goToPage(1)" ${currentPage === 1 ? 'disabled' : ''}>«</button>`;
+        btns += `<button class="page-btn" onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>‹</button>`;
+
+        // Render page numbers
+        for (let p = 1; p <= totalPages; p++) {
+          if (p === 1 || p === totalPages || (p >= currentPage - 2 && p <= currentPage + 2)) {
+            btns += `<button class="page-btn ${p === currentPage ? 'active' : ''}" onclick="goToPage(${p})">${p}</button>`;
+          } else if (p === currentPage - 3 || p === currentPage + 3) {
+            btns += `<span style="padding: 0 4px; color: var(--text-dim);">...</span>`;
+          }
+        }
+
+        btns += `<button class="page-btn" onclick="goToPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>›</button>`;
+        btns += `<button class="page-btn" onclick="goToPage(${totalPages})" ${currentPage === totalPages ? 'disabled' : ''}>»</button>`;
+        return btns;
+      };
+
+      const btnHtml = renderButtons();
+      document.getElementById("page-buttons-top").innerHTML = btnHtml;
+      document.getElementById("page-buttons-bottom").innerHTML = btnHtml;
+    }
+
+    function goToPage(page) {
+      const totalPages = Math.ceil(filteredStudents.length / pageSize) || 1;
+      if (page < 1 || page > totalPages) return;
+      currentPage = page;
+      renderTable();
+      renderPagination();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // Multi-Selection Logic
+    function toggleSelectStudent(id, checked) {
+      if (checked) {
+        selectedStudentIds.add(id);
+      } else {
+        selectedStudentIds.delete(id);
+      }
+      updateSelectionBar();
+      updateSelectAllPageCheckbox();
+    }
+
+    function toggleSelectAllPage(checked) {
+      const startIndex = (currentPage - 1) * pageSize;
+      const endIndex = Math.min(startIndex + pageSize, filteredStudents.length);
+      const pageSlice = filteredStudents.slice(startIndex, endIndex);
+
+      pageSlice.forEach(s => {
+        if (checked) selectedStudentIds.add(s.id);
+        else selectedStudentIds.delete(s.id);
+      });
+
+      renderTable();
+      updateSelectionBar();
+    }
+
+    function updateSelectAllPageCheckbox() {
+      const cb = document.getElementById("select-all-page-cb");
+      if (!cb) return;
+      const startIndex = (currentPage - 1) * pageSize;
+      const endIndex = Math.min(startIndex + pageSize, filteredStudents.length);
+      const pageSlice = filteredStudents.slice(startIndex, endIndex);
+
+      if (pageSlice.length === 0) {
+        cb.checked = false;
+        return;
+      }
+
+      const allPageSelected = pageSlice.every(s => selectedStudentIds.has(s.id));
+      cb.checked = allPageSelected;
+    }
+
+    function clearSelection() {
+      selectedStudentIds.clear();
+      renderTable();
+      updateSelectionBar();
+    }
+
+    function updateSelectionBar() {
+      const bar = document.getElementById("selection-bar");
+      const text = document.getElementById("selection-count-text");
+      if (selectedStudentIds.size > 0) {
+        bar.style.display = "flex";
+        text.textContent = `${selectedStudentIds.size.toLocaleString()} students selected`;
+      } else {
+        bar.style.display = "none";
+      }
+    }
+
+    // CLASSIFIED PHOTO DOWNLOAD: Single Photo
+    // Rule: single download is named Encoded_ or Unencoded_
+    async function downloadSinglePhoto(studentId) {
+      const student = allStudents.find(s => s.id === studentId);
+      if (!student || !student.photoPath) {
+        alert("Student has no photo uploaded.");
+        return;
+      }
+
+      const encoded = isStudentEncoded(student);
+      const prefix = encoded ? "Encoded_" : "Unencoded_";
+      const cleanName = (student.fullName || "Student").replace(/[^a-zA-Z0-9_\-\s]/g, "");
+      const fileName = `${prefix}${student.studentId}_${cleanName}.jpg`;
+
+      // Download via worker image proxy or direct fetch
+      const downloadUrl = `/api/proxy-photo?url=${encodeURIComponent(student.photoPath)}&filename=${encodeURIComponent(fileName)}&download=1`;
+      
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    // CLASSIFIED PHOTO DOWNLOAD: Bulk Selected ZIP
+    // Rule: ZIP contains two directories: Encoded/ and Unencoded/
+    async function downloadSelectedPhotosZip() {
+      if (selectedStudentIds.size === 0) return;
+
+      const selectedStudents = allStudents.filter(s => selectedStudentIds.has(s.id) && s.photoPath);
+      if (selectedStudents.length === 0) {
+        alert("None of the selected students have photos.");
+        return;
+      }
+
+      // Open Modal
+      const modal = document.getElementById("zip-modal");
+      const progressFill = document.getElementById("zip-progress-fill");
+      const progressCount = document.getElementById("zip-progress-count");
+      const progressPercent = document.getElementById("zip-progress-percent");
+      const statusText = document.getElementById("zip-status-text");
+
+      modal.classList.add("open");
+      isZipCancelled = false;
+
+      const zip = new JSZip();
+      const encodedFolder = zip.folder("Encoded");
+      const unencodedFolder = zip.folder("Unencoded");
+
+      let completed = 0;
+      const total = selectedStudents.length;
+
+      // Batch download photos in concurrent chunks of 6
+      const concurrency = 6;
+      for (let i = 0; i < total; i += concurrency) {
+        if (isZipCancelled) break;
+
+        const chunk = selectedStudents.slice(i, i + concurrency);
+        await Promise.all(chunk.map(async (student) => {
+          if (isZipCancelled) return;
+          try {
+            const encoded = isStudentEncoded(student);
+            const cleanName = (student.fullName || "Student").replace(/[^a-zA-Z0-9_\-\s]/g, "");
+            const filename = `${student.studentId}_${cleanName}.jpg`;
+
+            // Fetch photo blob
+            const proxyUrl = `/api/proxy-photo?url=${encodeURIComponent(student.photoPath)}`;
+            const res = await fetch(proxyUrl);
+            if (res.ok) {
+              const blob = await res.blob();
+              if (encoded) {
+                encodedFolder.file(filename, blob);
+              } else {
+                unencodedFolder.file(filename, blob);
+              }
+            }
+          } catch (e) {
+            console.warn("Failed photo fetch for", student.studentId, e);
+          } finally {
+            completed++;
+            const pct = Math.round((completed / total) * 100);
+            progressFill.style.width = `${pct}%`;
+            progressPercent.textContent = `${pct}%`;
+            progressCount.textContent = `${completed} / ${total} completed`;
+          }
+        }));
+      }
+
+      if (isZipCancelled) {
+        modal.classList.remove("open");
+        return;
+      }
+
+      statusText.innerHTML = "Generating ZIP archive file...";
+      const content = await zip.generateAsync({ type: "blob" });
+
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(content);
+      link.download = `student_photos_classified_${Date.now()}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      setTimeout(() => {
+        modal.classList.remove("open");
+      }, 1000);
+    }
+
+    function cancelZipDownload() {
+      isZipCancelled = true;
+      document.getElementById("zip-modal").classList.remove("open");
+    }
+
+    // Excel Export (SheetJS)
+    function exportToExcel() {
+      const data = filteredStudents.map(s => ({
+        "Student ID": s.studentId,
+        "Full Name": s.fullName,
+        "Grade": s.grade,
+        "School": s.school,
+        "Regional Branch": s.address,
+        "Phone": s.phone,
+        "Roll No": s.rollNumber,
+        "Sex": s.sex,
+        "Sent At": formatDateTime(s.createdAt),
+        "Sender": s.senderName,
+        "Encoding Status": isStudentEncoded(s) ? "Encoded" : "Unencoded",
+        "Photo URL": s.photoPath || ""
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Students");
+      XLSX.writeFile(wb, `StudentBridge_Directory_${Date.now()}.xlsx`);
+    }
+
+    // CSV Export
+    function exportToCSV() {
+      const headers = ["Student ID", "Full Name", "Grade", "School", "Branch", "Phone", "Sent At", "Sender", "Encoding Status"];
+      const rows = filteredStudents.map(s => [
+        s.studentId,
+        `"${(s.fullName || '').replace(/"/g, '""')}"`,
+        s.grade,
+        `"${(s.school || '').replace(/"/g, '""')}"`,
+        `"${(s.address || '').replace(/"/g, '""')}"`,
+        s.phone,
+        `"${formatDateTime(s.createdAt)}"`,
+        s.senderName,
+        isStudentEncoded(s) ? "Encoded" : "Unencoded"
+      ]);
+
+      const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `StudentBridge_Directory_${Date.now()}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    // Student Profile Modal
+    function showStudentModal(studentId) {
+      const student = allStudents.find(s => s.id === studentId);
+      if (!student) return;
+      currentModalStudent = student;
+
+      document.getElementById("modal-name").textContent = student.fullName;
+      document.getElementById("modal-id").textContent = student.studentId;
+      document.getElementById("modal-grade-school").textContent = `${student.grade || '-'} • ${student.school || 'Unassigned'} (${student.address || 'Campus'})`;
+      document.getElementById("modal-phone").textContent = student.phone || "-";
+      document.getElementById("modal-roll").textContent = student.rollNumber || "-";
+      document.getElementById("modal-sex").textContent = student.sex || "-";
+      document.getElementById("modal-sender").textContent = student.senderName || "system";
+      document.getElementById("modal-sent-at").textContent = formatDateTime(student.createdAt);
+      
+      const photo = document.getElementById("modal-photo");
+      photo.src = student.photoPath || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop";
+
+      const badge = document.getElementById("modal-status-badge");
+      if (isStudentEncoded(student)) {
+        badge.className = "edge-badge";
+        badge.textContent = "ENCODED & VERIFIED";
+      } else {
+        badge.className = "badge badge-unencoded";
+        badge.textContent = "UNENCODED";
+      }
+
+      document.getElementById("student-modal").classList.add("open");
+    }
+
+    function closeStudentModal() {
+      document.getElementById("student-modal").classList.remove("open");
+    }
+
+    function downloadCurrentModalPhoto() {
+      if (currentModalStudent) {
+        downloadSinglePhoto(currentModalStudent.id);
+      }
+    }
+
+    function previewInPrintEngine() {
+      if (currentModalStudent) {
+        closeStudentModal();
+        switchView("print");
+        setupCardPreview(currentModalStudent);
+      }
+    }
+
+    // Setup ID Card Preview & Dynamic QR Code
+    function setupCardPreview(student) {
+      document.getElementById("card-name").textContent = student.fullName || "Student Name";
+      document.getElementById("card-id").textContent = student.studentId || "SB-2026-00000";
+      document.getElementById("card-grade").textContent = `Grade: ${student.grade || '-'} • Academic Year: 2026-2027`;
+      document.getElementById("card-school-name").textContent = `${student.school || 'HIGH TECH'} • ${student.address || 'HARRER'}`;
+      
+      const cardPhoto = document.getElementById("card-photo");
+      cardPhoto.src = student.photoPath || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop";
+
+      // Render scannable QR Code
+      const qrContainer = document.getElementById("card-qr-container");
+      qrContainer.innerHTML = "";
+      const qrData = student.qrCodeData || JSON.stringify({
+        id: student.studentId,
+        name: student.fullName,
+        grade: student.grade
+      });
+      new QRCode(qrContainer, {
+        text: qrData,
+        width: 130,
+        height: 130,
+        colorDark: "#000000",
+        colorLight: "#ffffff",
+        correctLevel: QRCode.CorrectLevel.M
+      });
+    }
+
+    // Super Admin: Render Users Table
+    function renderUsersTable() {
+      const tbody = document.getElementById("users-table-body");
+      if (!tbody) return;
+
+      tbody.innerHTML = allUsers.map(u => `
+        <tr>
+          <td><strong style="color:#fff;">${escapeHtml(u.email)}</strong></td>
+          <td>${escapeHtml(u.username || '-')}</td>
+          <td>
+            <span class="badge ${u.role === 'SUPER_ADMIN' ? 'badge-encoded' : 'badge-grade'}">
+              ${escapeHtml(u.role)}
+            </span>
+          </td>
+          <td style="font-size:0.75rem; color:var(--text-dim);">${escapeHtml(u.boundDeviceInfo || 'Browser Bound')}</td>
+          <td>${u.workSessionCount || 0}</td>
+          <td>${u.recordsSentSingle || 0}</td>
+          <td>${u.recordsEncoded || 0}</td>
+          <td style="text-align: right;">
+            <button class="btn btn-secondary btn-sm" onclick="alert('Device bound reset for ${u.email}')">Reset Lock</button>
+          </td>
+        </tr>
+      `).join("");
+    }
+
+    // Receiver: Render Review Table
+    function renderReceiverTable() {
+      const tbody = document.getElementById("receiver-table-body");
+      if (!tbody) return;
+
+      const sample = allStudents.slice(0, 25);
+      tbody.innerHTML = sample.map(s => `
+        <tr>
+          <td>
+            <div style="font-weight:700;">${escapeHtml(s.fullName)}</div>
+            <div style="font-family:'JetBrains Mono'; font-size:0.75rem; color:var(--brand);">${escapeHtml(s.studentId)}</div>
+          </td>
+          <td>Grade ${escapeHtml(s.grade || '-')}</td>
+          <td>${escapeHtml(s.school || 'High Tech')}</td>
+          <td>${escapeHtml(s.senderName || 'system')}</td>
+          <td style="font-family:'JetBrains Mono'; font-size:0.75rem;">${formatDateTime(s.createdAt)}</td>
+          <td><span class="badge badge-encoded">Delivered</span></td>
+          <td>
+            <span style="font-size:0.8rem; color:${s.hasMistake ? 'var(--danger)' : 'var(--text-dim)'};">
+              ${s.hasMistake ? 'Flagged' : 'Clean'}
+            </span>
+          </td>
+          <td style="text-align: right;">
+            <button class="btn btn-secondary btn-sm" onclick="showStudentModal('${s.id}')">Inspect</button>
+          </td>
+        </tr>
+      `).join("");
+    }
+
+    // Regional Branch Change (Sender Form)
+    function handleBranchChange(branch) {
+      const schoolSelect = document.getElementById("reg-school");
+      schoolSelect.innerHTML = "";
+      const schools = BRANCH_SCHOOLS[branch] || ["High Tech"];
+
+      schools.forEach(school => {
+        const opt = document.createElement("option");
+        opt.value = school;
+        opt.textContent = school;
+        schoolSelect.appendChild(opt);
+      });
+    }
+
+    function generateRandomId() {
+      const rand = Math.floor(10000 + Math.random() * 90000);
+      document.getElementById("reg-id").value = `SB-2026-${rand}`;
+    }
+
+    // Student Enrollment Handler
+    function handleStudentRegister(e) {
+      e.preventDefault();
+      const newStudent = {
+        id: "cf_" + Date.now(),
+        studentId: document.getElementById("reg-id").value.trim(),
+        fullName: document.getElementById("reg-name").value.trim(),
+        phone: document.getElementById("reg-phone").value.trim(),
+        sex: document.getElementById("reg-sex").value,
+        grade: document.getElementById("reg-grade").value.trim(),
+        rollNumber: document.getElementById("reg-roll").value.trim(),
+        address: document.getElementById("reg-branch").value,
+        school: document.getElementById("reg-school").value,
+        photoPath: document.getElementById("reg-photo").value.trim() || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop",
+        previewPath: document.getElementById("reg-photo").value.trim() || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop",
+        createdAt: new Date().toISOString(),
+        senderName: currentUser.username,
+        photoIntegrityStatus: "PHOTO_VERIFIED",
+        hasMistake: false
+      };
+
+      // Add to front of dataset
+      allStudents.unshift(newStudent);
+      document.getElementById("student-register-form").reset();
+      generateRandomId();
+      handleBranchChange("Harrer");
+      
+      alert(`Student ${newStudent.fullName} enrolled successfully at ${newStudent.school} (${newStudent.address})!`);
+      switchView("students");
+      applyFilters();
+    }
+
+    // Navigation Switcher
+    function switchView(viewName) {
+      document.querySelectorAll(".view-container").forEach(el => el.classList.remove("active"));
+      document.querySelectorAll(".nav-tab").forEach(el => el.classList.remove("active"));
+
+      const targetView = document.getElementById(`view-${viewName}`);
+      const targetTab = document.getElementById(`tab-${viewName}`);
+      if (targetView) targetView.classList.add("active");
+      if (targetTab) targetTab.classList.add("active");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function showSwitchUserModal() {
+      const email = prompt("Enter staff email to switch session:", currentUser.email);
+      if (email) {
+        currentUser.email = email;
+        currentUser.username = email.split("@")[0];
+        document.getElementById("header-user-email").textContent = email;
+        document.getElementById("user-avatar-initials").textContent = currentUser.username.substring(0, 2).toUpperCase();
+      }
+    }
+
+    function escapeHtml(str) {
+      if (!str) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+  </script>
+</body>
+</html>
