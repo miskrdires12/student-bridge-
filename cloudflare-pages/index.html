@@ -991,142 +991,280 @@
       </div>
 
       <!-- ================================================================= -->
-      <!-- VIEW 2: SENDER WORKSTATION (REAL PHOTO UPLOAD + HARAR PRESET) -->
       <!-- ================================================================= -->
-      <div id="view-register" style="display: none;">
-        <div class="dark-form-card" style="max-width: 860px; margin: 0 auto;">
-          <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 1.5rem;">
-            <div>
-              <h2 style="font-family: 'Outfit'; font-size: 1.5rem; font-weight: 800; display: flex; align-items: center; gap: 8px;">
-                <i data-lucide="user-plus" style="color: #8fe617;"></i>
-                Student Registration Workstation
-              </h2>
-              <p style="color: var(--foreground-muted); font-size: 0.85rem; margin-top: 3px;">
-                Sender portal with real photo file upload, instant transmission, and Harar • High Tech school pre-configuration.
-              </p>
+      <!-- VIEW 2: SENDER WORKSTATION (MATCHING USER SCREENSHOT EXACTLY) -->
+      <!-- ================================================================= -->
+      <div id="view-register" style="display: none; padding-bottom: 2rem;">
+        <div style="max-width: 480px; margin: 0 auto;">
+          
+          <!-- Top Photo Card Viewport matching Screenshot -->
+          <div style="background: #111713; border: 1px solid #223126; border-radius: 28px; padding: 1.5rem; box-shadow: 0 15px 40px rgba(0,0,0,0.6); margin-bottom: 1.25rem;">
+            
+            <!-- Portrait Container Box -->
+            <div style="width: 240px; height: 300px; margin: 0 auto; border-radius: 20px; overflow: hidden; background: #070a08; border: 2px solid #223126; position: relative; display: flex; align-items: center; justify-content: center; box-shadow: inset 0 0 25px rgba(0,0,0,0.8);">
+              <!-- Live Video Stream -->
+              <video id="sender-camera-stream" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: cover; display: none;"></video>
+              
+              <!-- Captured / Uploaded Photo Preview -->
+              <img id="photo-preview-img" style="width: 100%; height: 100%; object-fit: cover; display: none;" />
+              
+              <!-- Empty Placeholder -->
+              <div id="photo-preview-placeholder" style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--foreground-subtle);">
+                <i data-lucide="camera" style="width: 48px; height: 48px; stroke-width: 1.5; color: #8fe617;"></i>
+                <span style="font-size: 0.8rem; font-weight: 700; color: #9eb2a6;">Live Cam / Photo</span>
+              </div>
+
+              <!-- Live Badge -->
+              <div id="camera-live-badge" style="display: none; position: absolute; top: 10px; left: 10px; background: #ef4444; color: #fff; font-size: 10px; font-weight: 800; padding: 3px 8px; border-radius: 6px; box-shadow: 0 0 12px rgba(239,68,68,0.6);">
+                ● LIVE
+              </div>
             </div>
-            <span class="badge" style="background: rgba(143,230,23,0.15); color: #8fe617; font-size: 0.75rem; padding: 4px 10px;">
-              SENDER ACTIVE
-            </span>
+
+            <!-- Primary Photo Action Buttons matching Screenshot -->
+            <div style="margin-top: 1.25rem; display: flex; flex-direction: column; gap: 0.65rem;">
+              <button 
+                type="button" 
+                id="btn-take-photo" 
+                class="cool-btn-hover" 
+                onclick="handleTakePhotoClick()" 
+                style="width: 100%; padding: 0.9rem; border-radius: 14px; background: #8fe617; color: #062404; font-family: 'Outfit'; font-size: 1rem; font-weight: 800; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; box-shadow: 0 6px 20px rgba(143,230,23,0.35);"
+              >
+                <i data-lucide="camera" style="width: 20px; height: 20px;"></i>
+                <span id="btn-take-photo-text">Take Student Photo</span>
+              </button>
+
+              <button 
+                type="button" 
+                id="btn-crop-photo" 
+                class="cool-btn-hover" 
+                onclick="openPhotoEditorForSender()" 
+                style="width: 100%; padding: 0.8rem; border-radius: 14px; background: rgba(143,230,23,0.06); color: #8fe617; font-family: 'Outfit'; font-size: 0.95rem; font-weight: 700; border: 1.5px solid #8fe617; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;"
+              >
+                <i data-lucide="crop" style="width: 18px; height: 18px;"></i>
+                <span>Edit &amp; Crop Photo</span>
+              </button>
+
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 0.25rem; padding: 0 4px;">
+                <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; color: #9eb2a6; cursor: pointer;">
+                  <i data-lucide="upload" style="width: 14px; height: 14px; color: #8fe617;"></i>
+                  <span>Upload File</span>
+                  <input type="file" id="reg-photo-file" accept="image/*" style="display: none;" onchange="handlePhotoFileUpload(event)" />
+                </label>
+
+                <button 
+                  type="button" 
+                  id="btn-stop-camera" 
+                  onclick="stopLiveCamera()" 
+                  style="display: none; background: transparent; border: none; color: #ef4444; font-size: 0.78rem; font-weight: 700; cursor: pointer; align-items: center; gap: 4px;"
+                >
+                  <i data-lucide="video-off" style="width: 14px; height: 14px;"></i>
+                  <span>Stop Cam</span>
+                </button>
+              </div>
+
+              <div id="camera-status-text" style="font-size: 0.74rem; color: var(--foreground-subtle); text-align: center; margin-top: 2px; font-family: 'JetBrains Mono';">
+                Ready for live capture. Click "Take Student Photo" or choose a file.
+              </div>
+            </div>
+
           </div>
 
-          <form id="form-register-student" onsubmit="handleEnrollStudent(event)">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;">
+          <!-- Bottom Card: STUDENT INFORMATION matching Screenshot -->
+          <div class="dark-form-card" style="border-radius: 28px; padding: 1.75rem; box-shadow: 0 15px 40px rgba(0,0,0,0.6);">
+            
+            <form id="form-register-student" onsubmit="handleEnrollStudent(event)">
               
-              <!-- Real Photo Upload Box -->
-              <div style="grid-column: span 2; display: flex; align-items: center; gap: 1.5rem; background: rgba(0,0,0,0.3); padding: 1.25rem; border-radius: 16px; border: 1px solid var(--border);">
-                <div style="width: 110px; height: 135px; border-radius: 12px; background: #070a08; border: 2px dashed #8fe617; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative;" id="photo-preview-box">
-                  <i data-lucide="camera" style="width: 34px; height: 34px; color: var(--foreground-subtle);"></i>
-                </div>
-                <div style="flex: 1;">
-                  <h4 style="font-weight: 700; font-size: 0.95rem; margin-bottom: 4px;">Student Portrait Photo *</h4>
-                  <p style="font-size: 0.78rem; color: var(--foreground-muted); margin-bottom: 10px;">
-                    Upload an authentic student portrait. Real image files are instantly converted and sent to Receiver Station.
-                  </p>
-                  
-                  <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                    <label class="cool-btn-hover" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; background: #8fe617; color: #062404; font-size: 0.8rem; font-weight: 700; cursor: pointer;">
-                      <i data-lucide="upload" style="width: 14px; height: 14px;"></i>
-                      <span>Browse Photo File</span>
-                      <input type="file" id="reg-photo-file" accept="image/*" style="display: none;" onchange="handlePhotoFileUpload(event)" />
-                    </label>
+              <!-- Card Header Row -->
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem;">
+                <span style="font-family: 'Outfit'; font-size: 0.95rem; font-weight: 900; letter-spacing: 0.04em; color: #fff; text-transform: uppercase;">
+                  STUDENT INFORMATION
+                </span>
+                <span style="font-size: 0.75rem; font-weight: 800; color: #8fe617; letter-spacing: 0.05em; text-transform: uppercase;">
+                  REQUIRED
+                </span>
+              </div>
 
-                    <button type="button" class="cool-btn-hover" style="padding: 6px 12px; border-radius: 8px; background: var(--surface-secondary); color: var(--foreground); font-size: 0.8rem; border: 1px solid var(--border); cursor: pointer;" onclick="document.getElementById('reg-photo-url-wrap').style.display = 'block'">
-                      Enter Photo URL
+              <div style="display: flex; flex-direction: column; gap: 1.15rem;">
+                
+                <!-- 1. Student ID * with Live Collision / Taken Detection -->
+                <div>
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                    <label style="font-size: 0.825rem; font-weight: 700; color: #fff;">
+                      Student ID <span style="color: #ef4444;">*</span>
+                    </label>
+                    <span id="reg-studentid-status" style="font-size: 0.825rem; font-weight: 800; color: #8fe617; transition: color 0.2s;">
+                      ✓ Available
+                    </span>
+                  </div>
+                  <div style="display: flex; gap: 8px;">
+                    <input 
+                      type="text" 
+                      id="reg-studentid" 
+                      required 
+                      placeholder="SB-2026-12788"
+                      oninput="checkStudentIdTaken(this.value)"
+                      style="flex: 1; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1rem; color: #8fe617; font-size: 0.95rem; font-family: 'JetBrains Mono'; font-weight: 800; outline: none;" 
+                    />
+                    <button 
+                      type="button" 
+                      class="cool-btn-hover" 
+                      onclick="generateAutoStudentId()" 
+                      title="Auto-Generate New Unique ID"
+                      style="padding: 0.8rem 1rem; border-radius: 12px; background: var(--surface-secondary); color: #fff; border: 1px solid var(--border); font-size: 0.78rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 4px;"
+                    >
+                      <i data-lucide="refresh-cw" style="width: 14px; height: 14px;"></i>
                     </button>
                   </div>
-
-                  <div id="reg-photo-url-wrap" style="display: none; margin-top: 8px;">
-                    <input 
-                      type="url" 
-                      id="reg-photo-url" 
-                      placeholder="https://pub-...r2.dev/student.jpg" 
-                      oninput="updatePhotoPreview(this.value)"
-                      style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.75rem; color: #fff; font-size: 0.8rem; outline: none;" 
-                    />
-                  </div>
                 </div>
-              </div>
 
-              <!-- Student Identification -->
-              <div>
-                <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Student ID *</label>
-                <div style="display: flex; gap: 6px;">
-                  <input type="text" id="reg-studentid" required placeholder="SB-2026-XXXXX" value="SB-2026-96980" style="flex: 1; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; font-family: 'JetBrains Mono'; outline: none;" />
-                  <button type="button" class="cool-btn-hover" style="padding: 0.7rem 0.9rem; border-radius: 10px; background: var(--surface-secondary); color: var(--foreground); border: 1px solid var(--border); font-size: 0.75rem; font-weight: 700; cursor: pointer;" onclick="generateRandomStudentId()">
-                    Auto
-                  </button>
+                <!-- 2. Full Name * with Father Name Auto-Capitalization -->
+                <div>
+                  <label style="display: block; font-size: 0.825rem; font-weight: 700; color: #fff; margin-bottom: 6px;">
+                    Full Name <span style="color: #ef4444;">*</span>
+                  </label>
+                  <input 
+                    type="text" 
+                    id="reg-fullname" 
+                    required 
+                    placeholder="Loza Bereket" 
+                    oninput="handleNameInput(event)"
+                    style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1rem; color: #fff; font-size: 0.95rem; font-weight: 600; outline: none; transition: border-color 0.2s;" 
+                  />
                 </div>
-              </div>
 
-              <div>
-                <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Full Name *</label>
-                <input type="text" id="reg-fullname" required placeholder="e.g. Kakuu Ahimad" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;" />
-              </div>
-
-              <div>
-                <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Phone Number *</label>
-                <input type="text" id="reg-phone" required placeholder="+251 92 117 4439" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;" />
-              </div>
-
-              <div>
-                <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Sex &amp; Blood Group *</label>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
-                  <select id="reg-sex" style="background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;">
+                <!-- 3. Sex * -->
+                <div>
+                  <label style="display: block; font-size: 0.825rem; font-weight: 700; color: #fff; margin-bottom: 6px;">
+                    Sex <span style="color: #ef4444;">*</span>
+                  </label>
+                  <select 
+                    id="reg-sex" 
+                    style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1rem; color: #fff; font-size: 0.9rem; font-weight: 600; outline: none; cursor: pointer;"
+                  >
                     <option value="Female">Female</option>
                     <option value="Male">Male</option>
                   </select>
-                  <select id="reg-blood" style="background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;">
-                    <option value="null">null</option>
+                </div>
+
+                <!-- 4. Blood Group / Type (All Types Included) -->
+                <div>
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                    <label style="font-size: 0.825rem; font-weight: 700; color: #fff;">
+                      Blood Group / Type
+                    </label>
+                    <span style="font-size: 0.75rem; color: var(--foreground-subtle);">
+                      Optional
+                    </span>
+                  </div>
+                  <select 
+                    id="reg-blood" 
+                    style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1rem; color: #fff; font-size: 0.9rem; font-weight: 600; outline: none; cursor: pointer;"
+                  >
+                    <option value="null" selected>-- No Blood Group Selected --</option>
                     <option value="A+">A+</option>
+                    <option value="A-">A-</option>
                     <option value="B+">B+</option>
+                    <option value="B-">B-</option>
                     <option value="AB+">AB+</option>
+                    <option value="AB-">AB-</option>
                     <option value="O+">O+</option>
+                    <option value="O-">O-</option>
                     <option value="Unknown">Unknown</option>
                   </select>
                 </div>
-              </div>
 
-              <div>
-                <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Grade *</label>
-                <input type="text" id="reg-grade" required placeholder="e.g. 2B, 10, UKG, LKG" value="2B" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;" />
-              </div>
+                <!-- 5. Grade / Class * (Grade + Section Combined, Section removed) -->
+                <div>
+                  <label style="display: block; font-size: 0.825rem; font-weight: 700; color: #fff; margin-bottom: 6px;">
+                    Grade / Class <span style="color: #ef4444;">*</span>
+                  </label>
+                  <input 
+                    type="text" 
+                    id="reg-grade" 
+                    required 
+                    placeholder="9C" 
+                    value="9C"
+                    style="width: 100%; background: #131b26; border: 1px solid #3b82f6; border-radius: 12px; padding: 0.8rem 1rem; color: #fff; font-size: 0.95rem; font-weight: 800; outline: none;" 
+                  />
+                </div>
 
-              <div>
-                <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Section / Dept</label>
-                <input type="text" id="reg-section" placeholder="General" value="General" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;" />
-              </div>
+                <!-- 6. Phone Number * (Auto 09 to +2519 and 07 to +2517) -->
+                <div>
+                  <label style="display: block; font-size: 0.825rem; font-weight: 700; color: #fff; margin-bottom: 6px;">
+                    Phone Number <span style="color: #ef4444;">*</span>
+                  </label>
+                  <input 
+                    type="text" 
+                    id="reg-phone" 
+                    required 
+                    placeholder="09... or 07..." 
+                    oninput="handlePhoneInput(event)"
+                    style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1rem; color: #fff; font-size: 0.95rem; font-family: 'JetBrains Mono'; font-weight: 600; outline: none;" 
+                  />
+                </div>
 
-              <!-- Regional Campus Selection: Harar / Harrer -->
-              <div>
-                <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">Regional Branch *</label>
-                <select id="reg-branch" onchange="handleBranchSelect(this.value)" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;">
-                  <option value="Harrer" selected>Harrer / Harar</option>
-                  <option value="Adama">Adama</option>
-                  <option value="Addis Ababa">Addis Ababa</option>
-                  <option value="Mojjo">Mojjo</option>
-                </select>
-              </div>
+                <!-- Collapsible Extra Details: Country & School -->
+                <div style="border-top: 1px solid var(--border); padding-top: 0.75rem; margin-top: 0.25rem;">
+                  <div 
+                    id="extra-details-toggle" 
+                    onclick="toggleExtraDetails()" 
+                    style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none;"
+                  >
+                    <span id="extra-details-toggle-text" style="font-size: 0.8rem; font-weight: 700; color: #8fe617;">
+                      Hide Extra Details
+                    </span>
+                    <i id="extra-details-toggle-icon" data-lucide="chevron-up" style="width: 16px; height: 16px; color: #8fe617;"></i>
+                  </div>
 
-              <!-- School Selection: High Tech for Harar -->
-              <div>
-                <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">School *</label>
-                <select id="reg-school" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;">
-                  <option value="High Tech">High Tech</option>
-                </select>
-              </div>
-            </div>
+                  <div id="extra-details-content" style="display: flex; flex-direction: column; gap: 0.85rem; margin-top: 0.75rem;">
+                    <div>
+                      <label style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">
+                        Country *
+                      </label>
+                      <select id="reg-country" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;">
+                        <option value="Ethiopia" selected>Ethiopia</option>
+                        <option value="Eritrea">Eritrea</option>
+                        <option value="Kenya">Kenya</option>
+                        <option value="Djibouti">Djibouti</option>
+                        <option value="Somalia">Somalia</option>
+                      </select>
+                    </div>
 
-            <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 2rem;">
-              <button type="button" class="cool-btn-hover" style="padding: 0.75rem 1.25rem; border-radius: 12px; background: var(--surface-secondary); color: var(--foreground); font-size: 0.85rem; font-weight: 600; border: 1px solid var(--border); cursor: pointer;" onclick="generateRandomStudentId()">
-                Auto Generate ID
-              </button>
-              <button type="submit" class="cool-btn-hover" style="padding: 0.75rem 1.75rem; border-radius: 12px; background: #8fe617; color: #062404; font-size: 0.875rem; font-weight: 800; border: none; cursor: pointer; display: flex; align-items: center; gap: 8px;">
-                <i data-lucide="check-circle-2" style="width: 18px; height: 18px;"></i>
-                Enroll &amp; Transmit Student
-              </button>
-            </div>
-          </form>
+                    <div>
+                      <label style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--foreground-muted); margin-bottom: 4px;">
+                        School *
+                      </label>
+                      <select id="reg-school" style="width: 100%; background: #070a08; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; color: #fff; font-size: 0.85rem; outline: none;">
+                        <option value="High Tech" selected>High Tech (Harar / Harrer)</option>
+                        <option value="Debebech">Debebech (Adama)</option>
+                        <option value="Sena Yerosen">Sena Yerosen (Adama)</option>
+                        <option value="Yacine">Yacine (Adama)</option>
+                        <option value="Odda">Odda (Adama)</option>
+                        <option value="YMS">YMS (Addis Ababa)</option>
+                        <option value="Adika Youth">Adika Youth (Addis Ababa)</option>
+                        <option value="School Of America">School Of America (Addis Ababa)</option>
+                        <option value="Warka">Warka (Addis Ababa)</option>
+                        <option value="Mojjo">Mojjo (Mojjo)</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Submit Button -->
+                <button 
+                  type="submit" 
+                  class="cool-btn-hover" 
+                  style="width: 100%; padding: 0.95rem; border-radius: 14px; background: #8fe617; color: #062404; font-family: 'Outfit'; font-size: 1rem; font-weight: 900; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 0.5rem; box-shadow: 0 4px 20px rgba(143,230,23,0.35);"
+                >
+                  <i data-lucide="send" style="width: 18px; height: 18px;"></i>
+                  <span>Transmit to Receiver Directory</span>
+                </button>
+
+              </div>
+            </form>
+
+          </div>
+
         </div>
       </div>
 
@@ -1897,6 +2035,7 @@
     window.addEventListener("DOMContentLoaded", async () => {
       lucide.createIcons();
       await loadDataset();
+      generateAutoStudentId();
       initGradeChips();
       initSenderFilter();
 
@@ -1909,13 +2048,7 @@
           showLoginScreen();
         }
       } else {
-        // Default authenticated as Super Admin
-        currentUser = {
-          email: "miskrdires11@gmail.com",
-          username: "miskrdires11",
-          role: "SUPER_ADMIN"
-        };
-        renderAuthenticatedSession(currentUser);
+        showLoginScreen();
       }
     });
 
@@ -2796,6 +2929,14 @@
       const canvas = document.getElementById("photo-editor-canvas");
       const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
 
+      if (activeEditorStudent.id === "sender_active") {
+        senderUploadedPhotoDataUrl = dataUrl;
+        updatePhotoPreview(senderUploadedPhotoDataUrl);
+        closePhotoEditorModal();
+        alert(`Student portrait photo cropped and updated!`);
+        return;
+      }
+
       activeEditorStudent.photoPath = dataUrl;
       activeEditorStudent.previewPath = dataUrl;
 
@@ -2877,68 +3018,309 @@
     }
 
     // =====================================================================
-    // SENDER WORKSTATION (REAL PHOTO FILE UPLOAD & DISPATCH)
+    // SENDER WORKSTATION (REAL LIVE WEBCAM, AUTO FORMATTING & DISPATCH)
     // =====================================================================
     let senderUploadedPhotoDataUrl = "";
+    let liveCameraStream = null;
 
+    // Toggle between Start Live Cam and Snap Photo
+    function handleTakePhotoClick() {
+      if (liveCameraStream) {
+        snapCameraPhoto();
+      } else {
+        startLiveCamera();
+      }
+    }
+
+    // Start Live WebRTC Camera Stream
+    async function startLiveCamera() {
+      try {
+        const video = document.getElementById("sender-camera-stream");
+        const placeholder = document.getElementById("photo-preview-placeholder");
+        const previewImg = document.getElementById("photo-preview-img");
+        const liveBadge = document.getElementById("camera-live-badge");
+        const btnTakeText = document.getElementById("btn-take-photo-text");
+        const btnTake = document.getElementById("btn-take-photo");
+        const btnStop = document.getElementById("btn-stop-camera");
+        const statusText = document.getElementById("camera-status-text");
+
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          alert("Webcam access is not supported by your browser. Please use 'Upload File' to choose an image.");
+          return;
+        }
+
+        liveCameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 960 } },
+          audio: false
+        });
+
+        video.srcObject = liveCameraStream;
+        video.style.display = "block";
+        if (placeholder) placeholder.style.display = "none";
+        if (previewImg) previewImg.style.display = "none";
+        if (liveBadge) liveBadge.style.display = "block";
+
+        if (btnTake) {
+          btnTake.style.background = "#38bdf8";
+          btnTake.style.color = "#082f49";
+          btnTakeText.textContent = "📸 Snap Photo Now";
+        }
+        if (btnStop) btnStop.style.display = "inline-flex";
+        if (statusText) statusText.innerHTML = "🟢 Live camera active. Center student face and click <strong>Snap Photo Now</strong>.";
+
+        lucide.createIcons();
+      } catch (err) {
+        console.warn("Camera access failed or denied:", err);
+        alert("Camera permission was denied or no camera device found. You can upload student photo files using 'Upload File'.");
+      }
+    }
+
+    // Snap High Resolution Frame from Live Video
+    function snapCameraPhoto() {
+      const video = document.getElementById("sender-camera-stream");
+      if (!video || !liveCameraStream) {
+        startLiveCamera();
+        return;
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 800;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      senderUploadedPhotoDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+
+      // Stop stream tracks
+      stopLiveCamera();
+
+      // Display snapped photo in preview
+      updatePhotoPreview(senderUploadedPhotoDataUrl);
+
+      const statusText = document.getElementById("camera-status-text");
+      if (statusText) statusText.innerHTML = "✅ Student portrait captured! Click 'Edit & Crop Photo' or transmit.";
+    }
+
+    // Stop Live Camera Stream
+    function stopLiveCamera() {
+      if (liveCameraStream) {
+        liveCameraStream.getTracks().forEach(track => track.stop());
+        liveCameraStream = null;
+      }
+      const video = document.getElementById("sender-camera-stream");
+      if (video) {
+        video.srcObject = null;
+        video.style.display = "none";
+      }
+      const liveBadge = document.getElementById("camera-live-badge");
+      if (liveBadge) liveBadge.style.display = "none";
+
+      const btnTake = document.getElementById("btn-take-photo");
+      const btnTakeText = document.getElementById("btn-take-photo-text");
+      const btnStop = document.getElementById("btn-stop-camera");
+      if (btnTake) {
+        btnTake.style.background = "#8fe617";
+        btnTake.style.color = "#062404";
+        btnTakeText.textContent = "Take Student Photo";
+      }
+      if (btnStop) btnStop.style.display = "none";
+
+      if (senderUploadedPhotoDataUrl) {
+        updatePhotoPreview(senderUploadedPhotoDataUrl);
+      } else {
+        updatePhotoPreview("");
+      }
+
+      lucide.createIcons();
+    }
+
+    // Handle Local Image File Upload
     function handlePhotoFileUpload(e) {
       const file = e.target.files[0];
       if (!file) return;
+
+      stopLiveCamera();
 
       const reader = new FileReader();
       reader.onload = (event) => {
         senderUploadedPhotoDataUrl = event.target.result;
         updatePhotoPreview(senderUploadedPhotoDataUrl);
+        const statusText = document.getElementById("camera-status-text");
+        if (statusText) statusText.innerHTML = "✅ Photo file loaded! You can crop or transmit to directory.";
       };
       reader.readAsDataURL(file);
     }
 
+    // Update Photo Viewport Box
     function updatePhotoPreview(url) {
-      const box = document.getElementById("photo-preview-box");
+      const img = document.getElementById("photo-preview-img");
+      const placeholder = document.getElementById("photo-preview-placeholder");
+      const video = document.getElementById("sender-camera-stream");
+
       if (url && (url.trim().startsWith("http") || url.trim().startsWith("data:"))) {
-        box.innerHTML = `<img src="${url}" style="width:100%; height:100%; object-fit:cover;" />`;
+        if (img) {
+          img.src = url;
+          img.style.display = "block";
+        }
+        if (video) video.style.display = "none";
+        if (placeholder) placeholder.style.display = "none";
       } else {
-        box.innerHTML = `<i data-lucide="camera" style="width:34px; height:34px; color:var(--foreground-subtle);"></i>`;
+        if (img) img.style.display = "none";
+        if (video) video.style.display = "none";
+        if (placeholder) placeholder.style.display = "flex";
+      }
+      lucide.createIcons();
+    }
+
+    // Open Real Photo Editor for Current Sender Portrait
+    function openPhotoEditorForSender() {
+      if (!senderUploadedPhotoDataUrl) {
+        alert("Please take a student photo or upload an image file first to edit and crop.");
+        return;
+      }
+
+      activeEditorStudent = {
+        id: "sender_active",
+        fullName: document.getElementById("reg-fullname").value.trim() || "Student Portrait",
+        studentId: document.getElementById("reg-studentid").value.trim() || "SB-2026-00000",
+        photoPath: senderUploadedPhotoDataUrl,
+        previewPath: senderUploadedPhotoDataUrl
+      };
+
+      document.getElementById("editor-student-name").textContent = activeEditorStudent.fullName;
+      document.getElementById("editor-student-id").textContent = activeEditorStudent.studentId;
+
+      resetEditorControls();
+
+      editorImg.onload = () => {
+        applyEditorFilters();
+        document.getElementById("photo-editor-modal").classList.add("open");
+      };
+      editorImg.src = senderUploadedPhotoDataUrl;
+    }
+
+    // Auto-Format Ethiopian Phone Numbers (09 -> +2519, 07 -> +2517)
+    function handlePhoneInput(e) {
+      let val = e.target.value.trim();
+      if (val.startsWith("09")) {
+        val = "+2519" + val.substring(2);
+      } else if (val.startsWith("07")) {
+        val = "+2517" + val.substring(2);
+      }
+      e.target.value = val;
+    }
+
+    // Auto-Capitalize First Letter of Each Word (Student Name & Father Name)
+    function handleNameInput(e) {
+      const input = e.target;
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      const val = input.value;
+      const capitalized = val.replace(/\b([a-z])/g, char => char.toUpperCase());
+      if (val !== capitalized) {
+        input.value = capitalized;
+        if (start !== null && end !== null) {
+          input.setSelectionRange(start, end);
+        }
+      }
+    }
+
+    // Self-Generating Collision-Free Student ID
+    function generateAutoStudentId() {
+      const existingIds = new Set(allStudents.map(s => (s.studentId || "").trim().toUpperCase()));
+      let newId = "";
+      let attempts = 0;
+      while (attempts < 500) {
+        const randomNum = Math.floor(10000 + Math.random() * 90000);
+        const candidate = `SB-2026-${randomNum}`;
+        if (!existingIds.has(candidate.toUpperCase())) {
+          newId = candidate;
+          break;
+        }
+        attempts++;
+      }
+      if (!newId) newId = `SB-2026-${Date.now().toString().slice(-5)}`;
+
+      const input = document.getElementById("reg-studentid");
+      if (input) input.value = newId;
+      checkStudentIdTaken(newId);
+    }
+
+    // Dynamic Taken Status Detection
+    function checkStudentIdTaken(idVal) {
+      const statusBadge = document.getElementById("reg-studentid-status");
+      if (!statusBadge) return;
+      const val = (idVal || "").trim().toUpperCase();
+
+      if (!val) {
+        statusBadge.textContent = "Required";
+        statusBadge.style.color = "#94a3b8";
+        return;
+      }
+
+      const isTaken = allStudents.some(s => (s.studentId || "").trim().toUpperCase() === val);
+      if (isTaken) {
+        statusBadge.textContent = "✕ Taken";
+        statusBadge.style.color = "#ef4444";
+      } else {
+        statusBadge.textContent = "✓ Available";
+        statusBadge.style.color = "#8fe617";
+      }
+    }
+
+    // Collapsible Extra Details Accordion
+    let isExtraDetailsVisible = true;
+    function toggleExtraDetails() {
+      isExtraDetailsVisible = !isExtraDetailsVisible;
+      const content = document.getElementById("extra-details-content");
+      const text = document.getElementById("extra-details-toggle-text");
+      const icon = document.getElementById("extra-details-toggle-icon");
+
+      if (content) content.style.display = isExtraDetailsVisible ? "flex" : "none";
+      if (text) text.textContent = isExtraDetailsVisible ? "Hide Extra Details" : "Show Extra Details";
+      if (icon) {
+        icon.setAttribute("data-lucide", isExtraDetailsVisible ? "chevron-up" : "chevron-down");
         lucide.createIcons();
       }
     }
 
-    function generateRandomStudentId() {
-      const r = Math.floor(10000 + Math.random() * 90000);
-      document.getElementById("reg-studentid").value = `SB-2026-${r}`;
-    }
-
-    function handleBranchSelect(b) {
-      const sel = document.getElementById("reg-school");
-      sel.innerHTML = "";
-      const schools = BRANCH_SCHOOLS[b] || ["High Tech"];
-      schools.forEach(sch => {
-        const o = document.createElement("option");
-        o.value = sch;
-        o.textContent = sch;
-        sel.appendChild(o);
-      });
-    }
-
+    // Enroll & Transmit Student Record
     function handleEnrollStudent(e) {
       e.preventDefault();
-      const photoFinal = senderUploadedPhotoDataUrl || document.getElementById("reg-photo-url").value.trim() || "/logo.png";
+
+      const enteredId = document.getElementById("reg-studentid").value.trim();
+      const isTaken = allStudents.some(s => (s.studentId || "").trim().toUpperCase() === enteredId.toUpperCase());
+      if (isTaken) {
+        alert(`Student ID "${enteredId}" is taken! Auto-generating a unique ID for you.`);
+        generateAutoStudentId();
+        return;
+      }
+
+      const photoFinal = senderUploadedPhotoDataUrl || "/logo.png";
+      const studentName = document.getElementById("reg-fullname").value.trim();
+      const studentGrade = document.getElementById("reg-grade").value.trim();
+      const studentPhone = document.getElementById("reg-phone").value.trim();
+      const studentSex = document.getElementById("reg-sex").value;
+      const studentBlood = document.getElementById("reg-blood").value;
+      const studentCountry = document.getElementById("reg-country") ? document.getElementById("reg-country").value : "Ethiopia";
+      const studentSchool = document.getElementById("reg-school") ? document.getElementById("reg-school").value : "High Tech";
 
       const s = {
         id: "sl_" + Date.now(),
-        studentId: document.getElementById("reg-studentid").value.trim(),
-        fullName: document.getElementById("reg-fullname").value.trim(),
-        phone: document.getElementById("reg-phone").value.trim(),
-        sex: document.getElementById("reg-sex").value,
-        bloodType: document.getElementById("reg-blood").value,
-        grade: document.getElementById("reg-grade").value.trim(),
-        department: document.getElementById("reg-section").value.trim() || "General",
-        address: document.getElementById("reg-branch").value,
-        school: document.getElementById("reg-school").value,
+        studentId: enteredId,
+        fullName: studentName,
+        phone: studentPhone,
+        sex: studentSex,
+        bloodType: studentBlood,
+        grade: studentGrade,
+        department: "General",
+        address: "Harrer",
+        school: studentSchool,
+        country: studentCountry,
         photoPath: photoFinal,
         previewPath: photoFinal,
         createdAt: new Date().toISOString(),
-        senderName: (currentUser && currentUser.username) || "Direct Station",
+        senderName: (currentUser && (currentUser.username || currentUser.email.split('@')[0])) || "Direct Station",
         photoIntegrityStatus: "PHOTO_VERIFIED",
         hasMistake: false
       };
@@ -2956,18 +3338,23 @@
 
       updateTotalMetrics();
       initGradeChips();
-      
-      alert(`Student ${s.fullName} registered & transmitted with photo! Immediately visible in Receiver Student Directory.`);
-      
+      renderRecentStudentsFeed();
+      renderUsersTable();
+      applyFilters();
+
+      alert(`Student ${s.fullName} (${s.studentId}) successfully registered & dispatched!\nImmediately visible in Receiver Student Directory.`);
+
+      // Reset form fields
       document.getElementById("form-register-student").reset();
       senderUploadedPhotoDataUrl = "";
       updatePhotoPreview("");
-      generateRandomStudentId();
-      handleBranchSelect("Harrer");
+      generateAutoStudentId();
+      document.getElementById("reg-grade").value = "9C";
+      document.getElementById("reg-sex").value = "Female";
+      document.getElementById("reg-blood").value = "null";
 
       if (currentUser && currentUser.role !== "SENDER") {
         navigateTo("students");
-        applyFilters();
       }
     }
 
