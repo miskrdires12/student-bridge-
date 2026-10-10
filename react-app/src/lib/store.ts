@@ -166,6 +166,7 @@ export function addStudent(newStudent: Student): void {
   // Ensure default fields
   if (!newStudent.status) newStudent.status = 'Accepted';
   if (!newStudent.location) newStudent.location = 'Addis Ababa';
+  if (!newStudent.idProductionStatus) newStudent.idProductionStatus = 'READY';
   if (!newStudent.recordHistory || newStudent.recordHistory.length === 0) {
     newStudent.recordHistory = [
       {
@@ -178,11 +179,21 @@ export function addStudent(newStudent: Student): void {
     ];
   }
 
-  memoryStudents.unshift(newStudent);
+  const existingIdx = memoryStudents.findIndex(s => s.studentId === newStudent.studentId || s.id === newStudent.id);
+  if (existingIdx !== -1) {
+    memoryStudents[existingIdx] = { ...memoryStudents[existingIdx], ...newStudent };
+  } else {
+    memoryStudents.unshift(newStudent);
+  }
 
   try {
-    const existing = JSON.parse(localStorage.getItem('sb_custom_students') || '[]');
-    existing.unshift(newStudent);
+    const existing: Student[] = JSON.parse(localStorage.getItem('sb_custom_students') || '[]');
+    const cIdx = existing.findIndex((s: Student) => s.studentId === newStudent.studentId || s.id === newStudent.id);
+    if (cIdx !== -1) {
+      existing[cIdx] = newStudent;
+    } else {
+      existing.unshift(newStudent);
+    }
     localStorage.setItem('sb_custom_students', JSON.stringify(existing));
   } catch (e) {}
 

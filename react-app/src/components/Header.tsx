@@ -84,83 +84,36 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onStationChange,
         </a>
       </div>
 
-      {/* Station Switcher Pills (Role-Guarded) */}
-      <div className="hidden md:flex items-center bg-[#F4F7F5] border border-[#E2E8F0] rounded-full p-1 gap-1">
-        {/* Sender Pill */}
-        <button
-          type="button"
-          disabled={!canAccessStation('SENDER')}
-          onClick={() => handleStationSwitch('SENDER')}
-          title={!canAccessStation('SENDER') ? 'Unauthorized Station' : 'Sender Station'}
-          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all ${
-            currentStation === 'SENDER'
-              ? 'bg-[#85E510] text-[#062404] shadow-[0_2px_10px_rgba(133,229,16,0.4)]'
-              : canAccessStation('SENDER')
-              ? 'text-[#64748B] hover:text-[#202833] hover:bg-white'
-              : 'text-[#94A3B8] opacity-50 cursor-not-allowed'
-          }`}
-        >
-          <Send className="w-3 h-3" />
-          <span>Sender</span>
-          {!canAccessStation('SENDER') && <Lock className="w-2.5 h-2.5 text-[#94A3B8]" />}
-        </button>
-
-        {/* Receiver Pill */}
-        <button
-          type="button"
-          disabled={!canAccessStation('RECEIVER')}
-          onClick={() => handleStationSwitch('RECEIVER')}
-          title={!canAccessStation('RECEIVER') ? 'Unauthorized Station' : 'Receiver Station'}
-          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all ${
-            currentStation === 'RECEIVER'
-              ? 'bg-[#85E510] text-[#062404] shadow-[0_2px_10px_rgba(133,229,16,0.4)]'
-              : canAccessStation('RECEIVER')
-              ? 'text-[#64748B] hover:text-[#202833] hover:bg-white'
-              : 'text-[#94A3B8] opacity-50 cursor-not-allowed'
-          }`}
-        >
-          <Inbox className="w-3 h-3" />
-          <span>Receiver</span>
-          {!canAccessStation('RECEIVER') && <Lock className="w-2.5 h-2.5 text-[#94A3B8]" />}
-        </button>
-
-        {/* Admin Pill */}
-        <button
-          type="button"
-          disabled={!canAccessStation('ADMIN')}
-          onClick={() => handleStationSwitch('ADMIN')}
-          title={!canAccessStation('ADMIN') ? 'Unauthorized Station' : 'Admin Station'}
-          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all ${
-            currentStation === 'ADMIN'
-              ? 'bg-[#85E510] text-[#062404] shadow-[0_2px_10px_rgba(133,229,16,0.4)]'
-              : canAccessStation('ADMIN')
-              ? 'text-[#64748B] hover:text-[#202833] hover:bg-white'
-              : 'text-[#94A3B8] opacity-50 cursor-not-allowed'
-          }`}
-        >
-          <Shield className="w-3 h-3" />
-          <span>Admin</span>
-          {!canAccessStation('ADMIN') && <Lock className="w-2.5 h-2.5 text-[#94A3B8]" />}
-        </button>
-
-        {/* Super Admin Pill */}
-        <button
-          type="button"
-          disabled={!canAccessStation('SUPER_ADMIN')}
-          onClick={() => handleStationSwitch('SUPER_ADMIN')}
-          title={!canAccessStation('SUPER_ADMIN') ? 'Unauthorized Station' : 'Super Admin Station'}
-          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all ${
-            currentStation === 'SUPER_ADMIN'
-              ? 'bg-[#85E510] text-[#062404] shadow-[0_2px_10px_rgba(133,229,16,0.4)]'
-              : canAccessStation('SUPER_ADMIN')
-              ? 'text-[#64748B] hover:text-[#202833] hover:bg-white'
-              : 'text-[#94A3B8] opacity-50 cursor-not-allowed'
-          }`}
-        >
-          <Zap className="w-3 h-3" />
-          <span>Super Admin</span>
-          {!canAccessStation('SUPER_ADMIN') && <Lock className="w-2.5 h-2.5 text-[#94A3B8]" />}
-        </button>
+      {/* Station Identity Badge (Separate Station Indicator) */}
+      <div className="flex items-center">
+        {currentStation === 'SENDER' && (
+          <div className="flex items-center gap-2 bg-[#85E510]/15 border border-[#85E510]/40 px-3.5 py-1.5 rounded-full text-xs font-black text-[#2e5903] shadow-sm">
+            <span className="w-2 h-2 rounded-full bg-[#85E510] animate-pulse"></span>
+            <Send className="w-3.5 h-3.5 text-[#366804]" />
+            <span className="tracking-tight">SENDER STATION &bull; DATA ENCODER</span>
+          </div>
+        )}
+        {currentStation === 'RECEIVER' && (
+          <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 px-3.5 py-1.5 rounded-full text-xs font-black text-blue-800 shadow-sm">
+            <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+            <Inbox className="w-3.5 h-3.5 text-blue-600" />
+            <span className="tracking-tight">RECEIVER STATION &bull; ID PRODUCTION OPERATOR</span>
+          </div>
+        )}
+        {currentStation === 'ADMIN' && (
+          <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 px-3.5 py-1.5 rounded-full text-xs font-black text-amber-900 shadow-sm">
+            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+            <Shield className="w-3.5 h-3.5 text-amber-600" />
+            <span className="tracking-tight">ADMIN STATION &bull; OPERATIONS MANAGER</span>
+          </div>
+        )}
+        {currentStation === 'SUPER_ADMIN' && (
+          <div className="flex items-center gap-2 bg-purple-50 border border-purple-200 px-3.5 py-1.5 rounded-full text-xs font-black text-purple-900 shadow-sm">
+            <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse"></span>
+            <Zap className="w-3.5 h-3.5 text-purple-600" />
+            <span className="tracking-tight">SUPER ADMIN STATION &bull; CTO CONTROL ROOM</span>
+          </div>
+        )}
       </div>
 
       {/* Operator Status & Logout */}

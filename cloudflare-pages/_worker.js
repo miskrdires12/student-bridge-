@@ -7,6 +7,7 @@
 let cachedStudents = null;
 let cachedUsers = null;
 let customStudents = [];
+let uploadedPhotos = new Map(); // key -> { contentType, bytes, base64 }
 let edgeTasks = [
   { id: "T-001", title: "Review missing photos for Grade 9", assignedTo: "Loza Bereket", school: "YMS", priority: "High", deadline: "2026-10-15", status: "In Progress" },
   { id: "T-002", title: "Correct Ethiopian phone numbers", assignedTo: "Alemu Tadesse", school: "Adika Youth", priority: "Medium", deadline: "2026-10-15", status: "Pending" },
@@ -242,6 +243,40 @@ export default {
         if (cleanPhone.startsWith("09")) cleanPhone = "+2519" + cleanPhone.substring(2);
         else if (cleanPhone.startsWith("07")) cleanPhone = "+2517" + cleanPhone.substring(2);
 
+        let photoPath = body.photoPath || "";
+        let previewPath = body.previewPath || photoPath;
+
+        // Automatically store base64 biometric photo in Cloudflare Edge & R2
+        if (previewPath && previewPath.startsWith("data:image")) {
+          const photoKey = `${studentId.trim()}.jpg`;
+          try {
+            let base64Data = previewPath;
+            let contentType = "image/jpeg";
+            if (base64Data.includes(",")) {
+              const parts = base64Data.split(",");
+              const m = parts[0].match(/:(.*?);/);
+              if (m) contentType = m[1];
+              base64Data = parts[1];
+            }
+            const binaryStr = atob(base64Data);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) {
+              bytes[i] = binaryStr.charCodeAt(i);
+            }
+            uploadedPhotos.set(photoKey, { contentType, bytes });
+            
+            // Try R2 if bound
+            const r2 = env.SILICONLABS_BUCKET || env.PHOTOS || env.R2;
+            if (r2) {
+              try { await r2.put(photoKey, bytes, { httpMetadata: { contentType } }); } catch (e) {}
+            }
+            photoPath = `/api/photos/${photoKey}`;
+            previewPath = `/api/photos/${photoKey}`;
+          } catch (imgErr) {
+            console.warn("Could not parse image buffer:", imgErr);
+          }
+        }
+
         const newStudent = {
           id: "cmu-" + Date.now().toString(36),
           studentId: studentId.trim(),
@@ -252,8 +287,8 @@ export default {
           school: school.trim(),
           address: body.address || body.location || "Addis Ababa",
           phone: cleanPhone,
-          photoPath: body.photoPath || "",
-          previewPath: body.previewPath || body.photoPath || "",
+          photoPath: photoPath,
+          previewPath: previewPath,
           senderName: body.senderName || "Sender-01",
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -281,6 +316,103 @@ export default {
           headers: { "Content-Type": "application/json", ...corsHeaders }
         });
       }
+    }
+
+    // -------------------------------------------------------------------------
+    // 5B. CLOUDFLARE BIOMETRIC PHOTO UPLOAD & SERVING
+    // -------------------------------------------------------------------------
+    if (url.pathname === "/api/upload" && request.method === "POST") {
+      try {
+        const body = await request.json();
+        const { filename, data, studentId } = body;
+        const key = filename || `${studentId || Date.now()}.jpg`;
+        
+        let base64Data = data || "";
+        let contentType = "image/jpeg";
+        if (base64Data.includes(",")) {
+          const parts = base64Data.split(",");
+          const mimeMatch = parts[0].match(/:(.*?);/);
+          if (mimeMatch) contentType = mimeMatch[1];
+          base64Data = parts[1];
+        }
+        
+        const binaryStr = atob(base64Data);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        
+        uploadedPhotos.set(key, { contentType, bytes });
+        
+        const r2Bucket = env.SILICONLABS_BUCKET || env.PHOTOS || env.R2;
+        if (r2Bucket) {
+          try {
+            await r2Bucket.put(key, bytes, { httpMetadata: { contentType } });
+          } catch (r2Err) {
+            console.warn("R2 Put error:", r2Err);
+          }
+        }
+        
+        const publicR2Url = `https://pub-93e8bf84c42949ec88306f456caa0fc9.r2.dev/${key}`;
+        const proxyUrl = `/api/photos/${encodeURIComponent(key)}`;
+        
+        return new Response(JSON.stringify({
+          success: true,
+          key,
+          url: proxyUrl,
+          r2Url: publicR2Url,
+          size: bytes.length,
+          storage: "Cloudflare R2 (siliconlabs)"
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 400,
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      }
+    }
+
+    if (url.pathname.startsWith("/api/photos/")) {
+      const key = decodeURIComponent(url.pathname.replace("/api/photos/", ""));
+      if (uploadedPhotos.has(key)) {
+        const item = uploadedPhotos.get(key);
+        return new Response(item.bytes, {
+          status: 200,
+          headers: {
+            "Content-Type": item.contentType,
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=31536000, immutable"
+          }
+        });
+      }
+      
+      const r2Bucket = env.SILICONLABS_BUCKET || env.PHOTOS || env.R2;
+      if (r2Bucket) {
+        try {
+          const obj = await r2Bucket.get(key);
+          if (obj) {
+            const headers = new Headers();
+            headers.set("Content-Type", obj.httpMetadata?.contentType || "image/jpeg");
+            headers.set("Access-Control-Allow-Origin", "*");
+            headers.set("Cache-Control", "public, max-age=31536000, immutable");
+            return new Response(obj.body, { headers });
+          }
+        } catch (e) {}
+      }
+      
+      try {
+        const cdnRes = await fetch(`https://pub-93e8bf84c42949ec88306f456caa0fc9.r2.dev/${key}`);
+        if (cdnRes.ok) {
+          const headers = new Headers(cdnRes.headers);
+          headers.set("Access-Control-Allow-Origin", "*");
+          return new Response(cdnRes.body, { headers });
+        }
+      } catch (e) {}
+      
+      return new Response("Photo not found", { status: 404, headers: corsHeaders });
     }
 
     // -------------------------------------------------------------------------

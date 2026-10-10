@@ -17,14 +17,19 @@ export const AppLayout: React.FC = () => {
   }
 
   // Server-Side Role Enforcement Guard:
-  // Prevent unauthorized cross-station direct URL tampering
+  // Strictly isolate each station — each user role can ONLY access their own station
   if (user.role === 'SENDER' && !location.pathname.startsWith('/sender')) {
     return <Navigate to="/sender/register" replace />;
   }
   if (user.role === 'RECEIVER' && !location.pathname.startsWith('/receiver')) {
     return <Navigate to="/receiver/dashboard" replace />;
   }
-  if (user.role === 'ADMIN' && (!location.pathname.startsWith('/admin') && !location.pathname.startsWith('/sender'))) {
+  if (user.role === 'ADMIN' && !location.pathname.startsWith('/admin')) {
+    return <Navigate to="/admin/dashboard" replace />;
+  }
+  if (location.pathname.startsWith('/super-admin') && user.role !== 'SUPER_ADMIN') {
+    if (user.role === 'SENDER') return <Navigate to="/sender/register" replace />;
+    if (user.role === 'RECEIVER') return <Navigate to="/receiver/dashboard" replace />;
     return <Navigate to="/admin/dashboard" replace />;
   }
 

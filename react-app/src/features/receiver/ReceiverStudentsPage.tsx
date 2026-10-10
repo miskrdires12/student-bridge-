@@ -7,7 +7,7 @@ import {
   Clock, ArrowUpRight, Check, Printer, FileSpreadsheet, CreditCard
 } from 'lucide-react';
 import QRCode from 'qrcode';
-import { getStudents, updateStudent, deleteStudent } from '@/lib/store';
+import { getStudents, addStudent, updateStudent, deleteStudent } from '@/lib/store';
 import { Student } from '@/types';
 
 export const ReceiverStudentsPage: React.FC = () => {
@@ -37,8 +37,25 @@ export const ReceiverStudentsPage: React.FC = () => {
   const [correctionReason, setCorrectionReason] = useState('');
   const [correctionSaved, setCorrectionSaved] = useState(false);
 
-  const loadData = () => {
-    setStudents(getStudents());
+  const loadData = async () => {
+    try {
+      const res = await fetch('/api/students?limit=500');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.students && json.students.length > 0) {
+          const current = getStudents();
+          const currentIds = new Set(current.map(s => s.studentId));
+          json.students.forEach((s: Student) => {
+            if (!currentIds.has(s.studentId)) {
+              addStudent(s);
+            }
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('Syncing with local storage:', e);
+    }
+    setStudents([...getStudents()]);
   };
 
   useEffect(() => {

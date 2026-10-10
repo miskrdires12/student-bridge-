@@ -161,7 +161,7 @@ export const StudentRegistrationPage: React.FC = () => {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isIdTaken) {
       alert('The Student ID is already taken. Please generate or specify a unique ID.');
@@ -175,8 +175,8 @@ export const StudentRegistrationPage: React.FC = () => {
 
     setIsSubmitting(true);
 
-    setTimeout(() => {
-      const newStudent: Student = {
+    try {
+      const studentPayload: Student = {
         id: 'std-' + Date.now(),
         studentId: studentId.trim(),
         fullName: fullName.trim(),
@@ -197,6 +197,7 @@ export const StudentRegistrationPage: React.FC = () => {
         previewPath: capturedPhoto || undefined,
         senderName: user?.username || 'Field Operator',
         status: 'Accepted',
+        idProductionStatus: 'READY',
         createdAt: new Date().toISOString(),
         recordHistory: [
           {
@@ -209,11 +210,32 @@ export const StudentRegistrationPage: React.FC = () => {
         ]
       };
 
-      // Save to store (persists authoritative record)
-      addStudent(newStudent);
-      setSubmittedStudent(newStudent);
+      // Call Cloudflare Edge Worker API to save student & upload photo to R2
+      try {
+        const res = await fetch('/api/students', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(studentPayload)
+        });
+        if (res.ok) {
+          const cloudSaved = await res.json();
+          if (cloudSaved && cloudSaved.photoPath) {
+            studentPayload.photoPath = cloudSaved.photoPath;
+            studentPayload.previewPath = cloudSaved.previewPath || cloudSaved.photoPath;
+          }
+        }
+      } catch (cloudErr) {
+        console.warn('Direct Cloudflare Edge sync warning, saving locally:', cloudErr);
+      }
+
+      // Persist in client store & notify Receiver Station immediately
+      addStudent(studentPayload);
+      setSubmittedStudent(studentPayload);
+    } catch (err: any) {
+      alert('Error during registration: ' + err.message);
+    } finally {
       setIsSubmitting(false);
-    }, 400);
+    }
   };
 
   const resetFormForNext = () => {
