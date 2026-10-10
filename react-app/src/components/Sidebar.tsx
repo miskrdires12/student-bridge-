@@ -19,10 +19,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
 
   const getStationBadge = () => {
     switch (currentStation) {
-      case 'SENDER': return { title: 'SENDER WORKSTATION', color: '#85e510' };
-      case 'RECEIVER': return { title: 'RECEIVER CONSOLE', color: '#60a5fa' };
-      case 'ADMIN': return { title: 'ADMIN SUPERVISION', color: '#fbbf24' };
-      case 'SUPER_ADMIN': return { title: 'SUPER ADMIN CONSOLE', color: '#a855f7' };
+      case 'SENDER':
+        return { title: 'SENDER WORKSTATION', subtitle: 'Biometric Capture & Transmission', color: 'bg-[#85E510]/15 text-[#366804] border-[#85E510]/30' };
+      case 'RECEIVER':
+        return { title: 'RECEIVER CONSOLE', subtitle: 'Directory, Review & Bulk Exports', color: 'bg-blue-50 text-blue-700 border-blue-200' };
+      case 'ADMIN':
+        return { title: 'ADMIN SUPERVISION', subtitle: 'Workforce & Task Governance', color: 'bg-amber-50 text-amber-800 border-amber-200' };
+      case 'SUPER_ADMIN':
+        return { title: 'SUPER ADMIN CONSOLE', subtitle: 'Central Authority & Diagnostics', color: 'bg-purple-50 text-purple-800 border-purple-200' };
     }
   };
 
@@ -80,28 +84,30 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
       {/* Mobile backdrop */}
       {mobileOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/80 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm lg:hidden"
           onClick={onCloseMobile}
         />
       )}
 
       <aside
-        className={`fixed lg:sticky top-16 left-0 z-40 w-60 h-[calc(100vh-4rem)] bg-[#101924] border-r border-[#1e2e42] flex flex-col transition-transform duration-300 lg:translate-x-0 ${
+        className={`fixed lg:sticky top-16 left-0 z-40 w-64 h-[calc(100vh-4rem)] bg-white border-r border-[#E2E8F0] flex flex-col transition-transform duration-300 lg:translate-x-0 ${
           mobileOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'
         }`}
       >
-        {/* Station Header */}
-        <div className="p-4 border-b border-[#1e2e42]/60">
-          <div className="font-heading font-black text-sm text-[#f2f7f4]">
-            SILICON <span className="bg-[#85e510] text-[#062404] text-[9px] font-black px-1.5 py-0.5 rounded">LABS</span>
-          </div>
-          <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#85e510]/10 text-[#85e510] text-[10px] font-black uppercase tracking-wider mt-1.5 border border-[#85e510]/20">
-            <span>{badge.title}</span>
+        {/* Station Identification Card */}
+        <div className="p-4 border-b border-[#E2E8F0]">
+          <div className={`px-3 py-1.5 rounded-xl border ${badge.color}`}>
+            <div className="text-[11px] font-black tracking-wide uppercase">
+              {badge.title}
+            </div>
+            <div className="text-[10px] opacity-80 font-medium mt-0.5">
+              {badge.subtitle}
+            </div>
           </div>
         </div>
 
-        {/* Navigation Items */}
-        <nav className="flex-1 overflow-y-auto p-3 space-y-1">
+        {/* Navigation Links */}
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
           {navItems.map((item) => {
             const Icon = item.icon;
             return (
@@ -110,10 +116,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
                 to={item.to}
                 onClick={onCloseMobile}
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                  `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${
                     isActive
-                      ? 'bg-[#85e510] text-[#071302] shadow-[0_0_15px_rgba(133,229,16,0.35)]'
-                      : 'text-[#94a3b8] hover:text-white hover:bg-white/[0.05]'
+                      ? 'bg-[#85E510]/15 text-[#2E5803] font-bold border-l-4 border-[#85E510] shadow-sm'
+                      : 'text-[#64748B] hover:text-[#202833] hover:bg-[#F4F7F5]'
                   }`
                 }
               >
@@ -124,14 +130,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
           })}
         </nav>
 
-        {/* Workstation Footer Status */}
-        <div className="p-3 border-t border-[#1e2e42]/60 text-[10px] text-[#94a3b8] bg-[#0d1520]/60">
-          <div className="flex items-center justify-between font-mono">
-            <span>Edge Station:</span>
-            <span className="text-[#85e510] font-bold">ONLINE</span>
-          </div>
-          <div className="text-[9px] text-[#64748b] mt-0.5 truncate">
-            {user?.email || 'Logged In'}
+        {/* Bottom Station Status */}
+        <div className="p-4 border-t border-[#E2E8F0] bg-[#F8FAF9]">
+          <div className="flex items-center justify-between text-[11px] text-[#64748B]">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-[#85E510] animate-pulse" />
+              <span className="font-semibold text-[#202833]">Edge Online</span>
+            </div>
+            <span className="font-mono text-[10px] text-[#64748B]">Cloudflare</span>
           </div>
         </div>
       </aside>

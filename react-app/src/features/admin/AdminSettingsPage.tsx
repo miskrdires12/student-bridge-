@@ -24,18 +24,18 @@ export const AdminSettingsPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto pb-12">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#1e2e42]">
+    <div className="space-y-6 max-w-5xl mx-auto pb-12">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E2E8F0]">
         <div>
-          <h1 className="text-2xl font-heading font-extrabold text-white tracking-tight">Admin Station Settings</h1>
-          <p className="text-xs text-[#94a3b8] mt-0.5">
+          <h1 className="text-2xl font-heading font-extrabold text-[#202833] tracking-tight">Admin Station Settings</h1>
+          <p className="text-xs text-[#64748B] mt-0.5">
             Workforce quotas, task escalation rules, operator credentials, and terminal locks
           </p>
         </div>
 
         <button
           onClick={handleSignOut}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-bold transition-all"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-bold transition-all shadow-sm"
         >
           <LogOut className="w-4 h-4" />
           <span>Sign Out</span>
@@ -43,109 +43,92 @@ export const AdminSettingsPage: React.FC = () => {
       </div>
 
       {toastMessage && (
-        <div className="p-3.5 rounded-xl bg-[#85e510]/15 border border-[#85e510]/30 text-[#85e510] text-xs flex items-center gap-2">
+        <div className="p-3.5 rounded-xl bg-[#85E510]/15 border border-[#85E510]/40 text-[#366804] text-xs flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 shrink-0" />
-          <span>{toastMessage}</span>
+          <span className="font-semibold">{toastMessage}</span>
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* User Account */}
-        <div className="bg-[#131e2b] border border-[#1e2e42] rounded-2xl p-6 space-y-4">
-          <div className="flex items-center gap-3 pb-3 border-b border-[#1e2e42]">
-            <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-400">
+        <div className="bg-white border border-[#E2E8F0] rounded-2xl p-6 space-y-4 shadow-sm">
+          <div className="flex items-center gap-3 pb-3 border-b border-[#E2E8F0]">
+            <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-700">
               <User className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-heading font-bold text-white">Supervisor Account</h3>
-              <p className="text-[11px] text-[#94a3b8]">Field workforce management authority</p>
+              <h3 className="text-sm font-heading font-bold text-[#202833]">Supervisor Account</h3>
+              <p className="text-xs text-[#64748B]">Regional station management identity</p>
             </div>
           </div>
 
           <div className="space-y-3 text-xs">
-            <div>
-              <span className="text-[#94a3b8] block">Username</span>
-              <span className="font-semibold text-white">{user?.username || 'miskrdires1'}</span>
+            <div className="flex justify-between py-1.5 border-b border-[#E2E8F0]">
+              <span className="text-[#64748B]">Operator Username:</span>
+              <span className="font-bold text-[#202833]">{user?.username || 'miskrdires1'}</span>
             </div>
-            <div>
-              <span className="text-[#94a3b8] block">Email</span>
-              <span className="font-mono text-white">{user?.email || 'miskrdires1@gmail.com'}</span>
+            <div className="flex justify-between py-1.5 border-b border-[#E2E8F0]">
+              <span className="text-[#64748B]">Authenticated Email:</span>
+              <span className="font-mono text-[#202833]">{user?.email || 'miskrdires1@gmail.com'}</span>
             </div>
-            <div>
-              <span className="text-[#94a3b8] block">Station Role</span>
-              <span className="inline-block mt-0.5 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400">
+            <div className="flex justify-between py-1.5 border-b border-[#E2E8F0]">
+              <span className="text-[#64748B]">Assigned Role:</span>
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
                 {user?.role || 'ADMIN'}
               </span>
             </div>
+            <div className="flex justify-between py-1.5">
+              <span className="text-[#64748B]">Bound Terminal:</span>
+              <span className="font-mono text-[#2E7D32] font-bold">{deviceId}</span>
+            </div>
           </div>
         </div>
 
-        {/* 1-Device Lock */}
-        <div className="bg-[#131e2b] border border-[#1e2e42] rounded-2xl p-6 space-y-4">
-          <div className="flex items-center gap-3 pb-3 border-b border-[#1e2e42]">
-            <div className="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-400">
-              <Smartphone className="w-5 h-5" />
+        {/* Supervision Parameters Form */}
+        <form onSubmit={handleSave} className="bg-white border border-[#E2E8F0] rounded-2xl p-6 space-y-4 shadow-sm">
+          <div className="flex items-center gap-3 pb-3 border-b border-[#E2E8F0]">
+            <div className="w-10 h-10 rounded-xl bg-[#85E510]/15 border border-[#85E510]/30 flex items-center justify-center text-[#2E7D32]">
+              <Shield className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-heading font-bold text-white">Terminal Security</h3>
-              <p className="text-[11px] text-[#94a3b8]">1-Device hardware binding</p>
+              <h3 className="text-sm font-heading font-bold text-[#202833]">Supervision Parameters</h3>
+              <p className="text-xs text-[#64748B]">Quality benchmarks and task escalation timeouts</p>
             </div>
           </div>
 
           <div className="space-y-3 text-xs">
             <div>
-              <span className="text-[#94a3b8] block">Authorized Device ID</span>
-              <span className="font-mono font-bold text-[#85e510]">{deviceId}</span>
-            </div>
-            <div className="p-3 rounded-xl bg-[#0d1520] border border-[#1e2e42] text-[11px] text-[#94a3b8]">
-              Authorized for assigning tasks, inspecting sender velocity, and performing review quality audits.
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Supervision Rules */}
-      <div className="bg-[#131e2b] border border-[#1e2e42] rounded-2xl p-6 space-y-4">
-        <h3 className="text-sm font-heading font-bold text-white uppercase tracking-wider pb-2 border-b border-[#1e2e42]">
-          Workforce & Escalation Policies
-        </h3>
-
-        <form onSubmit={handleSave} className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs font-semibold text-[#94a3b8] block mb-1">Overdue Task Escalation</label>
-              <select
+              <label className="block text-[#64748B] uppercase font-bold mb-1">
+                Task Escalation Overdue Timeout (Days)
+              </label>
+              <input
+                type="text"
                 value={escalationDays}
                 onChange={(e) => setEscalationDays(e.target.value)}
-                className="w-full bg-[#0d1520] border border-[#1e2e42] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-[#85e510]"
-              >
-                <option value="1">Escalate after 24 hours</option>
-                <option value="3">Escalate after 3 days</option>
-                <option value="7">Escalate after 7 days</option>
-              </select>
+                className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-[#202833] focus:outline-none focus:border-[#85E510]"
+              />
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-[#94a3b8] block mb-1">Minimum Sender Accuracy Target</label>
-              <select
+              <label className="block text-[#64748B] uppercase font-bold mb-1">
+                Minimum Photo Quality Target
+              </label>
+              <input
+                type="text"
                 value={minAccuracyTarget}
                 onChange={(e) => setMinAccuracyTarget(e.target.value)}
-                className="w-full bg-[#0d1520] border border-[#1e2e42] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-[#85e510]"
-              >
-                <option value="85%">85% Acceptance Rate</option>
-                <option value="90%">90% Acceptance Rate (Standard)</option>
-                <option value="95%">95% Acceptance Rate (High Precision)</option>
-              </select>
+                className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-[#202833] focus:outline-none focus:border-[#85E510]"
+              />
             </div>
-          </div>
 
-          <div className="pt-2 flex justify-end">
-            <button
-              type="submit"
-              className="px-5 py-2.5 rounded-xl bg-[#85e510] hover:bg-[#96f71a] text-[#071302] text-xs font-extrabold shadow-lg shadow-[#85e510]/20 transition-all"
-            >
-              Save Policies
-            </button>
+            <div className="pt-2 flex justify-end">
+              <button
+                type="submit"
+                className="px-5 py-2.5 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] text-[#062404] text-xs font-black shadow-sm transition-all"
+              >
+                Save Supervision Settings
+              </button>
+            </div>
           </div>
         </form>
       </div>

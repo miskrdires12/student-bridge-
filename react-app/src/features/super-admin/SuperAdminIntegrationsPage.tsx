@@ -45,17 +45,17 @@ export const SuperAdminIntegrationsPage: React.FC = () => {
   }, [tickerActive]);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#1e2c22]">
+    <div className="space-y-6 max-w-6xl mx-auto pb-12">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E2E8F0]">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-heading font-extrabold text-white tracking-tight">StudentCore Live Sync Pipeline</h1>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#8fe617]/20 text-[#8fe617] border border-[#8fe617]/30 uppercase flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#8fe617] animate-pulse" />
+            <h1 className="text-2xl font-heading font-extrabold text-[#202833] tracking-tight">StudentCore Live Sync Pipeline</h1>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-[#85E510]/15 text-[#366804] border border-[#85E510]/30 uppercase flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#85E510] animate-pulse" />
               <span>3-Second Edge Ticker Active</span>
             </span>
           </div>
-          <p className="text-xs text-[#9eb2a6] mt-0.5">
+          <p className="text-xs text-[#64748B] mt-0.5">
             Real-time biometric sync stream connecting field stations to StudentCore National Registry
           </p>
         </div>
@@ -63,8 +63,8 @@ export const SuperAdminIntegrationsPage: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setTickerActive(!tickerActive)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-              tickerActive ? 'bg-[#8fe617] text-[#062404]' : 'bg-white/10 text-white'
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm ${
+              tickerActive ? 'bg-[#85E510] hover:bg-[#76CF0C] text-[#062404] font-black' : 'bg-gray-100 text-[#64748B] hover:text-[#202833]'
             }`}
           >
             {tickerActive ? 'Live Ticker Running' : 'Ticker Paused'}
@@ -74,67 +74,67 @@ export const SuperAdminIntegrationsPage: React.FC = () => {
 
       {/* Sync Health Card */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-[#101612] border border-[#1e2c22] rounded-2xl p-5">
-          <span className="text-xs font-semibold text-[#9eb2a6] uppercase tracking-wider">Sync Latency SLA</span>
-          <div className="mt-2 text-2xl font-heading font-black text-[#8fe617]">12.4 ms</div>
-          <div className="text-xs text-[#9eb2a6] mt-1">Cloudflare Edge &bull; Instant Ingestion</div>
+        <div className="bg-white border border-[#E2E8F0] rounded-2xl p-5 shadow-sm">
+          <span className="text-xs font-bold text-[#64748B] uppercase tracking-wider">Sync Latency SLA</span>
+          <div className="mt-2 text-2xl font-heading font-black text-[#2E7D32]">12.4 ms</div>
+          <div className="text-xs text-[#64748B] mt-1">Cloudflare Edge &bull; Instant Ingestion</div>
         </div>
 
-        <div className="bg-[#101612] border border-[#1e2c22] rounded-2xl p-5">
-          <span className="text-xs font-semibold text-[#9eb2a6] uppercase tracking-wider">Sync Packet Success Rate</span>
-          <div className="mt-2 text-2xl font-heading font-black text-white">100.0%</div>
-          <div className="text-xs text-blue-400 mt-1">Zero dropped packets over last 24h</div>
+        <div className="bg-white border border-[#E2E8F0] rounded-2xl p-5 shadow-sm">
+          <span className="text-xs font-bold text-[#64748B] uppercase tracking-wider">Packet Success Rate</span>
+          <div className="mt-2 text-2xl font-heading font-black text-[#0284C7]">100.0%</div>
+          <div className="text-xs text-[#0369A1] mt-1 font-semibold">Zero dropped packets over last 24h</div>
         </div>
 
-        <div className="bg-[#101612] border border-[#1e2c22] rounded-2xl p-5">
-          <span className="text-xs font-semibold text-[#9eb2a6] uppercase tracking-wider">Target Endpoint</span>
-          <div className="mt-2 text-sm font-mono text-purple-300">api.studentcore.gov.et</div>
-          <div className="text-xs text-[#9eb2a6] mt-1">mTLS TLS 1.3 Certified</div>
+        <div className="bg-white border border-[#E2E8F0] rounded-2xl p-5 shadow-sm">
+          <span className="text-xs font-bold text-[#64748B] uppercase tracking-wider">Target Endpoint</span>
+          <div className="mt-2 text-sm font-mono text-purple-800 font-bold">api.studentcore.gov.et</div>
+          <div className="text-xs text-[#64748B] mt-1">mTLS TLS 1.3 Certified</div>
         </div>
       </div>
 
       {/* Real-time Ticker Feed */}
-      <div className="bg-[#101612] border border-[#1e2c22] rounded-2xl overflow-hidden shadow-xl">
-        <div className="p-4 border-b border-[#1e2c22] flex items-center justify-between">
-          <h2 className="text-xs font-heading font-bold text-white uppercase tracking-wider flex items-center gap-2">
-            <Activity className="w-4 h-4 text-[#8fe617]" />
-            <span>Live Transaction Stream</span>
+      <div className="bg-white border border-[#E2E8F0] rounded-2xl overflow-hidden shadow-sm">
+        <div className="p-4 border-b border-[#E2E8F0] flex items-center justify-between">
+          <h2 className="text-xs font-heading font-bold text-[#202833] uppercase tracking-wider flex items-center gap-2">
+            <Activity className="w-4 h-4 text-[#85E510]" />
+            <span>Biometric Synchronization Stream</span>
           </h2>
-          <span className="text-[11px] font-mono text-[#9eb2a6]">Polling: ~3s interval</span>
+          <span className="text-xs font-mono text-[#64748B]">Displaying 20 recent events</span>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-[#070908] border-b border-[#1e2c22] text-[#9eb2a6] uppercase text-[10px] tracking-wider font-semibold">
+            <thead className="bg-[#F8FAF9] border-b border-[#E2E8F0] text-[#64748B] uppercase text-[10px] tracking-wider font-bold">
               <tr>
-                <th className="py-3 pl-4">Request ID</th>
-                <th className="py-3">Campus Hub</th>
-                <th className="py-3">Origin Device</th>
-                <th className="py-3">Student ID</th>
-                <th className="py-3">Sync Event Type</th>
-                <th className="py-3">Latency</th>
-                <th className="py-3 text-right pr-4">Edge Status</th>
+                <th className="py-3.5 pl-6">Event ID</th>
+                <th className="py-3.5">Campus Hub</th>
+                <th className="py-3.5">Terminal Device</th>
+                <th className="py-3.5">Student ID</th>
+                <th className="py-3.5">Sync Type</th>
+                <th className="py-3.5">Status</th>
+                <th className="py-3.5 text-right pr-6">Edge Latency</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#1e2c22]/60 font-mono">
-              {requests.map(req => (
-                <tr key={req.id} className="hover:bg-white/[0.02] transition-colors">
-                  <td className="py-3 pl-4 text-[#8fe617] font-semibold">{req.id}</td>
-                  <td className="py-3 text-white font-sans">{req.school}</td>
-                  <td className="py-3 text-[#9eb2a6]">{req.device}</td>
-                  <td className="py-3 text-white">{req.studentId}</td>
+            <tbody className="divide-y divide-[#E2E8F0]">
+              {requests.map((r, i) => (
+                <tr key={r.id + i} className="hover:bg-[#F8FAF9] transition-colors">
+                  <td className="py-3 pl-6 font-mono text-[#64748B] text-[11px]">{r.id}</td>
+                  <td className="py-3 font-semibold text-[#202833]">{r.school}</td>
+                  <td className="py-3 font-mono text-[#64748B] text-[11px]">{r.device}</td>
+                  <td className="py-3 font-mono font-bold text-[#202833]">{r.studentId}</td>
                   <td className="py-3">
-                    <span className="px-2 py-0.5 rounded bg-white/5 text-purple-300 font-bold text-[10px]">
-                      {req.type}
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                      {r.type}
                     </span>
                   </td>
-                  <td className="py-3 text-emerald-400 font-bold">{req.latency}</td>
-                  <td className="py-3 text-right pr-4">
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#8fe617]/15 text-[#8fe617] font-bold text-[10px]">
+                  <td className="py-3">
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#85E510]/15 text-[#366804] border border-[#85E510]/30 flex items-center gap-1 w-max">
                       <CheckCircle2 className="w-3 h-3" />
-                      <span>{req.syncStatus}</span>
+                      <span>{r.syncStatus}</span>
                     </span>
                   </td>
+                  <td className="py-3 text-right pr-6 font-mono text-[#2E7D32] font-bold">{r.latency}</td>
                 </tr>
               ))}
             </tbody>

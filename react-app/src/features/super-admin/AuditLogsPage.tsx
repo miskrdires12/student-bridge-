@@ -19,65 +19,65 @@ export const AuditLogsPage: React.FC = () => {
   );
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#1e2c22]">
+    <div className="space-y-6 max-w-6xl mx-auto pb-12">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E2E8F0]">
         <div>
-          <h1 className="text-2xl font-heading font-extrabold text-white tracking-tight">Security & Governance Audit Trail</h1>
-          <p className="text-xs text-[#9eb2a6] mt-0.5">
-            Cryptographically sealed operational audit logs recording all station logins, updates, and exports
+          <h1 className="text-2xl font-heading font-extrabold text-[#202833] tracking-tight">Security & Governance Audit Trail</h1>
+          <p className="text-xs text-[#64748B] mt-0.5">
+            Cryptographically logged operational audit trail recording station logins, record updates, and photo exports
           </p>
         </div>
 
         <button
           onClick={() => setLogs([...getAuditLogs()])}
-          className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-bold text-white flex items-center gap-1.5 transition-all"
+          className="px-3.5 py-2 rounded-xl bg-white hover:bg-gray-50 border border-[#CBD5E1] text-xs font-bold text-[#202833] flex items-center gap-1.5 shadow-sm transition-all"
         >
-          <RefreshCw className="w-3.5 h-3.5 text-[#8fe617]" />
-          <span>Refresh Audit Logs</span>
+          <RefreshCw className="w-3.5 h-3.5 text-[#85E510]" />
+          <span>Refresh Audit Trail</span>
         </button>
       </div>
 
-      <div className="bg-[#101612] border border-[#1e2c22] rounded-2xl p-4">
-        <div className="relative w-80">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#9eb2a6]" />
+      <div className="bg-white border border-[#E2E8F0] rounded-2xl p-4 shadow-sm">
+        <div className="relative w-full sm:w-80">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#94A3B8]" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search audit trail..."
-            className="w-full bg-[#070908] border border-[#1e2c22] rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-[#3f4743] focus:outline-none focus:border-[#8fe617]"
+            placeholder="Search audit trail by user, action, details..."
+            className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-9 pr-4 py-2 text-xs text-[#202833] placeholder-[#94A3B8] focus:outline-none focus:border-[#85E510]"
           />
         </div>
       </div>
 
-      <div className="bg-[#101612] border border-[#1e2c22] rounded-2xl overflow-hidden shadow-xl">
+      <div className="bg-white border border-[#E2E8F0] rounded-2xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-[#070908] border-b border-[#1e2c22] text-[#9eb2a6] uppercase text-[10px] tracking-wider font-semibold">
+            <thead className="bg-[#F8FAF9] border-b border-[#E2E8F0] text-[#64748B] uppercase text-[10px] tracking-wider font-bold">
               <tr>
-                <th className="py-3.5 pl-4">Timestamp</th>
+                <th className="py-3.5 pl-6">Timestamp</th>
                 <th className="py-3.5">Operator</th>
                 <th className="py-3.5">Station</th>
                 <th className="py-3.5">Action Event</th>
                 <th className="py-3.5">Entity</th>
-                <th className="py-3.5 pr-4">Details</th>
+                <th className="py-3.5 pr-6">Details</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#1e2c22]/60">
+            <tbody className="divide-y divide-[#E2E8F0]">
               {filtered.map((log, idx) => (
-                <tr key={idx} className="hover:bg-white/[0.02]">
-                  <td className="py-3 pl-4 font-mono text-[11px] text-[#9eb2a6] whitespace-nowrap">
+                <tr key={idx} className="hover:bg-[#F8FAF9] transition-colors">
+                  <td className="py-3 pl-6 font-mono text-[11px] text-[#64748B] whitespace-nowrap">
                     {log.timestamp}
                   </td>
-                  <td className="py-3 font-semibold text-white whitespace-nowrap">{log.user}</td>
+                  <td className="py-3 font-bold text-[#202833] whitespace-nowrap">{log.user}</td>
                   <td className="py-3 whitespace-nowrap">
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-white/5 text-[#8fe617]">
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#85E510]/15 text-[#366804] border border-[#85E510]/30">
                       {log.station}
                     </span>
                   </td>
-                  <td className="py-3 font-bold text-white whitespace-nowrap">{log.action}</td>
-                  <td className="py-3 font-mono text-[#8fe617] whitespace-nowrap">{log.entity}</td>
-                  <td className="py-3 text-[#9eb2a6] pr-4">{log.details}</td>
+                  <td className="py-3 font-semibold text-[#202833] whitespace-nowrap">{log.action}</td>
+                  <td className="py-3 font-mono text-[#0284C7] font-semibold whitespace-nowrap">{log.entity}</td>
+                  <td className="py-3 text-[#64748B] pr-6">{log.details}</td>
                 </tr>
               ))}
             </tbody>

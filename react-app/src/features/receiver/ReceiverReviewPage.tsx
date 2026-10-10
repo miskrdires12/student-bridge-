@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldCheck, CheckCircle2, XCircle, ArrowRight, User, Eye } from 'lucide-react';
+import { ShieldCheck, CheckCircle2, XCircle, ArrowRight, User, Eye, ChevronLeft, ChevronRight } from 'lucide-react';
 import { getStudents, updateStudent } from '@/lib/store';
 import { Student } from '@/types';
 
@@ -28,88 +28,98 @@ export const ReceiverReviewPage: React.FC = () => {
   };
 
   if (!current) {
-    return <div className="text-white text-xs">No records available for review.</div>;
+    return (
+      <div className="bg-white border border-[#E2E8F0] rounded-2xl p-8 text-center text-[#64748B] text-xs">
+        No student records available for review.
+      </div>
+    );
   }
 
   const photoSrc = current.previewPath || (current.photoPath ? `https://pub-93e8bf84c42949ec88306f456caa0fc9.r2.dev/${current.photoPath.replace(/^\//, '')}` : null);
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#1e2c22]">
+    <div className="space-y-6 max-w-2xl mx-auto pb-12">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-[#E2E8F0]">
         <div>
-          <h1 className="text-2xl font-heading font-extrabold text-white tracking-tight">Biometric Quality Review Queue</h1>
-          <p className="text-xs text-[#9eb2a6] mt-0.5">
+          <h1 className="text-2xl font-heading font-black text-[#202833] tracking-tight">
+            Biometric Review Queue
+          </h1>
+          <p className="text-xs text-[#64748B] mt-1">
             Single-record inspection mode &bull; Verify portrait centering, background clarity, and metadata
           </p>
         </div>
 
-        <span className="text-xs font-mono text-[#8fe617] bg-[#8fe617]/10 px-3 py-1 rounded-xl">
+        <span className="text-xs font-mono font-bold text-[#366804] bg-[#85E510]/15 px-3 py-1 rounded-xl border border-[#85E510]/40">
           Record {currentIndex + 1} of {students.length}
         </span>
       </div>
 
-      <div className="bg-[#101612] border border-[#1e2c22] rounded-2xl p-6 shadow-xl flex flex-col items-center text-center">
+      <div className="bg-white border border-[#E2E8F0] rounded-2xl p-8 shadow-sm flex flex-col items-center text-center">
         {/* Photo Stage */}
-        <div className="w-48 h-60 rounded-2xl overflow-hidden border-2 border-[#8fe617]/60 shadow-[0_0_35px_rgba(143,230,23,0.3)] bg-[#070908] mb-4 flex items-center justify-center">
+        <div className="w-48 h-60 rounded-2xl overflow-hidden border-2 border-[#85E510] shadow-md bg-[#F4F7F5] mb-5 flex items-center justify-center">
           {photoSrc ? (
             <img src={photoSrc} alt={current.fullName} className="w-full h-full object-cover" />
           ) : (
-            <div className="text-amber-400 text-xs font-bold p-4">No Photograph Uploaded</div>
+            <div className="text-amber-700 text-xs font-bold p-4">No Photograph Uploaded</div>
           )}
         </div>
 
-        <h2 className="text-xl font-heading font-black text-white">{current.fullName}</h2>
-        <div className="font-mono text-sm text-[#8fe617] mt-0.5">{current.studentId}</div>
+        <h2 className="text-xl font-heading font-black text-[#202833]">{current.fullName}</h2>
+        <div className="font-mono text-sm text-[#366804] font-bold mt-0.5">{current.studentId}</div>
 
-        <div className="flex flex-wrap items-center justify-center gap-2 mt-3 text-xs">
-          <span className="px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-white font-medium">
+        <div className="flex flex-wrap items-center justify-center gap-2 mt-4 text-xs">
+          <span className="px-3 py-1 rounded-full bg-[#F8FAF9] border border-[#CBD5E1] text-[#202833] font-semibold">
             Campus: {current.school || 'YMS'}
           </span>
-          <span className="px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-white font-medium">
+          <span className="px-3 py-1 rounded-full bg-[#F8FAF9] border border-[#CBD5E1] text-[#202833] font-semibold">
             Grade: {current.grade}
           </span>
-          <span className="px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-white font-medium">
+          <span className="px-3 py-1 rounded-full bg-[#F8FAF9] border border-[#CBD5E1] text-[#202833] font-mono">
             Phone: {current.phone || 'N/A'}
           </span>
-          <span className="px-2.5 py-1 rounded-full bg-purple-500/10 text-purple-300 font-mono font-bold">
+          <span className="px-3 py-1 rounded-full bg-purple-50 text-purple-700 font-mono font-bold border border-purple-200">
             Blood: {current.bloodType || 'Unknown'}
           </span>
         </div>
 
         {/* Action Controls */}
-        <div className="flex items-center gap-4 mt-8 w-full max-w-sm">
+        <div className="flex items-center gap-3 mt-8 w-full max-w-sm">
           <button
             type="button"
             onClick={handleFlag}
-            className="flex-1 py-3 rounded-xl bg-red-500/15 hover:bg-red-500 text-red-400 hover:text-white font-bold text-xs flex items-center justify-center gap-2 transition-all border border-red-500/30"
+            className="flex-1 py-3 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 font-bold text-xs flex items-center justify-center gap-1.5 transition-all border border-red-200"
           >
             <XCircle className="w-4 h-4" />
-            <span>Flag for Retake</span>
+            <span>Flag Retake</span>
           </button>
 
           <button
             type="button"
             onClick={handleApprove}
-            className="flex-1 py-3 rounded-xl bg-[#8fe617] hover:bg-[#a0f22c] text-[#062404] font-extrabold text-xs flex items-center justify-center gap-2 transition-all shadow-[0_0_20px_rgba(143,230,23,0.3)]"
+            className="flex-1 py-3 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] text-[#062404] font-black text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm"
           >
             <CheckCircle2 className="w-4 h-4" />
             <span>Approve & Verify</span>
           </button>
         </div>
 
-        <div className="mt-6 flex items-center justify-between w-full text-xs text-[#9eb2a6] pt-4 border-t border-[#1e2c22]">
+        <div className="mt-8 flex items-center justify-between w-full text-xs text-[#64748B] pt-4 border-t border-[#E2E8F0]">
           <button
-            onClick={() => setCurrentIndex(prev => (prev > 0 ? prev - 1 : students.length - 1))}
-            className="hover:text-white"
+            type="button"
+            onClick={() => setCurrentIndex(prev => (prev - 1 + students.length) % students.length)}
+            className="hover:text-[#202833] font-semibold flex items-center gap-1"
           >
-            &larr; Previous Student
+            <ChevronLeft className="w-4 h-4" />
+            <span>Previous</span>
           </button>
-          <span>Use keyboard arrows or buttons to navigate</span>
+
           <button
+            type="button"
             onClick={() => setCurrentIndex(prev => (prev + 1) % students.length)}
-            className="hover:text-white"
+            className="hover:text-[#202833] font-semibold flex items-center gap-1"
           >
-            Skip Next &rarr;
+            <span>Next</span>
+            <ChevronRight className="w-4 h-4" />
           </button>
         </div>
       </div>

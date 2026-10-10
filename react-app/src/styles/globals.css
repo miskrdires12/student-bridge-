@@ -3,27 +3,18 @@
 @tailwind utilities;
 
 :root {
-  --background: #0b1118;
-  --surface: #131e2b;
-  --surface-hover: #192738;
-  --accent: #85e510;
-  --accent-glow: rgba(133, 229, 16, 0.45);
-  --foreground: #f2f7f4;
-  --foreground-muted: #8fa2b7;
-  --border: #1e2e42;
-  --border-light: #283e58;
-}
-
-.dark {
-  --background: #0b1118;
-  --surface: #131e2b;
-  --surface-hover: #192738;
-  --accent: #85e510;
-  --accent-glow: rgba(133, 229, 16, 0.45);
-  --foreground: #f2f7f4;
-  --foreground-muted: #8fa2b7;
-  --border: #1e2e42;
-  --border-light: #283e58;
+  --background: #F4F7F5;
+  --surface: #FFFFFF;
+  --surface-muted: #F8FAF9;
+  --charcoal: #202833;
+  --charcoal-dark: #141A22;
+  --accent: #85E510;
+  --accent-hover: #76CF0C;
+  --accent-glow: rgba(133, 229, 16, 0.35);
+  --foreground: #202833;
+  --foreground-muted: #64748B;
+  --border: #E2E8F0;
+  --border-subtle: #EDF2F7;
 }
 
 body {
@@ -31,37 +22,51 @@ body {
   color: var(--foreground);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Custom Badges Matching Screenshots */
+/* Rounded Cards */
+.card-enterprise {
+  background-color: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 1rem;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+  transition: all 0.2s ease-in-out;
+}
+
+.card-enterprise:hover {
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+}
+
+/* Custom Badges Matching Brand Guidelines */
 .badge-accepted {
   background: rgba(133, 229, 16, 0.15);
-  color: #85e510;
+  color: #4d8a07;
   border: 1px solid rgba(133, 229, 16, 0.35);
 }
 
 .badge-pending {
-  background: rgba(251, 191, 36, 0.15);
-  color: #fbbf24;
-  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+  border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
 .badge-rejected {
-  background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
-  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
 .badge-female {
-  background: rgba(192, 132, 252, 0.15);
-  color: #c084fc;
-  border: 1px solid rgba(192, 132, 252, 0.35);
+  background: rgba(168, 85, 247, 0.12);
+  color: #7e22ce;
+  border: 1px solid rgba(168, 85, 247, 0.3);
 }
 
 .badge-male {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
-  border: 1px solid rgba(52, 211, 153, 0.35);
+  background: rgba(14, 165, 233, 0.12);
+  color: #0369a1;
+  border: 1px solid rgba(14, 165, 233, 0.3);
 }
 
 /* Custom Scrollbar */
@@ -70,12 +75,12 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #0b1118;
+  background: #F4F7F5;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(133, 229, 16, 0.25);
+  background: rgba(32, 40, 51, 0.2);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(133, 229, 16, 0.5);
+  background: rgba(133, 229, 16, 0.6);
 }

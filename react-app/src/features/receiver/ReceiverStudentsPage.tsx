@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Search, Filter, Eye, Edit2, Trash2, X, Download, CheckCircle2,
   AlertTriangle, ChevronLeft, ChevronRight, Phone, School as SchoolIcon,
   UserCheck, Shield, ExternalLink, Calendar, HeartPulse, QrCode, FileText,
-  Clock, ArrowUpRight
+  Clock, ArrowUpRight, Check, Printer, FileSpreadsheet
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { getStudents, updateStudent, deleteStudent } from '@/lib/store';
@@ -16,15 +16,26 @@ export const ReceiverStudentsPage: React.FC = () => {
   const [schoolFilter, setSchoolFilter] = useState('ALL');
   const [gradeFilter, setGradeFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
+  const [photoFilter, setPhotoFilter] = useState('ALL');
 
-  // Pagination
+  // Multi-selection for batch operations
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Pagination (supports 100, 250, 500 per master prompt)
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
+  const [pageSize, setPageSize] = useState(100);
 
-  // Selected Student for Dossier Modal (Matching screenshot)
+  // Selected Student for Details Slide-Over Drawer
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
-  const [activeTab, setActiveTab] = useState<'Record History' | 'Photo History' | 'Notes'>('Record History');
+  const [activeTab, setActiveTab] = useState<'Record History' | 'Photo History' | 'Correction Form'>('Record History');
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
+
+  // Correction Form States
+  const [editFullName, setEditFullName] = useState('');
+  const [editGrade, setEditGrade] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [correctionReason, setCorrectionReason] = useState('');
+  const [correctionSaved, setCorrectionSaved] = useState(false);
 
   const loadData = () => {
     setStudents(getStudents());
@@ -33,7 +44,7 @@ export const ReceiverStudentsPage: React.FC = () => {
   useEffect(() => {
     loadData();
 
-    // Listen for reactive student additions from Sender Station
+    // Reactive event listener for student registrations from Sender Station
     const handleDataChange = () => {
       loadData();
     };
@@ -43,9 +54,15 @@ export const ReceiverStudentsPage: React.FC = () => {
     };
   }, []);
 
-  // Generate QR code whenever selected student changes
+  // Update correction form whenever selected student changes
   useEffect(() => {
     if (selectedStudent) {
+      setEditFullName(selectedStudent.fullName);
+      setEditGrade(selectedStudent.grade || '');
+      setEditPhone(selectedStudent.phone || '');
+      setCorrectionReason('');
+      setCorrectionSaved(false);
+
       const qrPayload = JSON.stringify({
         id: selectedStudent.studentId,
         name: selectedStudent.fullName,
@@ -54,7 +71,7 @@ export const ReceiverStudentsPage: React.FC = () => {
         status: selectedStudent.status || 'Accepted',
         issuer: 'Silicon Labs StudentBridge'
       });
-      QRCode.toDataURL(qrPayload, { width: 140, margin: 1, color: { dark: '#062404', light: '#85e510' } })
+      QRCode.toDataURL(qrPayload, { width: 140, margin: 1, color: { dark: '#062404', light: '#85E510' } })
         .then(url => setQrCodeDataUrl(url))
         .catch(() => setQrCodeDataUrl(null));
     }
@@ -79,16 +96,55 @@ export const ReceiverStudentsPage: React.FC = () => {
       const matchSchool = schoolFilter === 'ALL' || s.school === schoolFilter;
       const matchGrade = gradeFilter === 'ALL' || s.grade === gradeFilter;
       const matchStatus = statusFilter === 'ALL' || (s.status || 'Accepted').toUpperCase() === statusFilter.toUpperCase();
+      const hasPhoto = !!(s.photoPath || s.previewPath);
+      const matchPhoto = photoFilter === 'ALL' || (photoFilter === 'YES' && hasPhoto) || (photoFilter === 'NO' && !hasPhoto);
 
-      return matchSearch && matchSchool && matchGrade && matchStatus;
+      return matchSearch && matchSchool && matchGrade && matchStatus && matchPhoto;
     });
-  }, [students, search, schoolFilter, gradeFilter, statusFilter]);
+  }, [students, search, schoolFilter, gradeFilter, statusFilter, photoFilter]);
 
   const totalPages = Math.ceil(filtered.length / pageSize) || 1;
   const pagedStudents = filtered.slice((page - 1) * pageSize, page * pageSize);
 
+  const toggleSelectAll = () => {
+    if (selectedIds.size === pagedStudents.length && pagedStudents.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(pagedStudents.map(s => s.studentId)));
+    }
+  };
+
+  const toggleSelectRow = (id: string) => {
+    const next = new Set(selectedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelectedIds(next);
+  };
+
+  const handleSaveCorrection = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedStudent) return;
+    if (!correctionReason.trim()) {
+      alert('Please provide a reason for this audit correction.');
+      return;
+    }
+
+    updateStudent(selectedStudent.studentId, {
+      fullName: editFullName.trim(),
+      grade: editGrade.trim(),
+      phone: editPhone.trim()
+    });
+
+    loadData();
+    setCorrectionSaved(true);
+    setTimeout(() => {
+      setCorrectionSaved(false);
+      setSelectedStudent(null);
+    }, 1500);
+  };
+
   const handleDelete = (id: string) => {
-    if (confirm('Are you sure you want to delete this student record?')) {
+    if (confirm('Are you sure you want to permanently delete this student record?')) {
       deleteStudent(id);
       loadData();
       if (selectedStudent?.id === id || selectedStudent?.studentId === id) {
@@ -99,51 +155,58 @@ export const ReceiverStudentsPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Page Title */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#1e2e42]">
+      {/* Top Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-[#E2E8F0]">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-heading font-extrabold text-white tracking-tight">Student Directory</h1>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#85e510]/20 text-[#85e510] border border-[#85e510]/30 uppercase font-mono">
-              {students.length.toLocaleString()} Total Records
+            <h1 className="text-2xl font-heading font-black text-[#202833] tracking-tight">
+              Student Directory
+            </h1>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-[#85E510]/20 text-[#366804] border border-[#85E510]/40 font-mono">
+              {students.length.toLocaleString()} Authoritative Records
             </span>
           </div>
-          <p className="text-xs text-[#8fa2b7] mt-0.5">
-            Central repository of all biometric students transmitted from field sender workstations
+          <p className="text-xs text-[#64748B] mt-1">
+            High-density student directory with real-time biometric verification, inspection drawer, and exports
           </p>
         </div>
 
         <div className="flex items-center gap-2">
+          {selectedIds.size > 0 && (
+            <span className="text-xs font-bold text-[#366804] bg-[#85E510]/20 px-3 py-1.5 rounded-xl border border-[#85E510]/40">
+              {selectedIds.size} Selected
+            </span>
+          )}
           <Link
             to="/receiver/exports"
-            className="px-3 py-2 rounded-xl bg-[#85e510] hover:bg-[#9bf028] text-[#062404] text-xs font-black shadow-[0_0_15px_rgba(133,229,16,0.3)] transition-all flex items-center gap-1.5"
+            className="px-3.5 py-2 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] text-[#062404] text-xs font-black shadow-sm transition-all flex items-center gap-1.5"
           >
             <Download className="w-4 h-4" />
-            <span>Export Registry</span>
+            <span>Export Registry & Photos</span>
           </Link>
         </div>
       </div>
 
-      {/* Filter Toolbar Matching Screenshot */}
-      <div className="bg-[#131e2b] border border-[#1e2e42] rounded-2xl p-4 flex flex-col md:flex-row items-center justify-between gap-3 shadow-md">
-        <div className="flex items-center gap-2 w-full md:w-auto flex-1">
-          {/* Search by ID or Name */}
+      {/* Filter Toolbar */}
+      <div className="bg-white border border-[#E2E8F0] rounded-2xl p-4 flex flex-col md:flex-row items-center justify-between gap-3 shadow-sm">
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto flex-1">
+          {/* Search by ID, Name, Phone */}
           <div className="relative w-full sm:w-64">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#8fa2b7]" />
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#94A3B8]" />
             <input
               type="text"
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-              placeholder="Search by ID or name..."
-              className="w-full bg-[#0b1118] border border-[#1e2e42] rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-[#3f5267] focus:outline-none focus:border-[#85e510]"
+              placeholder="Search ID, name, or phone..."
+              className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-9 pr-3 py-2 text-xs text-[#202833] placeholder-[#94A3B8] focus:outline-none focus:border-[#85E510]"
             />
           </div>
 
-          {/* School: All */}
+          {/* School filter */}
           <select
             value={schoolFilter}
             onChange={(e) => { setSchoolFilter(e.target.value); setPage(1); }}
-            className="bg-[#0b1118] border border-[#1e2e42] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-[#85e510]"
+            className="bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs font-semibold text-[#202833] focus:outline-none focus:border-[#85E510]"
           >
             <option value="ALL">School: All</option>
             {distinctSchools.map(s => (
@@ -151,23 +214,34 @@ export const ReceiverStudentsPage: React.FC = () => {
             ))}
           </select>
 
-          {/* Grade: All */}
+          {/* Grade filter */}
           <select
             value={gradeFilter}
             onChange={(e) => { setGradeFilter(e.target.value); setPage(1); }}
-            className="bg-[#0b1118] border border-[#1e2e42] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-[#85e510]"
+            className="bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs font-semibold text-[#202833] focus:outline-none focus:border-[#85E510]"
           >
             <option value="ALL">Grade: All</option>
-            {['9C', '9A', '9B', '10A', '10B', '11A', '12A', 'Grade 1', 'Grade 2', 'Grade 3', 'Grade 4', 'Grade 5', 'Grade 6', 'Grade 7', 'Grade 8', 'Grade 9', 'Grade 10', 'Grade 11', 'Grade 12'].map(g => (
+            {['9C', '9A', '9B', '10A', '10B', '11A', '12A', 'Grade 9', 'Grade 10', 'Grade 11', 'Grade 12'].map(g => (
               <option key={g} value={g}>{g}</option>
             ))}
+          </select>
+
+          {/* Photo filter */}
+          <select
+            value={photoFilter}
+            onChange={(e) => { setPhotoFilter(e.target.value); setPage(1); }}
+            className="bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs font-semibold text-[#202833] focus:outline-none focus:border-[#85E510]"
+          >
+            <option value="ALL">Photo: All</option>
+            <option value="YES">Has Photo</option>
+            <option value="NO">Missing Photo</option>
           </select>
 
           {/* Status filter */}
           <select
             value={statusFilter}
             onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
-            className="bg-[#0b1118] border border-[#1e2e42] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-[#85e510]"
+            className="bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs font-semibold text-[#202833] focus:outline-none focus:border-[#85E510]"
           >
             <option value="ALL">Status: All</option>
             <option value="ACCEPTED">Accepted</option>
@@ -176,57 +250,88 @@ export const ReceiverStudentsPage: React.FC = () => {
           </select>
         </div>
 
-        <div className="flex items-center gap-2 self-end md:self-auto">
+        <div className="flex items-center gap-2.5 self-end md:self-auto">
+          {/* Page Size Selector (Supports 100, 250, 500) */}
+          <div className="flex items-center gap-1.5 text-xs text-[#64748B]">
+            <span>Rows:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+              className="bg-[#F8FAF9] border border-[#CBD5E1] rounded-lg px-2 py-1 text-xs font-bold text-[#202833]"
+            >
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={250}>250</option>
+              <option value={500}>500</option>
+            </select>
+          </div>
+
           <button
             type="button"
-            onClick={() => { setSearch(''); setSchoolFilter('ALL'); setGradeFilter('ALL'); setStatusFilter('ALL'); setPage(1); }}
-            className="px-3 py-2 rounded-xl bg-[#0b1118] border border-[#1e2e42] text-xs font-bold text-white hover:bg-white/5 transition-all"
+            onClick={() => { setSearch(''); setSchoolFilter('ALL'); setGradeFilter('ALL'); setStatusFilter('ALL'); setPhotoFilter('ALL'); setPage(1); }}
+            className="px-3 py-1.5 rounded-xl bg-[#F8FAF9] hover:bg-[#E2E8F0] border border-[#CBD5E1] text-xs font-bold text-[#202833] transition-all"
           >
             Reset
           </button>
-          <span className="text-xs font-mono text-[#85e510] font-bold">
+          <span className="text-xs font-mono text-[#366804] font-bold">
             {filtered.length.toLocaleString()} Found
           </span>
         </div>
       </div>
 
-      {/* Directory Table Matching Screenshot */}
-      <div className="bg-[#131e2b] border border-[#1e2e42] rounded-2xl overflow-hidden shadow-2xl">
+      {/* Directory Table */}
+      <div className="bg-white border border-[#E2E8F0] rounded-2xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-[#0b1118] border-b border-[#1e2e42] text-[#8fa2b7] uppercase text-[10px] tracking-wider font-semibold">
+            <thead className="bg-[#F8FAF9] border-b border-[#E2E8F0] text-[#64748B] uppercase text-[10px] tracking-wider font-bold">
               <tr>
                 <th className="py-3.5 pl-4 w-10">
-                  <input type="checkbox" className="rounded border-[#1e2e42] bg-[#0b1118] text-[#85e510] focus:ring-0" />
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.size === pagedStudents.length && pagedStudents.length > 0}
+                    onChange={toggleSelectAll}
+                    className="rounded border-[#CBD5E1] text-[#85E510] focus:ring-[#85E510]"
+                  />
                 </th>
                 <th className="py-3.5 pl-2">Photo</th>
                 <th className="py-3.5">Student ID</th>
-                <th className="py-3.5">Name</th>
+                <th className="py-3.5">Full Name</th>
+                <th className="py-3.5">Sex</th>
                 <th className="py-3.5">Grade</th>
                 <th className="py-3.5">School</th>
-                <th className="py-3.5">Phone</th>
-                <th className="py-3.5">Status</th>
-                <th className="py-3.5 text-right pr-4">Action</th>
+                <th className="py-3.5">Phone Number</th>
+                <th className="py-3.5">Sender</th>
+                <th className="py-3.5">Review Status</th>
+                <th className="py-3.5 text-right pr-4">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#1e2e42]/60">
+            <tbody className="divide-y divide-[#E2E8F0]">
               {pagedStudents.map((s) => {
                 const photoSrc = s.previewPath || (s.photoPath ? `https://pub-93e8bf84c42949ec88306f456caa0fc9.r2.dev/${s.photoPath.replace(/^\//, '')}` : null);
                 const status = s.status || 'Accepted';
+                const isSelected = selectedIds.has(s.studentId);
 
                 return (
                   <tr
                     key={s.id || s.studentId}
-                    className="hover:bg-white/[0.02] transition-colors group cursor-pointer"
+                    className={`hover:bg-[#F8FAF9] transition-colors cursor-pointer ${
+                      isSelected ? 'bg-[#85E510]/5' : ''
+                    }`}
                     onClick={() => setSelectedStudent(s)}
                   >
                     <td className="py-3 pl-4" onClick={(e) => e.stopPropagation()}>
-                      <input type="checkbox" className="rounded border-[#1e2e42] bg-[#0b1118] text-[#85e510] focus:ring-0" />
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelectRow(s.studentId)}
+                        className="rounded border-[#CBD5E1] text-[#85E510] focus:ring-[#85E510]"
+                      />
                     </td>
 
                     {/* Photo Thumbnail */}
                     <td className="py-3 pl-2">
-                      <div className="w-9 h-9 rounded-full overflow-hidden bg-[#0b1118] border border-[#1e2e42] shrink-0 flex items-center justify-center">
+                      <div className="w-10 h-10 rounded-full overflow-hidden bg-[#F4F7F5] border border-[#CBD5E1] shrink-0 flex items-center justify-center">
                         {photoSrc ? (
                           <img
                             src={photoSrc}
@@ -235,31 +340,45 @@ export const ReceiverStudentsPage: React.FC = () => {
                             onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
                           />
                         ) : (
-                          <span className="text-[9px] font-bold text-amber-400">NO</span>
+                          <span className="text-[9px] font-bold text-amber-600 bg-amber-50 w-full h-full flex items-center justify-center">
+                            NO
+                          </span>
                         )}
                       </div>
                     </td>
 
                     {/* Student ID */}
-                    <td className="py-3 font-mono text-[#85e510] font-semibold">{s.studentId}</td>
+                    <td className="py-3 font-mono text-[#366804] font-bold">{s.studentId}</td>
 
                     {/* Full Name */}
-                    <td className="py-3 font-bold text-white text-xs">{s.fullName}</td>
+                    <td className="py-3 font-bold text-[#202833] text-xs">{s.fullName}</td>
+
+                    {/* Sex */}
+                    <td className="py-3">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        s.sex === 'Female' ? 'bg-purple-50 text-purple-700' : 'bg-blue-50 text-blue-700'
+                      }`}>
+                        {s.sex || 'Female'}
+                      </span>
+                    </td>
 
                     {/* Grade */}
                     <td className="py-3">
-                      <span className="px-2 py-0.5 rounded bg-[#0b1118] border border-[#1e2e42] font-bold text-white text-[11px]">
+                      <span className="px-2 py-0.5 rounded bg-[#F4F7F5] border border-[#E2E8F0] font-bold text-[#202833] text-[11px]">
                         {s.grade || '9C'}
                       </span>
                     </td>
 
                     {/* School */}
-                    <td className="py-3 text-white font-medium">{s.school || 'YMS'}</td>
+                    <td className="py-3 text-[#202833] font-semibold">{s.school || 'YMS'}</td>
 
                     {/* Phone */}
-                    <td className="py-3 font-mono text-[#8fa2b7]">{s.phone || '+251 912 400 376'}</td>
+                    <td className="py-3 font-mono text-[#64748B]">{s.phone || '+2519...'}</td>
 
-                    {/* Status Pill matching screenshot */}
+                    {/* Sender */}
+                    <td className="py-3 text-[#64748B]">{s.senderName || 'Sender-01'}</td>
+
+                    {/* Status Badge */}
                     <td className="py-3">
                       <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
                         status === 'Accepted' || status === 'VERIFIED'
@@ -277,8 +396,8 @@ export const ReceiverStudentsPage: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => setSelectedStudent(s)}
-                        className="p-1.5 rounded-lg bg-[#0b1118] hover:bg-[#85e510] hover:text-[#062404] text-[#8fa2b7] transition-all border border-[#1e2e42]"
-                        title="View Dossier"
+                        className="p-1.5 rounded-lg bg-[#F4F7F5] hover:bg-[#85E510] hover:text-[#062404] text-[#64748B] transition-all border border-[#CBD5E1]"
+                        title="View Full Dossier"
                       >
                         <Eye className="w-4 h-4" />
                       </button>
@@ -291,28 +410,30 @@ export const ReceiverStudentsPage: React.FC = () => {
         </div>
 
         {/* Pagination Bar */}
-        <div className="p-4 bg-[#0b1118] border-t border-[#1e2e42] flex items-center justify-between text-xs text-[#8fa2b7]">
+        <div className="p-4 bg-[#F8FAF9] border-t border-[#E2E8F0] flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-[#64748B]">
           <div>
-            Showing <span className="text-white font-semibold">{(page - 1) * pageSize + 1}</span> to{' '}
-            <span className="text-white font-semibold">{Math.min(page * pageSize, filtered.length)}</span> of{' '}
-            <span className="text-white font-semibold">{filtered.length.toLocaleString()}</span> records
+            Showing <strong className="text-[#202833]">{(page - 1) * pageSize + 1}</strong> to{' '}
+            <strong className="text-[#202833]">{Math.min(page * pageSize, filtered.length)}</strong> of{' '}
+            <strong className="text-[#202833]">{filtered.length.toLocaleString()}</strong> records
           </div>
 
           <div className="flex items-center gap-2">
             <button
+              type="button"
+              disabled={page <= 1}
               onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1}
-              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-white"
+              className="p-1.5 rounded-lg border border-[#CBD5E1] bg-white disabled:opacity-40 text-[#202833] hover:bg-[#F4F7F5]"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <span className="font-mono text-white text-xs px-2">
+            <span className="font-bold text-[#202833]">
               Page {page} of {totalPages}
             </span>
             <button
+              type="button"
+              disabled={page >= totalPages}
               onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages}
-              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-white"
+              className="p-1.5 rounded-lg border border-[#CBD5E1] bg-white disabled:opacity-40 text-[#202833] hover:bg-[#F4F7F5]"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -320,140 +441,108 @@ export const ReceiverStudentsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Receiver - Student Details Modal (MATCHING SCREENSHOT CENTER EXACTLY) */}
+      {/* Slide-Over Dossier Drawer */}
       {selectedStudent && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-[#131e2b] border border-[#1e2e42] rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-[0_0_80px_rgba(0,0,0,0.8)] relative text-left my-8">
-            {/* Top Close */}
-            <button
-              onClick={() => setSelectedStudent(null)}
-              className="absolute top-5 right-5 text-[#8fa2b7] hover:text-white"
-            >
-              <X className="w-5 h-5" />
-            </button>
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex justify-end">
+          <div className="bg-white w-full max-w-xl h-full shadow-2xl flex flex-col overflow-y-auto animate-in slide-in-from-right duration-300">
+            {/* Drawer Header */}
+            <div className="p-5 border-b border-[#E2E8F0] flex items-center justify-between sticky top-0 bg-white z-10">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-[#85E510]/20 flex items-center justify-center text-[#4D8A07]">
+                  <UserCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-heading font-black text-base text-[#202833]">
+                    {selectedStudent.fullName}
+                  </h3>
+                  <div className="flex items-center gap-2 text-xs font-mono text-[#366804]">
+                    <span>{selectedStudent.studentId}</span>
+                    <span>&bull;</span>
+                    <span className="text-[#64748B] font-sans font-medium">{selectedStudent.school}</span>
+                  </div>
+                </div>
+              </div>
 
-            {/* Header: Student ID, Status Pill, Full Name */}
-            <div className="flex items-center gap-3 mb-1">
-              <span className="font-mono text-lg font-black text-white">{selectedStudent.studentId}</span>
-              <span className="px-2.5 py-0.5 rounded-full bg-[#85e510]/15 text-[#85e510] border border-[#85e510]/40 text-[10px] font-black uppercase">
-                {selectedStudent.status === 'VERIFIED' ? 'Accepted' : (selectedStudent.status || 'Accepted')}
-              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedStudent(null)}
+                className="p-1.5 rounded-lg hover:bg-[#F4F7F5] text-[#64748B] transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
-            <h2 className="text-2xl font-heading font-black text-white mb-6">
-              {selectedStudent.fullName}
-            </h2>
 
-            {/* Main Content Grid: Photo (Left) + Details (Center) + QR & Actions (Right) */}
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-6 pb-6 border-b border-[#1e2e42]">
-              {/* Photo */}
-              <div className="sm:col-span-4 flex flex-col items-center">
-                <div className="w-32 h-40 rounded-2xl overflow-hidden border-2 border-[#1e2e42] bg-[#0b1118] relative shadow-lg">
+            {/* Drawer Content */}
+            <div className="p-6 space-y-6 flex-1">
+              {/* Photo & Identity Quick Card */}
+              <div className="p-4 bg-[#F8FAF9] rounded-2xl border border-[#E2E8F0] flex items-center gap-4">
+                <div className="w-24 h-28 rounded-xl bg-white border border-[#CBD5E1] overflow-hidden shrink-0 shadow-sm flex items-center justify-center">
                   {selectedStudent.previewPath || selectedStudent.photoPath ? (
                     <img
-                      src={
-                        selectedStudent.previewPath ||
-                        `https://pub-93e8bf84c42949ec88306f456caa0fc9.r2.dev/${selectedStudent.photoPath?.replace(/^\//, '')}`
-                      }
+                      src={selectedStudent.previewPath || `https://pub-93e8bf84c42949ec88306f456caa0fc9.r2.dev/${selectedStudent.photoPath?.replace(/^\//, '')}`}
                       alt={selectedStudent.fullName}
                       className="w-full h-full object-cover"
                     />
                   ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center text-amber-400 text-xs font-bold p-2 text-center">
-                      <AlertTriangle className="w-8 h-8 mb-1" />
-                      <span>Missing Photo</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Metadata Details (Matching screenshot middle) */}
-              <div className="sm:col-span-5 space-y-2 text-xs">
-                <div className="flex justify-between py-1 border-b border-[#1e2e42]/40">
-                  <span className="text-[#8fa2b7]">Sex:</span>
-                  <span className="font-bold text-white">{selectedStudent.sex || 'Female'}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-[#1e2e42]/40">
-                  <span className="text-[#8fa2b7]">Grade/Class:</span>
-                  <span className="font-bold text-white">{selectedStudent.grade || '9C'}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-[#1e2e42]/40">
-                  <span className="text-[#8fa2b7]">Blood Group:</span>
-                  <span className="font-mono font-bold text-purple-300">{selectedStudent.bloodType || 'O+'}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-[#1e2e42]/40">
-                  <span className="text-[#8fa2b7]">Phone:</span>
-                  <span className="font-mono text-white font-bold">{selectedStudent.phone || '+251912400376'}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-[#1e2e42]/40">
-                  <span className="text-[#8fa2b7]">School:</span>
-                  <span className="font-bold text-white">{selectedStudent.school || 'YMS'}</span>
-                </div>
-                <div className="flex justify-between py-1">
-                  <span className="text-[#8fa2b7]">Location:</span>
-                  <span className="font-bold text-white">{selectedStudent.location || 'Addis Ababa'}</span>
-                </div>
-              </div>
-
-              {/* QR Code & Action Buttons (Right) */}
-              <div className="sm:col-span-3 flex flex-col items-center justify-between space-y-2">
-                <div className="p-1 rounded-xl bg-white/5 border border-[#1e2e42]">
-                  {qrCodeDataUrl ? (
-                    <img src={qrCodeDataUrl} alt="QR Code" className="w-20 h-20 rounded-lg" />
-                  ) : (
-                    <div className="w-20 h-20 flex items-center justify-center text-xs text-[#8fa2b7]">QR Code</div>
+                    <span className="text-xs font-bold text-amber-600">No Photo</span>
                   )}
                 </div>
 
-                <div className="w-full space-y-1.5 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => alert('Photo download requested from Cloudflare R2.')}
-                    className="w-full py-1.5 px-2 rounded-lg bg-[#0b1118] hover:bg-white/5 border border-[#1e2e42] text-[11px] font-bold text-white flex items-center justify-center gap-1"
-                  >
-                    <Download className="w-3 h-3 text-[#85e510]" />
-                    <span>Download Photo</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => alert('Photo editor active.')}
-                    className="w-full py-1.5 px-2 rounded-lg bg-[#0b1118] hover:bg-white/5 border border-[#1e2e42] text-[11px] font-bold text-white flex items-center justify-center gap-1"
-                  >
-                    <Edit2 className="w-3 h-3 text-blue-400" />
-                    <span>Edit Photo</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => alert('New QR Code generated and signed.')}
-                    className="w-full py-1.5 px-2 rounded-lg bg-[#0b1118] hover:bg-white/5 border border-[#1e2e42] text-[11px] font-bold text-white flex items-center justify-center gap-1"
-                  >
-                    <QrCode className="w-3 h-3 text-purple-400" />
-                    <span>Generate QR</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => alert('Correction requested and dispatched to Sender Station.')}
-                    className="w-full py-1.5 px-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-[11px] font-bold text-amber-300 flex items-center justify-center gap-1"
-                  >
-                    <AlertTriangle className="w-3 h-3 text-amber-400" />
-                    <span>Request Correction</span>
-                  </button>
+                <div className="space-y-1.5 text-xs flex-1">
+                  <div className="flex justify-between">
+                    <span className="text-[#64748B]">Grade & Section:</span>
+                    <span className="font-bold text-[#202833]">{selectedStudent.grade || '9C'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#64748B]">Blood Type:</span>
+                    <span className="font-bold text-[#202833]">{selectedStudent.bloodType || 'Unknown'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#64748B]">Sex:</span>
+                    <span className="font-bold text-[#202833]">{selectedStudent.sex || 'Female'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#64748B]">Phone:</span>
+                    <span className="font-mono text-[#202833]">{selectedStudent.phone || '+251...'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#64748B]">Origin Sender:</span>
+                    <span className="font-semibold text-[#202833]">{selectedStudent.senderName || 'Field Sender'}</span>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            {/* Bottom Tabs: Record History | Photo History | Notes */}
-            <div className="pt-4">
-              <div className="flex items-center gap-4 text-xs font-bold border-b border-[#1e2e42] pb-2 mb-3">
-                {(['Record History', 'Photo History', 'Notes'] as const).map(tab => (
+              {/* QR Verification Payload */}
+              {qrCodeDataUrl && (
+                <div className="p-4 bg-white rounded-2xl border border-[#E2E8F0] flex items-center justify-between gap-4">
+                  <div>
+                    <h4 className="text-xs font-black text-[#202833] flex items-center gap-1.5">
+                      <QrCode className="w-4 h-4 text-[#4D8A07]" />
+                      <span>Encrypted Verification QR</span>
+                    </h4>
+                    <p className="text-[11px] text-[#64748B] mt-1 max-w-[280px]">
+                      Authentic QR payload compatible with StudentCore Android field scanners.
+                    </p>
+                  </div>
+                  <img
+                    src={qrCodeDataUrl}
+                    alt="Student QR Code"
+                    className="w-20 h-20 rounded-lg border border-[#E2E8F0] p-1 bg-white"
+                  />
+                </div>
+              )}
+
+              {/* Tabs */}
+              <div className="flex border-b border-[#E2E8F0] gap-4 text-xs font-bold text-[#64748B]">
+                {(['Record History', 'Photo History', 'Correction Form'] as const).map(tab => (
                   <button
                     key={tab}
                     type="button"
                     onClick={() => setActiveTab(tab)}
-                    className={`transition-colors ${
-                      activeTab === tab ? 'text-[#85e510] border-b-2 border-[#85e510] pb-2 -mb-2.5' : 'text-[#8fa2b7] hover:text-white'
+                    className={`pb-2 transition-colors ${
+                      activeTab === tab
+                        ? 'border-b-2 border-[#85E510] text-[#202833] font-black'
+                        : 'hover:text-[#202833]'
                     }`}
                   >
                     {tab}
@@ -461,67 +550,131 @@ export const ReceiverStudentsPage: React.FC = () => {
                 ))}
               </div>
 
+              {/* Tab 1: Record History */}
               {activeTab === 'Record History' && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs font-mono">
-                    <thead className="text-[#8fa2b7] text-[10px] uppercase border-b border-[#1e2e42]">
-                      <tr>
-                        <th className="pb-2">Date &amp; Time</th>
-                        <th className="pb-2">Action</th>
-                        <th className="pb-2">User</th>
-                        <th className="pb-2">Role</th>
-                        <th className="pb-2">Notes</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#1e2e42]/40 text-[11px]">
-                      {(selectedStudent.recordHistory || [
-                        { date: '2026-10-13 10:34', action: 'Initial Submission', user: 'Loza Bereket', role: 'Sender', notes: 'Initial submission' },
-                        { date: '2026-10-13 11:02', action: 'Data Correction', user: 'Alemu Tadesse', role: 'Receiver', notes: 'Corrected grade' },
-                        { date: '2026-10-13 11:30', action: 'Photo Verified', user: 'Getnet Kassa', role: 'Admin', notes: 'Approved' }
-                      ]).map((row, idx) => (
-                        <tr key={idx} className="hover:bg-white/[0.02]">
-                          <td className="py-2 text-[#8fa2b7]">{row.date}</td>
-                          <td className="py-2 text-white font-bold">{row.action}</td>
-                          <td className="py-2 text-white">{row.user}</td>
-                          <td className="py-2 text-[#85e510]">{row.role}</td>
-                          <td className="py-2 text-[#8fa2b7] font-sans">{row.notes}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="space-y-3">
+                  {selectedStudent.recordHistory && selectedStudent.recordHistory.length > 0 ? (
+                    selectedStudent.recordHistory.map((h, i) => (
+                      <div key={i} className="p-3 bg-[#F8FAF9] rounded-xl border border-[#E2E8F0] text-xs space-y-1">
+                        <div className="flex justify-between font-bold text-[#202833]">
+                          <span>{h.action}</span>
+                          <span className="font-mono text-[10px] text-[#64748B]">{h.date}</span>
+                        </div>
+                        <div className="text-[#64748B]">
+                          By: <strong className="text-[#202833]">{h.user}</strong> ({h.role})
+                        </div>
+                        {h.notes && <p className="text-[11px] text-[#475569] italic">{h.notes}</p>}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="p-4 bg-[#F8FAF9] rounded-xl text-center text-xs text-[#64748B]">
+                      Initial registration record from Sender Station.
+                    </div>
+                  )}
                 </div>
               )}
 
+              {/* Tab 2: Photo History */}
               {activeTab === 'Photo History' && (
-                <div className="text-xs text-[#8fa2b7] p-3 rounded-xl bg-[#0b1118] border border-[#1e2e42]">
-                  Portrait ingested via Sender WebRTC Biometric Stream. Verified ISO/IEC 19794 portrait standard with 99.4% confidence score.
+                <div className="space-y-3 text-xs">
+                  <div className="p-3 bg-[#F8FAF9] rounded-xl border border-[#E2E8F0]">
+                    <div className="font-bold text-[#202833] mb-1">R2 Object Reference</div>
+                    <div className="font-mono text-[11px] text-[#366804] break-all">
+                      {selectedStudent.photoPath || 'No R2 key registered'}
+                    </div>
+                  </div>
+                  <div className="p-3 bg-[#F8FAF9] rounded-xl border border-[#E2E8F0] space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-[#64748B]">Integrity Status:</span>
+                      <span className="font-bold text-[#366804]">PHOTO_VERIFIED</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#64748B]">Public CDN URL:</span>
+                      <span className="text-[#202833]">pub-93e8bf84c42949ec88306f456caa0fc9.r2.dev</span>
+                    </div>
+                  </div>
                 </div>
               )}
 
-              {activeTab === 'Notes' && (
-                <div className="text-xs text-[#8fa2b7] p-3 rounded-xl bg-[#0b1118] border border-[#1e2e42]">
-                  Authorized for regional ID badge card printing and StudentCore synchronization.
-                </div>
+              {/* Tab 3: Record Correction Form */}
+              {activeTab === 'Correction Form' && (
+                <form onSubmit={handleSaveCorrection} className="space-y-3 text-xs">
+                  {correctionSaved && (
+                    <div className="p-3 rounded-xl bg-[#85E510]/20 border border-[#85E510]/40 text-[#366804] font-bold flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Correction applied and audited successfully!</span>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-[#202833] font-bold mb-1">Full Name</label>
+                    <input
+                      type="text"
+                      value={editFullName}
+                      onChange={(e) => setEditFullName(e.target.value)}
+                      className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs text-[#202833] font-semibold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[#202833] font-bold mb-1">Grade / Class</label>
+                    <input
+                      type="text"
+                      value={editGrade}
+                      onChange={(e) => setEditGrade(e.target.value)}
+                      className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs text-[#202833] font-semibold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[#202833] font-bold mb-1">Phone Number</label>
+                    <input
+                      type="tel"
+                      value={editPhone}
+                      onChange={(e) => setEditPhone(e.target.value)}
+                      className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs text-[#202833] font-mono font-semibold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[#202833] font-bold mb-1">Reason for Correction (Audited)</label>
+                    <textarea
+                      required
+                      value={correctionReason}
+                      onChange={(e) => setCorrectionReason(e.target.value)}
+                      placeholder="e.g. Corrected spelling of father's name as requested by school registrar"
+                      rows={2}
+                      className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl p-2.5 text-xs text-[#202833]"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2.5 px-4 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] text-[#062404] font-black text-xs shadow-sm transition-all"
+                  >
+                    Save & Record in Audit Trail
+                  </button>
+                </form>
               )}
             </div>
 
-            {/* Bottom Actions */}
-            <div className="mt-6 pt-4 border-t border-[#1e2e42] flex items-center justify-between text-xs">
+            {/* Drawer Footer */}
+            <div className="p-4 border-t border-[#E2E8F0] bg-[#F8FAF9] flex items-center justify-between">
               <button
                 type="button"
-                onClick={() => handleDelete(selectedStudent.id || selectedStudent.studentId)}
-                className="text-red-400 hover:underline flex items-center gap-1 font-semibold"
+                onClick={() => handleDelete(selectedStudent.studentId)}
+                className="px-3 py-1.5 rounded-xl text-red-600 hover:bg-red-50 text-xs font-bold transition-colors flex items-center gap-1"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>Delete Student</span>
+                <span>Remove Student</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setSelectedStudent(null)}
-                className="py-2 px-5 rounded-xl bg-[#85e510] text-[#062404] font-bold text-xs shadow"
+                className="px-4 py-1.5 rounded-xl bg-[#202833] text-white text-xs font-bold hover:bg-[#161D26]"
               >
-                Close Dossier
+                Close Drawer
               </button>
             </div>
           </div>

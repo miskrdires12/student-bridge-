@@ -24,24 +24,24 @@ export const AdminReportsPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 max-w-4xl">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#1e2c22]">
+    <div className="space-y-6 max-w-5xl mx-auto pb-12">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E2E8F0]">
         <div>
-          <h1 className="text-2xl font-heading font-extrabold text-white tracking-tight">Executive Management Reports</h1>
-          <p className="text-xs text-[#9eb2a6] mt-0.5">
+          <h1 className="text-2xl font-heading font-extrabold text-[#202833] tracking-tight">Executive Management Reports</h1>
+          <p className="text-xs text-[#64748B] mt-0.5">
             Downloadable executive summaries, school campus audits, and demographic distribution exports
           </p>
         </div>
 
-        <span className="text-xs font-mono text-[#8fe617] bg-[#8fe617]/10 px-3 py-1 rounded-xl">
+        <span className="text-xs font-mono text-[#366804] bg-[#85E510]/15 px-3 py-1 rounded-xl font-bold border border-[#85E510]/30">
           Report Engine v2
         </span>
       </div>
 
       {downloadedReport && (
-        <div className="p-3 rounded-xl bg-[#8fe617]/15 border border-[#8fe617]/30 text-[#8fe617] text-xs flex items-center gap-2">
+        <div className="p-3.5 rounded-xl bg-[#85E510]/15 border border-[#85E510]/40 text-[#366804] text-xs flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 shrink-0" />
-          <span>Report "{downloadedReport}" downloaded successfully.</span>
+          <span className="font-semibold">Report "{downloadedReport}" downloaded successfully.</span>
         </div>
       )}
 
@@ -58,35 +58,34 @@ export const AdminReportsPage: React.FC = () => {
             tag: 'Quality Control'
           },
           {
-            title: 'Operator Velocity & Session Log',
-            desc: 'Individual shift capture rates, 1-device lock records, and submission timestamps.',
-            tag: 'Operations'
+            title: 'Field Sender Productivity & Turnaround',
+            desc: 'Velocity analytics, shift timestamps, and daily record registration throughput.',
+            tag: 'Workforce KPIs'
           },
           {
-            title: 'Regional Blood Type Distribution',
-            desc: 'Medical preparedness report classifying student blood group tallies across all branches.',
-            tag: 'Medical / Safety'
+            title: 'Audit & Data Governance Summary',
+            desc: 'Formal record of corrections, administrative reviews, and hardware token bindings.',
+            tag: 'Governance'
           }
         ].map(r => (
-          <div key={r.title} className="bg-[#101612] border border-[#1e2c22] rounded-2xl p-5 flex flex-col justify-between hover:border-[#8fe617]/30 transition-all">
+          <div key={r.title} className="bg-white border border-[#E2E8F0] rounded-2xl p-6 flex flex-col justify-between hover:border-[#85E510] shadow-sm transition-all">
             <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-white/5 text-[#8fe617]">
+              <div className="flex items-center justify-between mb-3">
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-gray-100 text-[#64748B] border border-[#CBD5E1]">
                   {r.tag}
                 </span>
-                <span className="text-[10px] font-mono text-[#9eb2a6]">{new Date().toISOString().substring(0, 10)}</span>
+                <FileText className="w-4 h-4 text-[#85E510]" />
               </div>
-              <h3 className="font-heading font-bold text-white text-sm mb-1">{r.title}</h3>
-              <p className="text-xs text-[#9eb2a6] leading-relaxed mb-4">{r.desc}</p>
+              <h3 className="font-heading font-bold text-[#202833] text-sm mb-1">{r.title}</h3>
+              <p className="text-xs text-[#64748B] leading-relaxed mb-4">{r.desc}</p>
             </div>
 
             <button
-              type="button"
               onClick={() => handleDownloadReport(r.title)}
-              className="py-2 px-3 rounded-xl bg-white/5 hover:bg-[#8fe617] hover:text-[#062404] text-white font-bold text-xs flex items-center justify-center gap-2 transition-all"
+              className="w-full py-2.5 rounded-xl bg-[#F8FAF9] hover:bg-[#85E510] text-[#202833] hover:text-[#062404] border border-[#CBD5E1] hover:border-[#85E510] text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-sm"
             >
-              <Download className="w-4 h-4" />
-              <span>Download Report</span>
+              <Download className="w-3.5 h-3.5" />
+              <span>Generate & Download</span>
             </button>
           </div>
         ))}

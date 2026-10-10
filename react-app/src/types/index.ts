@@ -11,6 +11,7 @@ export interface User {
   recordsSentSingle?: number;
   recordsEncoded?: number;
   workSessionCount?: number;
+  createdAt?: string;
 }
 
 export interface Student {
@@ -34,6 +35,9 @@ export interface Student {
   emergencyContactName?: string;
   emergencyContactPhone?: string;
   schoolBusUsage?: string;
+  dateOfBirth?: string;
+  guardianFullName?: string;
+  nationality?: string;
   createdAt?: string;
   updatedAt?: string;
   hasMistake?: boolean;

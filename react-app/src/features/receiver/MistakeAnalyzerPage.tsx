@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AlertTriangle, CheckCircle2, Search, Filter, Camera, RefreshCw, ArrowRight, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Search, Filter, Camera, RefreshCw, ArrowRight, ShieldAlert, Check } from 'lucide-react';
 import { getMistakes, updateStudent, getStudents } from '@/lib/store';
 import { MistakeItem } from '@/types';
 
@@ -14,7 +14,6 @@ export const MistakeAnalyzerPage: React.FC = () => {
   }, []);
 
   const handleResolve = (m: MistakeItem) => {
-    // Mark as resolved
     setResolvedIds(prev => new Set([...prev, m.id]));
   };
 
@@ -31,15 +30,18 @@ export const MistakeAnalyzerPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#1e2c22]">
+      {/* Top Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-[#E2E8F0]">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-heading font-extrabold text-white tracking-tight">Mistake Analyzer & Quality Control</h1>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 text-amber-400 border border-amber-500/30 uppercase">
-              {filtered.length} Flagged Records
+            <h1 className="text-2xl font-heading font-black text-[#202833] tracking-tight">
+              Mistake Analyzer & Quality Control
+            </h1>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-50 text-amber-800 border border-amber-200 uppercase">
+              {filtered.length} Flagged Anomalies
             </span>
           </div>
-          <p className="text-xs text-[#9eb2a6] mt-0.5">
+          <p className="text-xs text-[#64748B] mt-1">
             Automated heuristic scan detecting missing biometric photos, duplicate IDs, and invalid telephone formats
           </p>
         </div>
@@ -47,138 +49,146 @@ export const MistakeAnalyzerPage: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setMistakes(getMistakes())}
-            className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-bold text-white flex items-center gap-1.5 transition-all"
+            className="px-3.5 py-2 rounded-xl bg-white hover:bg-[#F8FAF9] border border-[#CBD5E1] text-xs font-bold text-[#202833] flex items-center gap-1.5 shadow-sm transition-all"
           >
-            <RefreshCw className="w-3.5 h-3.5 text-[#8fe617]" />
-            <span>Re-Scan Central DB</span>
+            <RefreshCw className="w-3.5 h-3.5 text-[#4D8A07]" />
+            <span>Re-Scan Registry</span>
           </button>
         </div>
       </div>
 
-      {/* Heuristic Summary Cards */}
+      {/* Heuristic Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div
-          onClick={() => setFilterType('Missing Photo')}
-          className={`p-4 rounded-2xl border cursor-pointer transition-all ${
+          onClick={() => setFilterType(filterType === 'Missing Photo' ? 'ALL' : 'Missing Photo')}
+          className={`p-5 rounded-2xl border cursor-pointer transition-all ${
             filterType === 'Missing Photo'
-              ? 'bg-amber-500/15 border-amber-500 shadow-[0_0_20px_rgba(245,158,11,0.2)]'
-              : 'bg-[#101612] border-[#1e2c22] hover:border-amber-500/50'
+              ? 'bg-amber-50 border-amber-400 shadow-sm'
+              : 'bg-white border-[#E2E8F0] hover:border-amber-400'
           }`}
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-[#9eb2a6]">Missing Portrait Photos</span>
-            <Camera className="w-4 h-4 text-amber-400" />
+            <span className="text-xs font-bold text-[#64748B]">Missing Portrait Photos</span>
+            <Camera className="w-4 h-4 text-amber-600" />
           </div>
-          <div className="mt-2 text-2xl font-heading font-black text-amber-400">{missingPhotoCount}</div>
-          <div className="text-[11px] text-[#9eb2a6] mt-1">Requires field retake by Sender</div>
+          <div className="mt-2 text-3xl font-heading font-black text-amber-600">{missingPhotoCount}</div>
+          <div className="text-[11px] text-[#64748B] mt-1">Flagged for field retake by Sender</div>
         </div>
 
         <div
-          onClick={() => setFilterType('Duplicate ID')}
-          className={`p-4 rounded-2xl border cursor-pointer transition-all ${
+          onClick={() => setFilterType(filterType === 'Duplicate ID' ? 'ALL' : 'Duplicate ID')}
+          className={`p-5 rounded-2xl border cursor-pointer transition-all ${
             filterType === 'Duplicate ID'
-              ? 'bg-red-500/15 border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.2)]'
-              : 'bg-[#101612] border-[#1e2c22] hover:border-red-500/50'
+              ? 'bg-red-50 border-red-400 shadow-sm'
+              : 'bg-white border-[#E2E8F0] hover:border-red-400'
           }`}
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-[#9eb2a6]">Duplicate Student IDs</span>
-            <ShieldAlert className="w-4 h-4 text-red-400" />
+            <span className="text-xs font-bold text-[#64748B]">Duplicate Student IDs</span>
+            <ShieldAlert className="w-4 h-4 text-red-600" />
           </div>
-          <div className="mt-2 text-2xl font-heading font-black text-red-400">{duplicateIdCount}</div>
-          <div className="text-[11px] text-[#9eb2a6] mt-1">ID collision across registrations</div>
+          <div className="mt-2 text-3xl font-heading font-black text-red-600">{duplicateIdCount}</div>
+          <div className="text-[11px] text-[#64748B] mt-1">ID collision across registrations</div>
         </div>
 
         <div
-          onClick={() => setFilterType('Invalid Phone Number')}
-          className={`p-4 rounded-2xl border cursor-pointer transition-all ${
+          onClick={() => setFilterType(filterType === 'Invalid Phone Number' ? 'ALL' : 'Invalid Phone Number')}
+          className={`p-5 rounded-2xl border cursor-pointer transition-all ${
             filterType === 'Invalid Phone Number'
-              ? 'bg-purple-500/15 border-purple-500 shadow-[0_0_20px_rgba(168,85,247,0.2)]'
-              : 'bg-[#101612] border-[#1e2c22] hover:border-purple-500/50'
+              ? 'bg-purple-50 border-purple-400 shadow-sm'
+              : 'bg-white border-[#E2E8F0] hover:border-purple-400'
           }`}
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-[#9eb2a6]">Malformed Phone Numbers</span>
-            <AlertTriangle className="w-4 h-4 text-purple-400" />
+            <span className="text-xs font-bold text-[#64748B]">Invalid Telephone Formats</span>
+            <AlertTriangle className="w-4 h-4 text-purple-600" />
           </div>
-          <div className="mt-2 text-2xl font-heading font-black text-purple-400">{phoneIssueCount}</div>
-          <div className="text-[11px] text-[#9eb2a6] mt-1">Does not adhere to +251 standard</div>
+          <div className="mt-2 text-3xl font-heading font-black text-purple-600">{phoneIssueCount}</div>
+          <div className="text-[11px] text-[#64748B] mt-1">Non-normalized mobile numbers</div>
         </div>
       </div>
 
-      {/* Mistake Items Table */}
-      <div className="bg-[#101612] border border-[#1e2c22] rounded-2xl overflow-hidden shadow-xl">
-        <div className="p-4 border-b border-[#1e2c22] flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="relative w-full sm:w-80">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#9eb2a6]" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter mistake records..."
-              className="w-full bg-[#070908] border border-[#1e2c22] rounded-xl pl-9 pr-4 py-1.5 text-xs text-white placeholder-[#3f4743] focus:outline-none focus:border-[#8fe617]"
-            />
-          </div>
+      {/* Filter and Search Bar */}
+      <div className="bg-white border border-[#E2E8F0] rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm">
+        <div className="relative w-full sm:w-80">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#94A3B8]" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search anomaly by student ID or name..."
+            className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-9 pr-3 py-2 text-xs text-[#202833] placeholder-[#94A3B8] focus:outline-none focus:border-[#85E510]"
+          />
+        </div>
 
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 self-end sm:self-auto">
+          {filterType !== 'ALL' && (
             <button
               onClick={() => setFilterType('ALL')}
-              className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${
-                filterType === 'ALL' ? 'bg-[#8fe617] text-[#062404]' : 'bg-white/5 text-[#9eb2a6]'
-              }`}
+              className="text-xs text-[#4D8A07] hover:underline font-bold"
             >
-              All Types
+              Clear Filter
             </button>
-          </div>
+          )}
+          <span className="text-xs text-[#64748B] font-bold">
+            Showing {filtered.length} issues
+          </span>
         </div>
+      </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-[#070908] border-b border-[#1e2c22] text-[#9eb2a6] uppercase text-[10px] tracking-wider font-semibold">
-              <tr>
-                <th className="py-3 pl-4">Student ID & Name</th>
-                <th className="py-3">Campus</th>
-                <th className="py-3">Issue Type</th>
-                <th className="py-3">Severity</th>
-                <th className="py-3">Date Flagged</th>
-                <th className="py-3 text-right pr-4">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#1e2c22]/60">
-              {filtered.slice(0, 50).map((m) => (
-                <tr key={`${m.id}-${m.type}`} className="hover:bg-white/[0.02] transition-colors">
-                  <td className="py-3 pl-4">
-                    <div className="font-mono text-[#8fe617] font-semibold">{m.studentId}</div>
-                    <div className="text-white font-bold">{m.name}</div>
-                  </td>
-                  <td className="py-3 text-white">{m.school || 'YMS'}</td>
-                  <td className="py-3">
-                    <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-semibold text-[11px]">
+      {/* Mistake Items List */}
+      <div className="bg-white border border-[#E2E8F0] rounded-2xl overflow-hidden shadow-sm divide-y divide-[#E2E8F0]">
+        {filtered.length === 0 ? (
+          <div className="p-12 text-center text-[#64748B] space-y-2">
+            <CheckCircle2 className="w-10 h-10 text-[#4D8A07] mx-auto" />
+            <div className="text-sm font-bold text-[#202833]">Quality Integrity Clear</div>
+            <p className="text-xs max-w-sm mx-auto">
+              No anomalies found in the active scope. All records satisfy biometric, uniqueness, and telephone rules.
+            </p>
+          </div>
+        ) : (
+          filtered.map(m => (
+            <div key={m.id} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-[#F8FAF9] transition-colors">
+              <div className="flex items-start gap-3">
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
+                  m.severity === 'High' ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-600'
+                }`}>
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-[#202833] text-sm">{m.name}</span>
+                    <span className="font-mono text-xs font-semibold text-[#366804] bg-[#85E510]/15 px-2 py-0.5 rounded">
+                      {m.studentId}
+                    </span>
+                    <span className="text-xs text-[#64748B]">&bull; {m.school || 'YMS'}</span>
+                  </div>
+
+                  <div className="flex items-center gap-2 mt-1.5 text-xs">
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                      m.severity === 'High' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
+                    }`}>
                       {m.type}
                     </span>
-                  </td>
-                  <td className="py-3">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                      m.severity === 'High' ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/20 text-amber-300'
-                    }`}>
-                      {m.severity}
-                    </span>
-                  </td>
-                  <td className="py-3 text-[#9eb2a6] font-mono">{m.date}</td>
-                  <td className="py-3 text-right pr-4">
-                    <button
-                      type="button"
-                      onClick={() => handleResolve(m)}
-                      className="px-3 py-1 rounded-lg bg-[#8fe617]/15 hover:bg-[#8fe617] text-[#8fe617] hover:text-[#062404] font-bold text-xs transition-all"
-                    >
-                      Resolve / Verify
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                    <span className="text-[#64748B]">Detected: {m.date}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 self-end sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => handleResolve(m)}
+                  className="px-3.5 py-1.5 rounded-xl bg-white hover:bg-[#85E510]/20 border border-[#CBD5E1] hover:border-[#85E510] text-xs font-bold text-[#202833] transition-all flex items-center gap-1.5 shadow-sm"
+                >
+                  <Check className="w-3.5 h-3.5 text-[#4D8A07]" />
+                  <span>Mark Resolved</span>
+                </button>
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
