@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom';
 import {
   LayoutGrid, UserPlus, Users, CheckSquare, BarChart2, UserCheck,
   Download, AlertTriangle, Activity, Database, Settings, RefreshCw,
-  ShieldCheck, FileCheck, Layers
+  ShieldCheck, FileCheck, Layers, Smartphone, HardDrive, Shield
 } from 'lucide-react';
 import { UserRole } from '@/types';
 import { getCurrentUser } from '@/lib/store';
@@ -29,43 +29,45 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
   const getNavItems = () => {
     switch (currentStation) {
       case 'SENDER':
+        // Mandatory Specification: Sender must have exactly two navigation sections:
+        // 1. Register Student. 2. Settings.
         return [
-          { to: '/sender/dashboard', label: 'Dashboard', icon: LayoutGrid },
-          { to: '/sender/register', label: 'New Student', icon: UserPlus },
-          { to: '/sender/students', label: 'My Submissions', icon: FileCheck },
-          { to: '/sender/tasks', label: 'Tasks', icon: CheckSquare },
-          { to: '/sender/performance', label: 'Performance', icon: BarChart2 },
-          { to: '/sender/profile', label: 'Profile & Device', icon: UserCheck },
+          { to: '/sender/register', label: 'Register Student', icon: UserPlus },
+          { to: '/sender/settings', label: 'Settings', icon: Settings },
         ];
       case 'RECEIVER':
         return [
           { to: '/receiver/dashboard', label: 'Dashboard', icon: LayoutGrid },
           { to: '/receiver/students', label: 'Student Directory', icon: Users },
-          { to: '/receiver/review', label: 'Review & Verify', icon: ShieldCheck },
+          { to: '/receiver/review', label: 'Review Queue', icon: ShieldCheck },
           { to: '/receiver/mistakes', label: 'Mistake Analyzer', icon: AlertTriangle },
-          { to: '/receiver/exports', label: 'Export Center', icon: Download },
-          { to: '/receiver/activity', label: 'Activity Feed', icon: Activity },
+          { to: '/receiver/exports', label: 'Bulk Operations & Exports', icon: Download },
+          { to: '/receiver/database', label: 'Database Control Room', icon: Database },
+          { to: '/receiver/settings', label: 'Settings', icon: Settings },
         ];
       case 'ADMIN':
         return [
           { to: '/admin/dashboard', label: 'Dashboard', icon: LayoutGrid },
-          { to: '/admin/senders', label: 'Senders Workforce', icon: Users },
+          { to: '/admin/senders', label: 'Sender Management', icon: Users },
           { to: '/admin/tasks', label: 'Task Management', icon: CheckSquare },
           { to: '/admin/reviews', label: 'Quality Reviews', icon: ShieldCheck },
-          { to: '/admin/performance', label: 'Performance KPIs', icon: BarChart2 },
+          { to: '/admin/performance', label: 'Performance Analytics', icon: BarChart2 },
           { to: '/admin/reports', label: 'Reports', icon: Layers },
+          { to: '/admin/settings', label: 'Settings', icon: Settings },
         ];
       case 'SUPER_ADMIN':
         return [
-          { to: '/super-admin/dashboard', label: 'Global Analytics', icon: LayoutGrid },
-          { to: '/super-admin/users', label: 'User Management', icon: Users },
-          { to: '/super-admin/roles', label: 'RBAC & Hardware Locks', icon: ShieldCheck },
-          { to: '/super-admin/schools', label: 'Schools & Locations', icon: Layers },
-          { to: '/super-admin/tasks', label: 'Global Tasks', icon: CheckSquare },
-          { to: '/super-admin/integrations', label: 'StudentCore Sync', icon: RefreshCw },
+          { to: '/super-admin/dashboard', label: 'Global Dashboard', icon: LayoutGrid },
+          { to: '/super-admin/users', label: 'User & Role Management', icon: Users },
+          { to: '/super-admin/devices', label: 'Device Management', icon: Smartphone },
+          { to: '/super-admin/schools', label: 'School & Location Mgmt', icon: Layers },
+          { to: '/super-admin/tasks', label: 'Task Oversight', icon: CheckSquare },
+          { to: '/super-admin/reports', label: 'Global Reports & Analytics', icon: BarChart2 },
+          { to: '/super-admin/integrations', label: 'StudentCore Integration', icon: RefreshCw },
           { to: '/super-admin/database', label: 'Database Control Room', icon: Database },
+          { to: '/super-admin/storage', label: 'Storage & Photo Diagnostics', icon: HardDrive },
           { to: '/super-admin/audit-logs', label: 'Audit Logs', icon: Activity },
-          { to: '/super-admin/settings', label: 'Super Settings', icon: Settings },
+          { to: '/super-admin/settings', label: 'System Settings', icon: Settings },
         ];
     }
   };
@@ -99,7 +101,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
         </div>
 
         {/* Navigation Items */}
-        <nav className="p-3 flex-1 flex flex-col gap-1 overflow-y-auto">
+        <nav className="flex-1 overflow-y-auto p-3 space-y-1">
           {navItems.map((item) => {
             const Icon = item.icon;
             return (
@@ -110,26 +112,26 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
                 className={({ isActive }) =>
                   `flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
                     isActive
-                      ? 'bg-[#85e510] text-[#062404] shadow-[0_0_15px_rgba(133,229,16,0.4)]'
-                      : 'text-[#8fa2b7] hover:text-white hover:bg-white/[0.04]'
+                      ? 'bg-[#85e510] text-[#071302] shadow-[0_0_15px_rgba(133,229,16,0.35)]'
+                      : 'text-[#94a3b8] hover:text-white hover:bg-white/[0.05]'
                   }`
                 }
               >
-                <Icon className="w-4 h-4 flex-shrink-0" />
+                <Icon className="w-4 h-4 shrink-0" />
                 <span className="truncate">{item.label}</span>
               </NavLink>
             );
           })}
         </nav>
 
-        {/* Profile Card at bottom */}
-        <div className="p-3 border-t border-[#1e2e42] bg-[#0c141d] flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-full bg-[#1b2838] border border-[#85e510] flex items-center justify-center font-black text-xs text-[#85e510]">
-            {(user?.username || 'M')[0].toUpperCase()}
+        {/* Workstation Footer Status */}
+        <div className="p-3 border-t border-[#1e2e42]/60 text-[10px] text-[#94a3b8] bg-[#0d1520]/60">
+          <div className="flex items-center justify-between font-mono">
+            <span>Edge Station:</span>
+            <span className="text-[#85e510] font-bold">ONLINE</span>
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-xs font-bold text-[#f2f7f4] truncate">{user?.username || 'Operator'}</div>
-            <div className="text-[10px] font-semibold text-[#85e510] truncate">{user?.role || 'SENDER'}</div>
+          <div className="text-[9px] text-[#64748b] mt-0.5 truncate">
+            {user?.email || 'Logged In'}
           </div>
         </div>
       </aside>

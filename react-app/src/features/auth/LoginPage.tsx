@@ -72,7 +72,7 @@ export const LoginPage: React.FC = () => {
 
   const finishLogin = (user: UserType) => {
     setCurrentUser(user);
-    if (user.role === 'SENDER') navigate('/sender/dashboard');
+    if (user.role === 'SENDER') navigate('/sender/register');
     else if (user.role === 'RECEIVER') navigate('/receiver/dashboard');
     else if (user.role === 'ADMIN') navigate('/admin/dashboard');
     else if (user.role === 'SUPER_ADMIN') navigate('/super-admin/dashboard');
@@ -287,7 +287,7 @@ export const LoginPage: React.FC = () => {
                 <span className="w-2 h-2 rounded-full bg-[#85e510]" />
                 <span>Sender</span>
               </div>
-              <div className="text-[10px] text-white font-bold truncate mt-0.5">Loza Bereket</div>
+              <div className="text-[10px] text-white font-bold truncate mt-0.5">miskrdires12</div>
               <div className="text-[9px] text-[#8fa2b7] font-mono truncate">sender123</div>
             </button>
 
@@ -301,7 +301,7 @@ export const LoginPage: React.FC = () => {
                 <span className="w-2 h-2 rounded-full bg-blue-400" />
                 <span>Receiver</span>
               </div>
-              <div className="text-[10px] text-white font-bold truncate mt-0.5">Alemu Tadesse</div>
+              <div className="text-[10px] text-white font-bold truncate mt-0.5">yonatantesfa</div>
               <div className="text-[9px] text-[#8fa2b7] font-mono truncate">receiver123</div>
             </button>
 
@@ -315,7 +315,7 @@ export const LoginPage: React.FC = () => {
                 <span className="w-2 h-2 rounded-full bg-amber-400" />
                 <span>Admin</span>
               </div>
-              <div className="text-[10px] text-white font-bold truncate mt-0.5">Getnet Kassa</div>
+              <div className="text-[10px] text-white font-bold truncate mt-0.5">miskrdires1</div>
               <div className="text-[9px] text-[#8fa2b7] font-mono truncate">admin123</div>
             </button>
 

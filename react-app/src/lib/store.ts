@@ -26,6 +26,15 @@ export interface OperatorAccount extends User {
 
 export const PRESET_OPERATORS: OperatorAccount[] = [
   {
+    id: "cmua5dk5n00041tc43u1v7em9",
+    username: "miskrdires12",
+    email: "miskrdires12@gmail.com",
+    role: "SENDER",
+    password: "sender123",
+    boundDeviceId: null,
+    recordsSentSingle: 499,
+  },
+  {
     id: "usr-sender-1",
     username: "Loza Bereket",
     email: "loza.bereket@siliconlabs.et",
@@ -35,13 +44,13 @@ export const PRESET_OPERATORS: OperatorAccount[] = [
     recordsSentSingle: 28,
   },
   {
-    id: "usr-sender-2",
-    username: "field_sender",
-    email: "sender@siliconlabs.et",
-    role: "SENDER",
-    password: "sender123",
+    id: "cmukweowr00009pzsimqcm168",
+    username: "yonatantesfa",
+    email: "yonatantesfa@gmail.com",
+    role: "RECEIVER",
+    password: "receiver123",
     boundDeviceId: null,
-    recordsSentSingle: 142,
+    recordsEncoded: 335,
   },
   {
     id: "usr-receiver-1",
@@ -53,13 +62,12 @@ export const PRESET_OPERATORS: OperatorAccount[] = [
     recordsEncoded: 3578,
   },
   {
-    id: "usr-receiver-2",
-    username: "central_receiver",
-    email: "receiver@siliconlabs.et",
-    role: "RECEIVER",
-    password: "receiver123",
+    id: "cmuq26kz90001q5dgcb3lu519",
+    username: "miskrdires1",
+    email: "miskrdires1@gmail.com",
+    role: "ADMIN",
+    password: "admin123",
     boundDeviceId: null,
-    recordsEncoded: 3723,
   },
   {
     id: "usr-admin-1",
@@ -70,15 +78,7 @@ export const PRESET_OPERATORS: OperatorAccount[] = [
     boundDeviceId: null,
   },
   {
-    id: "usr-admin-2",
-    username: "station_admin",
-    email: "admin@siliconlabs.et",
-    role: "ADMIN",
-    password: "admin123",
-    boundDeviceId: null,
-  },
-  {
-    id: "usr-super-1",
+    id: "cmu7b6rkh00002ggkkxg5ecd9",
     username: "miskrdires11",
     email: "miskrdires11@gmail.com",
     role: "SUPER_ADMIN",

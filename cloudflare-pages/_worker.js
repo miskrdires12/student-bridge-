@@ -482,7 +482,132 @@ export default {
     }
 
     // -------------------------------------------------------------------------
-    // 13. STATIC ASSETS & SPA ROUTING FALLBACK
+    // 13. USER MANAGEMENT API (All 19 Accounts & Dynamic Operators)
+    // -------------------------------------------------------------------------
+    if (url.pathname === "/api/users") {
+      if (request.method === "GET") {
+        return new Response(JSON.stringify(cachedUsers || []), {
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      }
+      if (request.method === "POST") {
+        try {
+          const body = await request.json();
+          const newUser = {
+            id: "usr-" + Date.now().toString(36),
+            username: body.username,
+            email: body.email,
+            role: body.role || "SENDER",
+            boundDeviceId: null,
+            boundDeviceInfo: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+          if (!cachedUsers) cachedUsers = [];
+          cachedUsers.unshift(newUser);
+          edgeAuditLogs.unshift({
+            timestamp: new Date().toISOString().replace("T", " ").substring(0, 19),
+            user: "Super Admin",
+            station: "Super Admin",
+            action: "User Provisioned",
+            entity: newUser.username,
+            details: `Created account for ${newUser.email} with role ${newUser.role}`
+          });
+          return new Response(JSON.stringify(newUser), { status: 201, headers: { "Content-Type": "application/json", ...corsHeaders } });
+        } catch (e) {
+          return new Response(JSON.stringify({ error: e.message }), { status: 400, headers: corsHeaders });
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 14. 1-DEVICE HARDWARE MANAGEMENT API
+    // -------------------------------------------------------------------------
+    if (url.pathname === "/api/devices") {
+      if (request.method === "GET") {
+        const devices = (cachedUsers || [])
+          .filter(u => u.boundDeviceId)
+          .map(u => ({
+            userId: u.id,
+            username: u.username,
+            email: u.email,
+            role: u.role,
+            deviceId: u.boundDeviceId,
+            deviceInfo: u.boundDeviceInfo || "Hardware Terminal",
+            status: "Authorized"
+          }));
+        return new Response(JSON.stringify(devices), {
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      }
+      if (request.method === "POST") {
+        try {
+          const { userId, email, deviceId } = await request.json();
+          const target = (cachedUsers || []).find(u => u.id === userId || u.email === email);
+          if (target) {
+            target.boundDeviceId = deviceId;
+            return new Response(JSON.stringify({ success: true, user: target }), {
+              headers: { "Content-Type": "application/json", ...corsHeaders }
+            });
+          }
+          return new Response(JSON.stringify({ error: "User not found" }), { status: 404, headers: corsHeaders });
+        } catch (e) {
+          return new Response(JSON.stringify({ error: e.message }), { status: 400, headers: corsHeaders });
+        }
+      }
+      if (request.method === "DELETE") {
+        try {
+          const { userId, email } = await request.json();
+          const target = (cachedUsers || []).find(u => u.id === userId || u.email === email);
+          if (target) {
+            target.boundDeviceId = null;
+            edgeAuditLogs.unshift({
+              timestamp: new Date().toISOString().replace("T", " ").substring(0, 19),
+              user: "Super Admin",
+              station: "Super Admin",
+              action: "Device Revoked",
+              entity: target.username,
+              details: `Revoked hardware terminal for ${target.email}`
+            });
+            return new Response(JSON.stringify({ success: true, message: "Device revoked and session invalidated" }), {
+              headers: { "Content-Type": "application/json", ...corsHeaders }
+            });
+          }
+          return new Response(JSON.stringify({ error: "User not found" }), { status: 404, headers: corsHeaders });
+        } catch (e) {
+          return new Response(JSON.stringify({ error: e.message }), { status: 400, headers: corsHeaders });
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 15. AUDIT LOGS API
+    // -------------------------------------------------------------------------
+    if (url.pathname === "/api/audit-logs") {
+      if (request.method === "GET") {
+        return new Response(JSON.stringify(edgeAuditLogs), {
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      }
+      if (request.method === "POST") {
+        try {
+          const logEntry = await request.json();
+          edgeAuditLogs.unshift({
+            timestamp: new Date().toISOString().replace("T", " ").substring(0, 19),
+            ...logEntry
+          });
+          return new Response(JSON.stringify({ success: true, log: edgeAuditLogs[0] }), {
+            status: 201,
+            headers: { "Content-Type": "application/json", ...corsHeaders }
+          });
+        } catch (e) {
+          return new Response(JSON.stringify({ error: e.message }), { status: 400, headers: corsHeaders });
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 16. STATIC ASSETS & SPA ROUTING FALLBACK
     // -------------------------------------------------------------------------
     try {
       const assetResponse = await env.ASSETS.fetch(request);
