@@ -18,6 +18,7 @@ import { SenderSettingsPage } from '@/features/sender/SenderSettingsPage';
 import { ReceiverDashboardPage } from '@/features/receiver/ReceiverDashboardPage';
 import { ReceiverStudentsPage } from '@/features/receiver/ReceiverStudentsPage';
 import { ReceiverReviewPage } from '@/features/receiver/ReceiverReviewPage';
+import { ReceiverIdProductionPage } from '@/features/receiver/ReceiverIdProductionPage';
 import { MistakeAnalyzerPage } from '@/features/receiver/MistakeAnalyzerPage';
 import { ReceiverExportsPage } from '@/features/receiver/ReceiverExportsPage';
 import { ReceiverDatabasePage } from '@/features/receiver/ReceiverDatabasePage';
@@ -91,6 +92,7 @@ export const App: React.FC = () => {
             <Route path="/receiver/dashboard" element={<ReceiverDashboardPage />} />
             <Route path="/receiver/students" element={<ReceiverStudentsPage />} />
             <Route path="/receiver/review" element={<ReceiverReviewPage />} />
+            <Route path="/receiver/id-production" element={<ReceiverIdProductionPage />} />
             <Route path="/receiver/mistakes" element={<MistakeAnalyzerPage />} />
             <Route path="/receiver/exports" element={<ReceiverExportsPage />} />
             <Route path="/receiver/database" element={<ReceiverDatabasePage />} />

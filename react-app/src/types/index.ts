@@ -43,7 +43,29 @@ export interface Student {
   hasMistake?: boolean;
   country?: string;
   location?: string;
+  idProductionStatus?: 'QUEUED' | 'READY' | 'IN_PRODUCTION' | 'COMPLETED' | string;
+  cardSerialNumber?: string;
   recordHistory?: { date: string; action: string; user: string; role: string; notes: string; }[];
+}
+
+export interface CardTemplate {
+  id: string;
+  name: string;
+  description: string;
+  orientation: 'LANDSCAPE' | 'PORTRAIT';
+  theme: string;
+  widthMm: number;
+  heightMm: number;
+  primaryColor: string;
+}
+
+export interface PrintJob {
+  id: string;
+  timestamp: string;
+  operator: string;
+  templateName: string;
+  studentCount: number;
+  status: 'QUEUED' | 'PRINTING' | 'COMPLETED';
 }
 
 export interface Task {

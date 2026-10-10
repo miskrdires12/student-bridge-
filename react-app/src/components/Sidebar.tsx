@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom';
 import {
   LayoutGrid, UserPlus, Users, CheckSquare, BarChart2, UserCheck,
   Download, AlertTriangle, Activity, Database, Settings, RefreshCw,
-  ShieldCheck, FileCheck, Layers, Smartphone, HardDrive, Shield
+  ShieldCheck, FileCheck, Layers, Smartphone, HardDrive, Shield, CreditCard
 } from 'lucide-react';
 import { UserRole } from '@/types';
 import { getCurrentUser } from '@/lib/store';
@@ -44,6 +44,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentStation, mobileOpen, on
           { to: '/receiver/dashboard', label: 'Dashboard', icon: LayoutGrid },
           { to: '/receiver/students', label: 'Student Directory', icon: Users },
           { to: '/receiver/review', label: 'Review Queue', icon: ShieldCheck },
+          { to: '/receiver/id-production', label: 'ID Production', icon: CreditCard },
           { to: '/receiver/mistakes', label: 'Mistake Analyzer', icon: AlertTriangle },
           { to: '/receiver/exports', label: 'Bulk Operations & Exports', icon: Download },
           { to: '/receiver/database', label: 'Database Control Room', icon: Database },

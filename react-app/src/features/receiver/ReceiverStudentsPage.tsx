@@ -4,7 +4,7 @@ import {
   Search, Filter, Eye, Edit2, Trash2, X, Download, CheckCircle2,
   AlertTriangle, ChevronLeft, ChevronRight, Phone, School as SchoolIcon,
   UserCheck, Shield, ExternalLink, Calendar, HeartPulse, QrCode, FileText,
-  Clock, ArrowUpRight, Check, Printer, FileSpreadsheet
+  Clock, ArrowUpRight, Check, Printer, FileSpreadsheet, CreditCard
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { getStudents, updateStudent, deleteStudent } from '@/lib/store';
@@ -303,6 +303,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                 <th className="py-3.5">Phone Number</th>
                 <th className="py-3.5">Sender</th>
                 <th className="py-3.5">Review Status</th>
+                <th className="py-3.5">ID Card Status</th>
                 <th className="py-3.5 text-right pr-4">Actions</th>
               </tr>
             </thead>
@@ -391,12 +392,30 @@ export const ReceiverStudentsPage: React.FC = () => {
                       </span>
                     </td>
 
-                    {/* View Button */}
-                    <td className="py-3 text-right pr-4" onClick={(e) => e.stopPropagation()}>
+                    {/* ID Production Status */}
+                    <td className="py-3">
+                      <span className={`px-2 py-0.5 rounded text-[9px] font-bold border ${
+                        s.idProductionStatus === 'COMPLETED' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' :
+                        s.idProductionStatus === 'IN_PRODUCTION' ? 'bg-amber-100 text-amber-800 border-amber-200' :
+                        'bg-sky-100 text-sky-800 border-sky-200'
+                      }`}>
+                        {s.idProductionStatus || (status === 'Accepted' || status === 'VERIFIED' ? 'READY' : 'QUEUED')}
+                      </span>
+                    </td>
+
+                    {/* Actions */}
+                    <td className="py-3 text-right pr-4 space-x-1.5" onClick={(e) => e.stopPropagation()}>
+                      <Link
+                        to="/receiver/id-production"
+                        className="p-1.5 inline-flex items-center justify-center rounded-lg bg-[#F4F7F5] hover:bg-[#85E510] hover:text-[#062404] text-[#64748B] transition-all border border-[#CBD5E1]"
+                        title="Produce ID Card"
+                      >
+                        <CreditCard className="w-4 h-4" />
+                      </Link>
                       <button
                         type="button"
                         onClick={() => setSelectedStudent(s)}
-                        className="p-1.5 rounded-lg bg-[#F4F7F5] hover:bg-[#85E510] hover:text-[#062404] text-[#64748B] transition-all border border-[#CBD5E1]"
+                        className="p-1.5 inline-flex items-center justify-center rounded-lg bg-[#F4F7F5] hover:bg-[#85E510] hover:text-[#062404] text-[#64748B] transition-all border border-[#CBD5E1]"
                         title="View Full Dossier"
                       >
                         <Eye className="w-4 h-4" />
@@ -531,6 +550,24 @@ export const ReceiverStudentsPage: React.FC = () => {
                   />
                 </div>
               )}
+
+              {/* ID Production Action CTA */}
+              <div className="p-3.5 bg-[#85E510]/15 rounded-2xl border border-[#85E510]/40 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <CreditCard className="w-5 h-5 text-[#366804]" />
+                  <div>
+                    <div className="text-xs font-bold text-[#202833]">Official CR80 Student ID</div>
+                    <div className="text-[10px] text-[#64748B]">Status: {selectedStudent.idProductionStatus || (selectedStudent.status === 'Accepted' ? 'READY FOR PRINT' : 'QUEUED')}</div>
+                  </div>
+                </div>
+                <Link
+                  to="/receiver/id-production"
+                  className="px-3.5 py-1.5 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] text-[#062404] text-xs font-black shadow-sm flex items-center gap-1 transition-all"
+                >
+                  <span>Produce ID</span>
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                </Link>
+              </div>
 
               {/* Tabs */}
               <div className="flex border-b border-[#E2E8F0] gap-4 text-xs font-bold text-[#64748B]">

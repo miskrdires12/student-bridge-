@@ -1,4 +1,4 @@
-import { Student, User, Task, School, AuditLog, StudentCoreRequest, MistakeItem, UserRole } from '@/types';
+import { Student, User, Task, School, AuditLog, StudentCoreRequest, MistakeItem, UserRole, CardTemplate, PrintJob } from '@/types';
 
 // Initial fallback schools
 const DEFAULT_SCHOOLS: School[] = [
@@ -326,6 +326,84 @@ export function getAuditLogs(): AuditLog[] {
 
 export function addAuditLog(log: AuditLog): void {
   memoryAuditLogs.unshift(log);
+}
+
+const DEFAULT_CARD_TEMPLATES: CardTemplate[] = [
+  {
+    id: 'tmpl-cr80-minimal',
+    name: 'CR80 Official Minimalist (Standard)',
+    description: 'ISO/IEC 7810 ID-1 standard (85.6mm × 53.98mm). Clean white background with Silicon Labs lime header, security QR, and barcode.',
+    orientation: 'LANDSCAPE',
+    theme: 'MINIMAL_WHITE',
+    widthMm: 85.6,
+    heightMm: 53.98,
+    primaryColor: '#85E510',
+  },
+  {
+    id: 'tmpl-cr80-executive',
+    name: 'Executive Academic Credential',
+    description: 'Charcoal border, verified watermark, dual security QR, and official signature line for high school and university students.',
+    orientation: 'LANDSCAPE',
+    theme: 'EXECUTIVE_CHARCOAL',
+    widthMm: 85.6,
+    heightMm: 53.98,
+    primaryColor: '#202833',
+  },
+  {
+    id: 'tmpl-cr80-portrait',
+    name: 'Vertical Campus Access Badge',
+    description: 'Portrait orientation ID card with large student photograph, instant scan barcode, and prominent grade/campus indicators.',
+    orientation: 'PORTRAIT',
+    theme: 'CAMPUS_VERTICAL',
+    widthMm: 53.98,
+    heightMm: 85.6,
+    primaryColor: '#85E510',
+  }
+];
+
+let memoryPrintJobs: PrintJob[] = [
+  { id: 'JOB-9021', timestamp: '2026-10-13 14:10:00', operator: 'Yonatan Tesfa', templateName: 'CR80 Official Minimalist', studentCount: 25, status: 'COMPLETED' },
+  { id: 'JOB-9020', timestamp: '2026-10-13 11:30:15', operator: 'Yonatan Tesfa', templateName: 'Executive Academic Credential', studentCount: 140, status: 'COMPLETED' },
+];
+
+export function getCardTemplates(): CardTemplate[] {
+  return DEFAULT_CARD_TEMPLATES;
+}
+
+export function getPrintJobs(): PrintJob[] {
+  return memoryPrintJobs;
+}
+
+export function addPrintJob(job: PrintJob): void {
+  memoryPrintJobs.unshift(job);
+}
+
+export function updateStudentIdProductionStatus(studentId: string, status: string, cardSerialNumber?: string): void {
+  const index = memoryStudents.findIndex(s => s.id === studentId || s.studentId === studentId);
+  if (index !== -1) {
+    const student = memoryStudents[index];
+    student.idProductionStatus = status;
+    if (cardSerialNumber) student.cardSerialNumber = cardSerialNumber;
+
+    const history = student.recordHistory || [];
+    history.unshift({
+      date: new Date().toISOString().replace('T', ' ').substring(0, 16),
+      action: 'ID Production Update',
+      user: getCurrentUser()?.username || 'Receiver Operator',
+      role: 'Receiver',
+      notes: `Updated ID production status to ${status}${cardSerialNumber ? ` (Card Serial: ${cardSerialNumber})` : ''}`
+    });
+    student.recordHistory = history;
+
+    addAuditLog({
+      timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      user: getCurrentUser()?.username || 'Receiver Operator',
+      station: 'Receiver',
+      action: 'ID Production',
+      entity: student.studentId,
+      details: `Transitioned ID production status to ${status} for ${student.fullName}`
+    });
+  }
 }
 
 export function getMistakes(): MistakeItem[] {
