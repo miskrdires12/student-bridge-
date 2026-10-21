@@ -573,38 +573,62 @@ export function removeDeletedStudentId(studentId: string): void {
 export async function initStore(): Promise<void> {
   const deletedIds = getDeletedStudentIds();
 
-  // 1. Fetch authoritative master baseline (/data/students.json)
-  // Served from Cloudflare Pages Edge CDN in ~30ms - Contains all 5,250+ canonical records
+  // 1. Authoritative source of truth: the FULL live dataset from the edge API
+  // (Supabase PostgreSQL, paginated server-side). The static /data/students.json
+  // file is an offline fallback ONLY — it can lag the live DB by whole days.
   let baseStudents: Student[] = [];
-  try {
-    const res = await fetch('/data/students.json');
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        baseStudents = data;
-      }
-    }
-  } catch (e) {
-    console.warn('Could not load /data/students.json', e);
-  }
-
-  // 2. Concurrently fetch the latest live field submissions from Supabase/API (last 500 records)
   let liveServerStudents: Student[] = [];
+  let serverTotal = 0;
   try {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timeoutId = controller ? setTimeout(() => controller.abort(), 6000) : null;
-    const res = await fetch('/api/students?limit=500', {
+    const timeoutId = controller ? setTimeout(() => controller.abort(), 30000) : null;
+    const res = await fetch('/api/students?all=true', {
       signal: controller ? controller.signal : undefined
     });
     if (timeoutId) clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
-      if (data && Array.isArray(data.students)) {
+      if (data && Array.isArray(data.students) && data.students.length > 0) {
         liveServerStudents = data.students;
+        serverTotal = Number(data.total) || data.students.length;
       }
     }
   } catch (apiErr) {
-    console.warn('Live API fetch warning:', apiErr);
+    console.warn('Full live dataset fetch warning:', apiErr);
+  }
+
+  // 2. Degraded/offline path only: stale baseline + latest-500 overlay.
+  // Also used when the API answered with a provably incomplete list.
+  const datasetHealthy = liveServerStudents.length > 0 && liveServerStudents.length >= serverTotal;
+  if (!datasetHealthy) {
+    try {
+      const res = await fetch('/data/students.json');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          baseStudents = data;
+        }
+      }
+    } catch (e) {
+      console.warn('Could not load /data/students.json', e);
+    }
+
+    try {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timeoutId = controller ? setTimeout(() => controller.abort(), 6000) : null;
+      const res = await fetch('/api/students?limit=500', {
+        signal: controller ? controller.signal : undefined
+      });
+      if (timeoutId) clearTimeout(timeoutId);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.students)) {
+          liveServerStudents = [...data.students, ...liveServerStudents];
+        }
+      }
+    } catch (apiErr) {
+      console.warn('Live API fallback fetch warning:', apiErr);
+    }
   }
 
   // 3. Load locally registered / cached students from localStorage ('sb_custom_students')
@@ -676,21 +700,31 @@ export async function initStore(): Promise<void> {
     window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
   }
 
-  // 3b. Background authoritative reconciliation with the full Supabase dataset.
-  // The static /data/students.json baseline lags live field submissions (whole days of
-  // registrations can be absent) and the overlay above only pulls the latest 500 rows,
-  // so converge to /api/students?all=true without blocking first paint.
+  // 3b. Continuous authoritative reconciliation with the full server dataset.
+  // Guarantees the UI list can never silently diverge from /api/stats totals:
+  // every 3 minutes (or every 60s while degraded / after tab wake / reconnect)
+  // memoryStudents is converged to the complete Supabase dataset.
+  let lastFullSyncAt = datasetHealthy ? Date.now() : 0;
+  let lastSyncHealthy = datasetHealthy;
+
   const runFullStudentSync = async () => {
+    // While healthy refresh at most every 3 min; while degraded retry every tick
+    if (lastSyncHealthy && Date.now() - lastFullSyncAt < 3 * 60 * 1000) return;
     try {
       const res = await fetch('/api/students?all=true');
-      if (!res.ok) return;
+      if (!res.ok) { lastSyncHealthy = false; return; }
       const data = await res.json();
       const live: Student[] = Array.isArray(data.students) ? data.students : [];
-      if (live.length === 0) return;
+      const serverTotalRows = Number(data.total) || live.length;
+      if (live.length === 0) { lastSyncHealthy = false; return; }
+      const complete = live.length >= serverTotalRows;
+      lastSyncHealthy = complete;
+      lastFullSyncAt = Date.now();
 
       const delIds = getDeletedStudentIds();
       const merged = new Map<string, Student>();
       memoryStudents.forEach(s => { if (s.studentId) merged.set(s.studentId, s); });
+      let dirty = false;
 
       const liveIds = new Set<string>();
       live.forEach(s => {
@@ -699,18 +733,19 @@ export async function initStore(): Promise<void> {
         if (delIds.has(s.studentId) || delIds.has(s.studentId.toLowerCase()) || (s.id && delIds.has(s.id))) return;
         const local = merged.get(s.studentId);
         const localIsNewer = local && (local.updatedAt || '') > (s.updatedAt || '');
-        merged.set(s.studentId, localIsNewer ? { ...s, ...local } : { ...(local || {}), ...s });
+        const eff = localIsNewer ? { ...s, ...local } : { ...(local || {}), ...s };
+        if (!local || (eff.updatedAt || '') !== (local.updatedAt || '')) dirty = true;
+        merged.set(s.studentId, eff);
       });
 
       // Drop server-side permanent deletions that the stale baseline still carries.
       // Only trust removals when this response is provably the complete table.
-      const serverTotal = Number(data.total) || live.length;
-      const authoritative = live.length >= serverTotal && serverTotal >= 1000;
-      if (authoritative) {
+      if (complete) {
         memoryStudents.forEach(s => {
           if (s.studentId && !liveIds.has(s.studentId) &&
               !localCustomStudents.some(cs => cs.studentId === s.studentId)) {
             merged.delete(s.studentId);
+            dirty = true;
           }
         });
       }
@@ -718,7 +753,7 @@ export async function initStore(): Promise<void> {
       const reconciled = Array.from(merged.values());
       reconciled.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
 
-      const changed = reconciled.length !== memoryStudents.length ||
+      const changed = dirty || reconciled.length !== memoryStudents.length ||
         reconciled[0]?.studentId !== memoryStudents[0]?.studentId;
       if (changed) {
         memoryStudents = reconciled;
@@ -727,13 +762,20 @@ export async function initStore(): Promise<void> {
         }
       }
     } catch (e) {
+      lastSyncHealthy = false;
       console.warn('Full student sync notice:', e);
     }
   };
 
-  runFullStudentSync();
+  if (!datasetHealthy) runFullStudentSync();
   if (typeof window !== 'undefined' && !(window as any).__sbFullSyncTimer) {
-    (window as any).__sbFullSyncTimer = setInterval(runFullStudentSync, 3 * 60 * 1000);
+    // 60s tick: refreshes every 3 min when healthy, every minute while degraded,
+    // and immediately on reconnect or when the tab becomes visible again.
+    (window as any).__sbFullSyncTimer = setInterval(runFullStudentSync, 60 * 1000);
+    window.addEventListener('online', () => { lastFullSyncAt = 0; runFullStudentSync(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') runFullStudentSync();
+    });
   }
 
   // 3. Fetch live users from server / Supabase PostgreSQL
