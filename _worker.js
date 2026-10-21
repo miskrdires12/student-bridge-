@@ -681,6 +681,127 @@ function applyPhotoPathTemplate(template, { grade, fullName, studentId }) {
   return out.replace(/^\/+/, "");
 }
 
+// -----------------------------------------------------------------------------
+// DATABASE BACKUPS (full JSON snapshots persisted to R2 under backups/<date>/)
+// Triggered automatically once per day from admin traffic, force-runnable via
+// POST /api/admin/backup, restorable via POST /api/admin/backup/restore.
+// -----------------------------------------------------------------------------
+let backupState = { lastSuccessDate: "", lastAttemptAt: 0 };
+
+async function createDatabaseBackup(originUrl) {
+  const enc = new TextEncoder();
+  const dateKey = new Date().toISOString().slice(0, 10);
+  const students = await getAllStudentsDataset(null, originUrl);
+  const forced = (Array.isArray(students) && students.length > 0)
+    ? students
+    : (await fetchSupabaseAllRows("students", "select=*&order=createdAt.desc,id.desc")).rows;
+  const users = (await fetchSupabaseAllRows("users", "select=*")).rows;
+  const audits = (await fetchSupabaseAllRows("audit_logs", "select=*&order=createdAt.asc")).rows;
+
+  const parts = [
+    { name: "students", rows: forced },
+    { name: "users", rows: users },
+    { name: "audit_logs", rows: audits }
+  ];
+  const stats = {};
+  for (const p of parts) {
+    const json = JSON.stringify(p.rows);
+    await uploadToR2Bucket(`backups/${dateKey}/${p.name}.json`, enc.encode(json), "application/json");
+    stats[p.name] = { rows: p.rows.length, bytes: json.length };
+  }
+
+  const meta = { date: dateKey, createdAt: new Date().toISOString(), stats };
+  await uploadToR2Bucket("backups/latest.json", enc.encode(JSON.stringify(meta)), "application/json");
+
+  let index = {};
+  try {
+    const obj = await getFromR2Bucket("backups/index.json");
+    if (obj && obj.bytes) index = JSON.parse(new TextDecoder().decode(obj.bytes));
+  } catch (e) {}
+  index[dateKey] = { createdAt: meta.createdAt, stats };
+  await uploadToR2Bucket("backups/index.json", enc.encode(JSON.stringify(index)), "application/json");
+
+  return meta;
+}
+
+async function maybeDailyBackup(originUrl) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (backupState.lastSuccessDate === today) return;
+  if (Date.now() - backupState.lastAttemptAt < 6 * 3600 * 1000) return;
+  try {
+    const obj = await getFromR2Bucket("backups/latest.json");
+    if (obj && obj.bytes) {
+      const meta = JSON.parse(new TextDecoder().decode(obj.bytes));
+      if (meta && meta.date === today) {
+        backupState.lastSuccessDate = today;
+        return;
+      }
+    }
+    backupState.lastAttemptAt = Date.now();
+    await createDatabaseBackup(originUrl);
+    backupState.lastSuccessDate = today;
+  } catch (e) {
+    console.warn("daily backup notice:", e);
+  }
+}
+
+async function restoreDatabaseBackup(dateKey, apply) {
+  const tables = [["students", "students"], ["users", "users"], ["audit_logs", "audit_logs"]];
+  const out = {};
+
+  // Upsert a chunk batch; if PostgREST rejects an unknown derived column
+  // (PGRST204), strip that column from all rows and retry — heals snapshot
+  // rows that carry alias fields added by phone-normalization, etc.
+  const upsertHealing = async (table, rows) => {
+    let working = rows;
+    for (let i = 0; i < working.length; i += 500) {
+      let chunk = working.slice(i, i + 500);
+      for (let retries = 0; ; retries++) {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+          method: "POST",
+          headers: {
+            "apikey": SUPABASE_KEY,
+            "Authorization": `Bearer ${SUPABASE_KEY}`,
+            "Content-Profile": "cloudflare",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates,return=minimal"
+          },
+          body: JSON.stringify(chunk)
+        });
+        if (res.ok) break;
+        const errText = await res.text().catch(() => "");
+        const colMatch = retries < 40 && errText.includes("PGRST204") && errText.match(/Could not find the '([^']+)' column/);
+        if (!colMatch) {
+          return { error: `upsert failed at chunk ${i}: ${res.status} ${errText}` };
+        }
+        const badCol = colMatch[1];
+        working = working.map(r => { const c = { ...r }; delete c[badCol]; return c; });
+        chunk = chunk.map(r => { const c = { ...r }; delete c[badCol]; return c; });
+      }
+    }
+    return null;
+  };
+
+  for (const [name, table] of tables) {
+    try {
+      const obj = await getFromR2Bucket(`backups/${dateKey}/${name}.json`);
+      if (!obj || !obj.bytes) {
+        out[name] = { error: `backup file backups/${dateKey}/${name}.json not found` };
+        continue;
+      }
+      const rows = JSON.parse(new TextDecoder().decode(obj.bytes));
+      if (apply && rows.length > 0) {
+        const failure = await upsertHealing(table, rows);
+        if (failure) { out[name] = { rows: rows.length, ...failure }; continue; }
+      }
+      out[name] = { rows: rows.length, upserted: apply ? rows.length : 0 };
+    } catch (e) {
+      out[name] = { error: e.message };
+    }
+  }
+  return out;
+}
+
 let studentCoreQueue = [];
 
 // Web Crypto SigV4 Helper for R2 Bucket S3 API
@@ -1140,6 +1261,7 @@ async function ensureLocalFallbackLoaded(env, originUrl) {
 // to guarantee the full table is loaded (orphan scans / dataset merges depend on it).
 async function fetchSupabaseAllRows(table, params) {
   const rows = [];
+  const seen = new Set();
   let total = 0;
   for (let from = 0; from < 100000; from += 1000) {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
@@ -1157,8 +1279,17 @@ async function fetchSupabaseAllRows(table, params) {
     if (cr && cr.includes("/")) total = parseInt(cr.split("/")[1], 10) || 0;
     const chunk = await res.json();
     if (!Array.isArray(chunk) || chunk.length === 0) break;
-    rows.push(...chunk);
-    if (chunk.length < 1000 || rows.length >= total) break;
+    let added = 0;
+    for (const row of chunk) {
+      const k = row && (row.id || row.studentId);
+      if (k) {
+        if (seen.has(k)) continue;
+        seen.add(k);
+      }
+      rows.push(row);
+      added++;
+    }
+    if (chunk.length < 1000 || rows.length >= total || added === 0) break;
   }
   return { rows, total };
 }
@@ -1170,7 +1301,7 @@ async function getAllStudentsDataset(env, originUrl) {
 
   // 1. Try authoritative Supabase PostgreSQL dataset first (fastest, pre-indexed)
   try {
-    const { rows } = await fetchSupabaseAllRows("students", "select=*&order=createdAt.desc");
+    const { rows } = await fetchSupabaseAllRows("students", "select=*&order=createdAt.desc,id.desc");
     if (rows.length > 0) {
       rows.forEach(normalizeStudentPhoneFields);
       cachedAllStudents = rows;
@@ -1449,6 +1580,10 @@ export default {
     // 1C. SUPABASE CLOUD TELEMETRY & KEEP-ALIVE PING
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/admin/supabase-status" || url.pathname === "/api/admin/cloud-status") {
+      // Once-daily full DB snapshot into R2, triggered by dashboard admin polling
+      if (request.method === "GET" && ctx && ctx.waitUntil) {
+        ctx.waitUntil(maybeDailyBackup(request.url));
+      }
       const pingStart = Date.now();
       let supabaseLatency = null;
       let supabaseLiveCount = null;
@@ -1591,7 +1726,7 @@ export default {
 
       const orphans = [];
       for (const [key, size] of scan.keySet.entries()) {
-        if (key.startsWith("records/") || key === "live_registry.json" || key.startsWith("settings/")) continue;
+        if (key.startsWith("records/") || key === "live_registry.json" || key.startsWith("settings/") || key.startsWith("backups/")) continue;
         const stripped = key.startsWith("api/photos/") ? key.slice("api/photos/".length) : key;
         if (referenced.has(stripped) || referenced.has(key)) continue;
         orphans.push({ path: key, size });
@@ -1656,7 +1791,7 @@ export default {
 
       // 1. Direct High-Speed Supabase Query (Indexed & Server-Paginated, <50ms)
       try {
-        let sbQuery = `${SUPABASE_URL}/rest/v1/students?select=*&order=createdAt.desc`;
+        let sbQuery = `${SUPABASE_URL}/rest/v1/students?select=*&order=createdAt.desc,id.desc`;
         if (hiddenParam === "true") {
           sbQuery += `&receiverHidden=eq.true`;
         } else if (hiddenParam === "false") {
@@ -4411,6 +4546,74 @@ export default {
       return new Response(JSON.stringify({ success: true, purged: true }), {
         headers: { "Content-Type": "application/json", ...corsHeaders }
       });
+    }
+
+    // -------------------------------------------------------------------------
+    // 12A. DATABASE BACKUP & RESTORE (R2 snapshots: backups/<date>/*.json)
+    // -------------------------------------------------------------------------
+    if (url.pathname === "/api/admin/backups" && request.method === "GET") {
+      try {
+        let latest = null, index = {};
+        const obj = await getFromR2Bucket("backups/latest.json");
+        if (obj && obj.bytes) latest = JSON.parse(new TextDecoder().decode(obj.bytes));
+        const idxObj = await getFromR2Bucket("backups/index.json");
+        if (idxObj && idxObj.bytes) index = JSON.parse(new TextDecoder().decode(idxObj.bytes));
+        return new Response(JSON.stringify({ success: true, latest, backups: index }), {
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ success: false, error: e.message }), { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (url.pathname === "/api/admin/backup" && request.method === "POST") {
+      const authUser = await authenticateRequest(request);
+      const authErr = requireAuthorization(authUser, ["ADMIN", "SUPER_ADMIN"]);
+      if (authErr) return authErr;
+      try {
+        const meta = await createDatabaseBackup(request.url);
+        await writeAuditLog({
+          action: "DATABASE_BACKUP",
+          entityType: "Storage",
+          entityId: `backups/${meta.date}`,
+          details: `Manual DB snapshot: ${meta.stats.students.rows} students, ${meta.stats.users.rows} users, ${meta.stats.audit_logs.rows} audit logs`,
+          user: authUser,
+          ipAddress: request.headers.get("cf-connecting-ip") || null
+        }, ctx);
+        return new Response(JSON.stringify({ success: true, backup: meta }), {
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ success: false, error: e.message }), { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (url.pathname === "/api/admin/backup/restore" && request.method === "POST") {
+      const authUser = await authenticateRequest(request);
+      const authErr = requireAuthorization(authUser, ["ADMIN", "SUPER_ADMIN"]);
+      if (authErr) return authErr;
+      try {
+        const body = await request.json();
+        const dateKey = String(body.date || "").slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+          return new Response(JSON.stringify({ success: false, error: "Missing/invalid date (YYYY-MM-DD)" }), { status: 400, headers: corsHeaders });
+        }
+        const apply = body.apply === true;
+        const result = await restoreDatabaseBackup(dateKey, apply);
+        await writeAuditLog({
+          action: apply ? "DATABASE_RESTORED" : "DATABASE_RESTORE_DRYRUN",
+          entityType: "Database",
+          entityId: `backups/${dateKey}`,
+          details: `${apply ? "Restored" : "Dry-run restore of"} DB snapshot ${dateKey}: ` + JSON.stringify(Object.fromEntries(Object.entries(result).map(([k, v]) => [k, v.rows !== undefined ? v.rows : v.error]))),
+          user: authUser,
+          ipAddress: request.headers.get("cf-connecting-ip") || null
+        }, ctx);
+        return new Response(JSON.stringify({ success: true, date: dateKey, apply, result }), {
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ success: false, error: e.message }), { status: 400, headers: corsHeaders });
+      }
     }
 
     // -------------------------------------------------------------------------

@@ -151,7 +151,8 @@ export async function syncOfflineQueue(): Promise<{ synced: number; failed: numb
           failed++;
         }
       } else if (op.type === 'DELETE_STUDENT') {
-        const res = await fetch(`/api/students?id=${encodeURIComponent(op.payload.id || op.payload.studentId)}`, {
+        const permanent = op.payload?.permanent ? '&permanent=true' : '';
+        const res = await fetch(`/api/students?id=${encodeURIComponent(op.payload.id || op.payload.studentId)}${permanent}`, {
           method: 'DELETE',
           headers: { ...getAuthHeaders() }
         });
