@@ -599,6 +599,18 @@ async function listR2AllKeys() {
 
 let r2ScanCache = { totalObjects: 0, totalBytes: 0, byPrefix: [], keySet: new Map(), scannedAt: 0 };
 
+// Serve cached scan numbers instantly; renew an expired scan in the background so
+// dashboard polling never waits on the ~10s full-bucket listing.
+async function scanCachedWithBgRefresh(ctx, force = false) {
+  const TTL_MS = 5 * 60 * 1000;
+  if (force) return await ensureR2Scan(true);
+  if (r2ScanCache.scannedAt === 0) return await ensureR2Scan(false);
+  if (Date.now() - r2ScanCache.scannedAt >= TTL_MS && ctx && ctx.waitUntil) {
+    ctx.waitUntil(ensureR2Scan(true));
+  }
+  return r2ScanCache;
+}
+
 async function ensureR2Scan(force = false) {
   const TTL_MS = 5 * 60 * 1000;
   if (!force && r2ScanCache.scannedAt > 0 && Date.now() - r2ScanCache.scannedAt < TTL_MS) return r2ScanCache;
@@ -1488,7 +1500,7 @@ export default {
         const verifiedPhotos = allData.filter(s => Boolean(s.photoPath || s.thumbnailPath || s.originalPhotoPath)).length;
         const latency = supabaseLatency || Math.max(11, Date.now() - pingStart);
 
-        const scan = await ensureR2Scan(forceRefresh);
+        const scan = await scanCachedWithBgRefresh(ctx, forceRefresh);
         const [usersCount, auditLogsCount] = await Promise.all([
           countSupabaseRows("users"),
           countSupabaseRows("audit_logs")
@@ -3695,6 +3707,11 @@ export default {
       let totalPhotos = 0;
 
       const todayStr = new Date().toISOString().substring(0, 10);
+      const dateDaysAgo = (n) => {
+        const d = new Date();
+        d.setUTCDate(d.getUTCDate() - n);
+        return d.toISOString().substring(0, 10);
+      };
 
       const countStudentsQuery = async (extraFilters) => {
         try {
@@ -3712,10 +3729,12 @@ export default {
         return null;
       };
 
-      const [totalCount, photoVerifiedCount, todayCount] = await Promise.all([
+      const [totalCount, photoVerifiedCount, todayCount, weekCount, monthCount] = await Promise.all([
         countStudentsQuery(schoolQ),
         countStudentsQuery(`&photoIntegrityStatus=eq.PHOTO_VERIFIED${schoolQ}`),
-        countStudentsQuery(`&createdAt=gte.${todayStr}T00:00:00${schoolQ}`)
+        countStudentsQuery(`&createdAt=gte.${todayStr}T00:00:00${schoolQ}`),
+        countStudentsQuery(`&createdAt=gte.${dateDaysAgo(7)}T00:00:00${schoolQ}`),
+        countStudentsQuery(`&createdAt=gte.${dateDaysAgo(30)}T00:00:00${schoolQ}`)
       ]);
 
       if (totalCount !== null) totalStudents = totalCount;
@@ -3727,7 +3746,7 @@ export default {
         if (fallbackPhotos !== null) totalPhotos = Math.min(fallbackPhotos, totalStudents);
       }
 
-      const scan = await ensureR2Scan(false);
+      const scan = await scanCachedWithBgRefresh(ctx);
       const missingPhotos = Math.max(0, totalStudents - totalPhotos);
 
       return new Response(JSON.stringify({
@@ -3736,8 +3755,8 @@ export default {
         totalPhotos,
         missingPhotos,
         todayRecords,
-        weeklyRecords: todayRecords,
-        monthlyRecords: totalStudents,
+        weeklyRecords: weekCount !== null ? weekCount : todayRecords,
+        monthlyRecords: monthCount !== null ? monthCount : totalStudents,
         pendingReview: missingPhotos,
         acceptanceRate: totalStudents > 0 ? ((totalPhotos / totalStudents) * 100).toFixed(1) + "%" : "100%",
         storageUsedBytes: scan.totalBytes,
@@ -3757,7 +3776,7 @@ export default {
     // 9B. REAL-TIME CLOUDFLARE R2 CAPACITY AUDIT & REAL SIZE INSPECTION
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/storage/real-size" || url.pathname === "/api/r2/stats") {
-      const scan = await ensureR2Scan(url.searchParams.get("refresh") === "true");
+      const scan = await scanCachedWithBgRefresh(ctx, url.searchParams.get("refresh") === "true");
       return new Response(JSON.stringify({
         success: true,
         bucket: R2_BUCKET,

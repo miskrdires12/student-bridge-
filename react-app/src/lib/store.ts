@@ -676,6 +676,66 @@ export async function initStore(): Promise<void> {
     window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
   }
 
+  // 3b. Background authoritative reconciliation with the full Supabase dataset.
+  // The static /data/students.json baseline lags live field submissions (whole days of
+  // registrations can be absent) and the overlay above only pulls the latest 500 rows,
+  // so converge to /api/students?all=true without blocking first paint.
+  const runFullStudentSync = async () => {
+    try {
+      const res = await fetch('/api/students?all=true');
+      if (!res.ok) return;
+      const data = await res.json();
+      const live: Student[] = Array.isArray(data.students) ? data.students : [];
+      if (live.length === 0) return;
+
+      const delIds = getDeletedStudentIds();
+      const merged = new Map<string, Student>();
+      memoryStudents.forEach(s => { if (s.studentId) merged.set(s.studentId, s); });
+
+      const liveIds = new Set<string>();
+      live.forEach(s => {
+        if (!s || !s.studentId) return;
+        liveIds.add(s.studentId);
+        if (delIds.has(s.studentId) || delIds.has(s.studentId.toLowerCase()) || (s.id && delIds.has(s.id))) return;
+        const local = merged.get(s.studentId);
+        const localIsNewer = local && (local.updatedAt || '') > (s.updatedAt || '');
+        merged.set(s.studentId, localIsNewer ? { ...s, ...local } : { ...(local || {}), ...s });
+      });
+
+      // Drop server-side permanent deletions that the stale baseline still carries.
+      // Only trust removals when this response is provably the complete table.
+      const serverTotal = Number(data.total) || live.length;
+      const authoritative = live.length >= serverTotal && serverTotal >= 1000;
+      if (authoritative) {
+        memoryStudents.forEach(s => {
+          if (s.studentId && !liveIds.has(s.studentId) &&
+              !localCustomStudents.some(cs => cs.studentId === s.studentId)) {
+            merged.delete(s.studentId);
+          }
+        });
+      }
+
+      const reconciled = Array.from(merged.values());
+      reconciled.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+      const changed = reconciled.length !== memoryStudents.length ||
+        reconciled[0]?.studentId !== memoryStudents[0]?.studentId;
+      if (changed) {
+        memoryStudents = reconciled;
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
+        }
+      }
+    } catch (e) {
+      console.warn('Full student sync notice:', e);
+    }
+  };
+
+  runFullStudentSync();
+  if (typeof window !== 'undefined' && !(window as any).__sbFullSyncTimer) {
+    (window as any).__sbFullSyncTimer = setInterval(runFullStudentSync, 3 * 60 * 1000);
+  }
+
   // 3. Fetch live users from server / Supabase PostgreSQL
   try {
     const res = await fetch('/api/users');

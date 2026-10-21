@@ -1,23 +1,64 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { BarChart3, TrendingUp, Award, Layers, Download, Calendar } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts';
+import { getStudents } from '@/lib/store';
 
 export const SuperAdminReportsPage: React.FC = () => {
-  const schoolPerformance = [
-    { school: 'YMS', captured: 1245, accepted: 1190, efficiency: '95.6%' },
-    { school: 'Adika Youth', captured: 982, accepted: 920, efficiency: '93.7%' },
-    { school: 'School of America', captured: 756, accepted: 698, efficiency: '92.3%' },
-    { school: 'Ferway', captured: 542, accepted: 480, efficiency: '88.5%' },
-    { school: 'Warka', captured: 398, accepted: 360, efficiency: '90.4%' },
-  ];
+  const [dataVersion, setDataVersion] = useState(0);
 
-  const submissionTrends = [
-    { week: 'W1 Sep', submissions: 2100, verified: 1980 },
-    { week: 'W2 Sep', submissions: 3400, verified: 3200 },
-    { week: 'W3 Sep', submissions: 4200, verified: 3950 },
-    { week: 'W4 Sep', submissions: 3900, verified: 3720 },
-    { week: 'W1 Oct', submissions: 4800, verified: 4500 },
-  ];
+  useEffect(() => {
+    const bump = () => setDataVersion(v => v + 1);
+    window.addEventListener('studentbridge_datachange', bump);
+    window.addEventListener('studentbridge_userchange', bump);
+    return () => {
+      window.removeEventListener('studentbridge_datachange', bump);
+      window.removeEventListener('studentbridge_userchange', bump);
+    };
+  }, []);
+
+  const schoolPerformance = useMemo(() => {
+    const map = new Map<string, { captured: number; accepted: number }>();
+    getStudents().forEach(s => {
+      const key = (s.school || '').trim() || 'Unassigned';
+      const cur = map.get(key) || { captured: 0, accepted: 0 };
+      cur.captured += 1;
+      if (s.photoPath || (s.status || '').toLowerCase() === 'accepted') cur.accepted += 1;
+      map.set(key, cur);
+    });
+    return Array.from(map.entries())
+      .map(([school, v]) => ({
+        school,
+        captured: v.captured,
+        accepted: v.accepted,
+        efficiency: v.captured ? `${((v.accepted / v.captured) * 100).toFixed(1)}%` : '0%'
+      }))
+      .sort((a, b) => b.captured - a.captured)
+      .slice(0, 8);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataVersion]);
+
+  const submissionTrends = useMemo(() => {
+    const list = getStudents();
+    const days: { key: string; label: string; submissions: number; verified: number }[] = [];
+    const now = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(now.getDate() - i);
+      const key = d.toISOString().slice(0, 10);
+      days.push({ key, label: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), submissions: 0, verified: 0 });
+    }
+    const byKey = new Map(days.map(d => [d.key, d]));
+    list.forEach(s => {
+      const k = (s.createdAt || '').slice(0, 10);
+      const day = byKey.get(k);
+      if (day) {
+        day.submissions += 1;
+        if (s.photoPath || (s.status || '').toLowerCase() === 'accepted') day.verified += 1;
+      }
+    });
+    return days.map(({ key, ...rest }) => rest);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataVersion]);
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto pb-12">
@@ -40,7 +81,7 @@ export const SuperAdminReportsPage: React.FC = () => {
           <div className="flex items-center justify-between pb-3 border-b border-[#E2E8F0]">
             <div>
               <h2 className="text-sm font-heading font-bold text-[#202833] uppercase tracking-wider">Submissions vs Verified</h2>
-              <p className="text-xs text-[#64748B] mt-0.5">Weekly ingestion performance across all stations</p>
+              <p className="text-xs text-[#64748B] mt-0.5">Daily ingestion performance across all stations (last 7 days)</p>
             </div>
             <div className="flex items-center gap-3 text-xs font-semibold">
               <span className="text-[#366804] flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-[#85E510]" /> Submissions</span>
@@ -51,7 +92,7 @@ export const SuperAdminReportsPage: React.FC = () => {
           <div className="h-64 mt-4 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={submissionTrends}>
-                <XAxis dataKey="week" stroke="#64748B" fontSize={11} tickLine={false} />
+                <XAxis dataKey="label" stroke="#64748B" fontSize={11} tickLine={false} />
                 <YAxis stroke="#64748B" fontSize={11} tickLine={false} />
                 <Tooltip contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#CBD5E1', borderRadius: '12px', fontSize: '12px', color: '#202833', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }} />
                 <Bar dataKey="submissions" fill="#85E510" radius={[4, 4, 0, 0]} />

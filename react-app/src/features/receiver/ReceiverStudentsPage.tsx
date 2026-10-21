@@ -48,7 +48,7 @@ export const ReceiverStudentsPage: React.FC = () => {
   const [gradeFilter, setGradeFilter] = useState('ALL');
   const [sectionFilter, setSectionFilter] = useState('ALL');
   const [branchFilter, setBranchFilter] = useState('ALL');
-  const [schoolFilter, setSchoolFilter] = useState('Warka');
+  const [schoolFilter, setSchoolFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [senderFilter, setSenderFilter] = useState('ALL');
   const [selectedDate, setSelectedDate] = useState('');
