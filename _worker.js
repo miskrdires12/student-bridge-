@@ -1124,6 +1124,33 @@ async function ensureLocalFallbackLoaded(env, originUrl) {
   }
 }
 
+// PostgREST caps each response at db-max-rows (1000), so paginate with Range headers
+// to guarantee the full table is loaded (orphan scans / dataset merges depend on it).
+async function fetchSupabaseAllRows(table, params) {
+  const rows = [];
+  let total = 0;
+  for (let from = 0; from < 100000; from += 1000) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Accept-Profile": "cloudflare",
+        "Range-Unit": "items",
+        "Range": `${from}-${from + 999}`,
+        "Prefer": "count=exact"
+      }
+    });
+    if (!res.ok) break;
+    const cr = res.headers.get("content-range");
+    if (cr && cr.includes("/")) total = parseInt(cr.split("/")[1], 10) || 0;
+    const chunk = await res.json();
+    if (!Array.isArray(chunk) || chunk.length === 0) break;
+    rows.push(...chunk);
+    if (chunk.length < 1000 || rows.length >= total) break;
+  }
+  return { rows, total };
+}
+
 async function getAllStudentsDataset(env, originUrl) {
   if (cachedAllStudents && cachedAllStudents.length > 0) {
     return cachedAllStudents;
@@ -1131,21 +1158,12 @@ async function getAllStudentsDataset(env, originUrl) {
 
   // 1. Try authoritative Supabase PostgreSQL dataset first (fastest, pre-indexed)
   try {
-    const sbRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=*&order=createdAt.desc&limit=10000`, {
-      headers: {
-        "apikey": SUPABASE_KEY,
-        "Authorization": `Bearer ${SUPABASE_KEY}`,
-        "Accept-Profile": "cloudflare"
-      }
-    });
-    if (sbRes.ok) {
-      const data = await sbRes.json();
-      if (Array.isArray(data) && data.length > 0) {
-        data.forEach(normalizeStudentPhoneFields);
-        cachedAllStudents = data;
-        lastAllFetchTime = Date.now();
-        return cachedAllStudents;
-      }
+    const { rows } = await fetchSupabaseAllRows("students", "select=*&order=createdAt.desc");
+    if (rows.length > 0) {
+      rows.forEach(normalizeStudentPhoneFields);
+      cachedAllStudents = rows;
+      lastAllFetchTime = Date.now();
+      return cachedAllStudents;
     }
   } catch (sbErr) {
     console.warn("getAllStudentsDataset Supabase fetch notice:", sbErr);
@@ -1596,7 +1614,7 @@ export default {
         activeStudentsCount: allData.length,
         activeFilesCount: Math.max(0, scan.totalObjects - orphans.length),
         orphanedCount: orphans.length,
-        orphanedBytes,
+        orphanedBytes: orphanBytes,
         orphanedSizeFormatted: formatBytesSb(orphanBytes),
         orphanedFiles: orphans.slice(0, 200),
         purgedCount: request.method === "POST" ? purgedCount : undefined
@@ -1643,18 +1661,26 @@ export default {
         }
         if (!isAllRequested) {
           sbQuery += `&limit=${limit}&offset=${offset}`;
-        } else {
-          sbQuery += `&limit=10000`;
         }
 
-        const sbRes = await fetch(sbQuery, {
-          headers: {
-            "apikey": SUPABASE_KEY,
-            "Authorization": `Bearer ${SUPABASE_KEY}`,
-            "Accept-Profile": "cloudflare",
-            "Prefer": "count=exact"
-          }
-        });
+        let sbRes;
+        if (isAllRequested) {
+          const { rows, total } = await fetchSupabaseAllRows("students", sbQuery.split("?")[1]);
+          sbRes = {
+            ok: rows.length > 0,
+            headers: { get: (h) => h === "content-range" ? `0-${Math.max(0, rows.length - 1)}/${total}` : null },
+            json: async () => rows
+          };
+        } else {
+          sbRes = await fetch(sbQuery, {
+            headers: {
+              "apikey": SUPABASE_KEY,
+              "Authorization": `Bearer ${SUPABASE_KEY}`,
+              "Accept-Profile": "cloudflare",
+              "Prefer": "count=exact"
+            }
+          });
+        }
 
         if (sbRes.ok) {
           const contentRange = sbRes.headers.get("content-range");
