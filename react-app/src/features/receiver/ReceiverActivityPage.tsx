@@ -14,7 +14,7 @@ export const ReceiverActivityPage: React.FC = () => {
     <div className="space-y-6 max-w-5xl mx-auto pb-12">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E2E8F0]">
         <div>
-          <h1 className="text-2xl font-heading font-extrabold text-[#202833] tracking-tight">Receiver Activity Stream</h1>
+          <h1 className="text-2xl font-heading font-extrabold text-[#202833] tracking-tight">Receiver Activity — Live</h1>
           <p className="text-xs text-[#64748B] mt-0.5">
             Audit trail of directory updates, field registrations, and bulk exports
           </p>

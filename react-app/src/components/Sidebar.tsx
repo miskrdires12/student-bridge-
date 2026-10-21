@@ -1,7 +1,7 @@
 import React from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Users, CreditCard, Printer, Layers, Settings,
+  Users, Layers, Settings,
   UserPlus, LayoutGrid, CheckSquare, BarChart2,
   Smartphone, Activity, AlertTriangle,
   LogOut, Database, X, Shield, HardDrive
@@ -60,8 +60,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { to: '/admin/dashboard', label: 'Live Dashboard & Metrics', icon: LayoutGrid, iconColor: 'text-slate-500' },
         { to: '/super-admin/telemetric-velocity', label: 'Telemetric Velocity & Fleet', icon: Activity, iconColor: 'text-[#85E510]' },
         { to: '/receiver/students', label: 'Student Directory & Records', icon: Users, iconColor: 'text-slate-500' },
-        { to: '/receiver/review', label: '8-Up Print Engine', icon: Printer, iconColor: 'text-slate-500' },
-        { to: '/receiver/id-production', label: 'Badge Designer Studio', icon: CreditCard, iconColor: 'text-slate-500' },
         { to: '/sender/register', label: 'Student Registration', icon: UserPlus, iconColor: 'text-slate-500' },
       ]
     },
@@ -97,8 +95,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       items: [
         { to: '/receiver/students', label: 'Student Directory & Records', icon: Users, iconColor: 'text-slate-500' },
         { to: '/receiver/telemetric-velocity', label: 'Telemetric Velocity & Fleet', icon: Activity, iconColor: 'text-[#85E510]' },
-        { to: '/receiver/review', label: '8-Up Print Engine', icon: Printer, iconColor: 'text-slate-500' },
-        { to: '/receiver/id-production', label: 'Badge Designer Studio', icon: CreditCard, iconColor: 'text-slate-500' },
         { to: '/receiver/storage', label: 'Storage Capacity & Zero-Egress Command', icon: HardDrive, iconColor: 'text-cyan-500' },
         { to: '/receiver/database', label: 'Database & PostgreSQL Ledger', icon: Database, iconColor: 'text-blue-500' },
       ]
@@ -184,7 +180,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {/* Navigation Items */}
-        <nav className="flex-1 px-3 py-3 overflow-y-auto space-y-4 bg-white dark:bg-[#141A22] custom-scrollbar">
+        <nav className="flex-1 min-h-0 px-3 py-3 overflow-y-auto overscroll-contain space-y-4 bg-white dark:bg-[#141A22] custom-scrollbar">
           {navSections.map((section, idx) => (
             <div key={idx} className="space-y-1">
               {section.title && (

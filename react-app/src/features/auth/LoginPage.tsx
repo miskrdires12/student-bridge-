@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
-  User, KeyRound, AlertCircle, ShieldCheck, ArrowRight
+  User, KeyRound, AlertCircle, ShieldCheck, ArrowRight, Eye, EyeOff
 } from 'lucide-react';
 import {
   getUsers, setCurrentUser, getOrCreateDeviceId,
@@ -18,6 +18,7 @@ export const LoginPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const deviceId = getOrCreateDeviceId();
   const allUsers = getUsers();
@@ -259,7 +260,7 @@ export const LoginPage: React.FC = () => {
             </div>
           </div>
 
-          {/* PASSWORD - MASKED AND NEVER VISIBLE */}
+          {/* PASSWORD — reveal toggle for workstation typing */}
           <div>
             <label className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
               PASSWORD
@@ -267,7 +268,7 @@ export const LoginPage: React.FC = () => {
             <div className="relative flex items-center">
               <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none" />
               <input
-                type="password"
+                type={showPassword ? 'text' : 'password'}
                 required
                 value={password}
                 onChange={(e) => {
@@ -275,8 +276,17 @@ export const LoginPage: React.FC = () => {
                   setError(null);
                 }}
                 placeholder="••••••••"
-                className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-10 pr-3.5 py-2.5 text-xs sm:text-sm text-black placeholder:text-slate-400 font-medium tracking-widest focus:outline-none focus:border-[#9EE617] focus:ring-2 focus:ring-[#9EE617]/20 transition-all"
+                className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-10 pr-11 py-2.5 text-xs sm:text-sm text-black placeholder:text-slate-400 font-medium focus:outline-none focus:border-[#9EE617] focus:ring-2 focus:ring-[#9EE617]/20 transition-all"
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword(prev => !prev)}
+                title={showPassword ? 'Hide password' : 'Show password'}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                className="absolute right-3 w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
           </div>
 

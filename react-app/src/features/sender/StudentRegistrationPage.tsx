@@ -1179,7 +1179,7 @@ export const StudentRegistrationPage: React.FC = () => {
             </div>
             <div className="flex items-center gap-1.5 text-[11px] text-[#2E7D32] font-semibold">
               <span className="w-1.5 h-1.5 rounded-full bg-[#85E510] animate-pulse" />
-              <span>Direct JPEG Photo Stream</span>
+              <span>Live JPEG Photo Upload</span>
             </div>
           </div>
         </div>

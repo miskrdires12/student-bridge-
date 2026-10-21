@@ -3,10 +3,26 @@ import { useNavigate } from 'react-router-dom';
 import {
   Settings, User, Smartphone, Shield, LogOut, CheckCircle2,
   Download, Table, Save, Printer, Sliders, HardDrive, RotateCcw,
-  RefreshCw, Volume2, Layers, Check, Database
+  RefreshCw, Volume2, Layers, Check, Database, Camera, AlertTriangle
 } from 'lucide-react';
-import { getCurrentUser, setCurrentUser, getOrCreateDeviceId } from '@/lib/store';
+import { getCurrentUser, setCurrentUser, getOrCreateDeviceId, getAuthHeaders } from '@/lib/store';
 import { getAppSettings, updateAppSettings, resetAppSettings, AppSettings } from '@/lib/settingsStore';
+
+const DEFAULT_PHOTO_PATH_TEMPLATE = '{grade}/{name}.jpg';
+const PATH_TOKEN_RE = /\{(?:grade|name|id)\}/i;
+const PATH_ALLOWED_RE = /^[A-Za-z0-9_.\-/{}]+$/;
+const SAMPLE_PATH_VALUES: Record<string, string> = { grade: '9A', name: 'Sila-Bekeri', id: 'SB-1024' };
+
+function photoPathPreview(template: string): string {
+  return template.replace(/\{(grade|name|id)\}/gi, (_match, token: string) => SAMPLE_PATH_VALUES[token.toLowerCase()] ?? '');
+}
+
+interface PlatformSettings {
+  photoPathTemplate?: string;
+  syncSchool?: string;
+  updatedAt?: string | null;
+  error?: string;
+}
 
 export const ReceiverSettingsPage: React.FC = () => {
   const navigate = useNavigate();
@@ -17,10 +33,41 @@ export const ReceiverSettingsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'profile' | 'directory' | 'print' | 'export' | 'security' | 'diagnostics'>('directory');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Cloud Photo Storage Path — platform settings persisted in R2 via the edge
+  const [photoPathTemplate, setPhotoPathTemplate] = useState(DEFAULT_PHOTO_PATH_TEMPLATE);
+  const [platformUpdatedAt, setPlatformUpdatedAt] = useState<string | null>(null);
+  const [edgeOffline, setEdgeOffline] = useState(false);
+  const [isSavingPlatform, setIsSavingPlatform] = useState(false);
+  const [platformError, setPlatformError] = useState<string | null>(null);
+
+  const pathTemplateError = !PATH_ALLOWED_RE.test(photoPathTemplate)
+    ? 'Invalid characters — only letters, digits and _ - . / { } are allowed.'
+    : !PATH_TOKEN_RE.test(photoPathTemplate)
+      ? 'Template must contain at least one token: {grade}, {name} or {id}.'
+      : null;
+
   useEffect(() => {
     const handleUpdate = () => setSettings(getAppSettings());
     window.addEventListener('studentbridge_settings_change', handleUpdate);
     return () => window.removeEventListener('studentbridge_settings_change', handleUpdate);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/settings');
+        if (!res.ok) throw new Error(`edge status ${res.status}`);
+        const data: PlatformSettings = await res.json();
+        if (cancelled) return;
+        if (typeof data.photoPathTemplate === 'string' && data.photoPathTemplate) setPhotoPathTemplate(data.photoPathTemplate);
+        setPlatformUpdatedAt(data.updatedAt ?? null);
+        setEdgeOffline(false);
+      } catch {
+        if (!cancelled) setEdgeOffline(true);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const showToast = (msg: string) => {
@@ -39,6 +86,34 @@ export const ReceiverSettingsPage: React.FC = () => {
       const reset = resetAppSettings();
       setSettings(reset);
       showToast('Receiver settings reset to defaults.');
+    }
+  };
+
+  const handleSavePlatformSettings = async () => {
+    if (pathTemplateError) {
+      setPlatformError(pathTemplateError);
+      return;
+    }
+    setIsSavingPlatform(true);
+    setPlatformError(null);
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ photoPathTemplate: photoPathTemplate.trim() })
+      });
+      const data: PlatformSettings = await res.json().catch(() => ({ error: 'Malformed edge response.' } as PlatformSettings));
+      if (!res.ok) {
+        throw new Error(data.error || `Edge rejected settings (${res.status}).`);
+      }
+      if (typeof data.photoPathTemplate === 'string') setPhotoPathTemplate(data.photoPathTemplate);
+      setPlatformUpdatedAt(data.updatedAt ?? null);
+      setEdgeOffline(false);
+      showToast('Cloud photo storage path saved to R2 platform settings.');
+    } catch (err) {
+      setPlatformError(err instanceof Error ? err.message : 'Failed to save platform settings.');
+    } finally {
+      setIsSavingPlatform(false);
     }
   };
 
@@ -81,6 +156,80 @@ export const ReceiverSettingsPage: React.FC = () => {
           <span>{toastMessage}</span>
         </div>
       )}
+
+      {/* ─────────────────────────────────────────────────────────────────── */}
+      {/* CLOUD PHOTO STORAGE PATH — R2-persisted platform settings          */}
+      {/* ─────────────────────────────────────────────────────────────────── */}
+      <div className="bg-white dark:bg-[#111613] border border-[#8fe617]/30 dark:border-[#8fe617]/25 rounded-3xl p-6 space-y-4 shadow-xs">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-[#85E510]/20 text-[#256002] dark:text-[#8fe617] flex items-center justify-center">
+              <Camera className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Cloud Photo Storage Path</h3>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">R2 photo key layout used by the directory review feed — served Live</p>
+            </div>
+          </div>
+          <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 shrink-0">
+            Last updated: {platformUpdatedAt ? platformUpdatedAt : 'Never (defaults)'}
+          </span>
+        </div>
+
+        {edgeOffline && (
+          <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/60 text-amber-800 dark:text-amber-400 text-xs font-bold flex items-center gap-2">
+            <RefreshCw className="w-4 h-4 shrink-0" />
+            <span>Edge offline — showing local defaults. Saving requires connectivity.</span>
+          </div>
+        )}
+
+        <div className="text-xs">
+          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
+            <label htmlFor="photo-path-template" className="block text-slate-400 uppercase font-bold text-[10px]">Photo Path Template</label>
+            <input
+              id="photo-path-template"
+              type="text"
+              value={photoPathTemplate}
+              onChange={(e) => { setPhotoPathTemplate(e.target.value); setPlatformError(null); }}
+              className={`w-full bg-white dark:bg-[#111613] border rounded-xl px-3 py-2 font-mono font-bold text-slate-900 dark:text-white ${
+                pathTemplateError ? 'border-rose-400 dark:border-rose-700' : 'border-slate-200 dark:border-slate-800'
+              }`}
+              placeholder={DEFAULT_PHOTO_PATH_TEMPLATE}
+            />
+            <p className="text-[10px] text-slate-500">
+              Tokens: <span className="font-bold text-[#256002] dark:text-[#8fe617]">{'{grade}'}</span>,{' '}
+              <span className="font-bold text-[#256002] dark:text-[#8fe617]">{'{name}'}</span>,{' '}
+              <span className="font-bold text-[#256002] dark:text-[#8fe617]">{'{id}'}</span> — at least one is required.
+            </p>
+            <div className="text-[10px] text-slate-500">
+              Live example:{' '}
+              <span className="font-mono font-bold text-slate-800 dark:text-slate-200 break-all">{photoPathPreview(pathTemplateError ? DEFAULT_PHOTO_PATH_TEMPLATE : photoPathTemplate)}</span>
+            </div>
+            {pathTemplateError && (
+              <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{pathTemplateError}</p>
+            )}
+          </div>
+        </div>
+
+        {platformError && (
+          <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-400 text-xs font-bold flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>{platformError}</span>
+          </div>
+        )}
+
+        <div className="flex justify-end pt-1">
+          <button
+            type="button"
+            onClick={handleSavePlatformSettings}
+            disabled={isSavingPlatform || !!pathTemplateError}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#85E510] text-[#062404] text-xs font-black hover:brightness-105 transition-all shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Save className="w-4 h-4" />
+            <span>{isSavingPlatform ? 'Saving to Edge...' : 'Save Photo Path Settings'}</span>
+          </button>
+        </div>
+      </div>
 
       {/* Tabs */}
       <div className="flex flex-wrap items-center gap-1 p-1.5 rounded-2xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] shadow-xs">

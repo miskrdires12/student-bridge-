@@ -392,11 +392,11 @@ function requireAuthorization(user, allowedRoles = []) {
   return null;
 }
 
-// Real Cloudflare R2 Storage Metrics (Measured via authoritative SigV4 scan of bucket 'siliconlabs')
+// Live R2 byte/object counters — cumulative since cold start, corrected by the authoritative bucket scan below
 let cachedR2Stats = {
-  totalObjects: 12588,
-  totalBytes: 1180423991, // Exact 1,180,423,991 bytes (~1,125.74 MB / 1.099 GB)
-  lastScanned: Date.now()
+  totalObjects: 0,
+  totalBytes: 0,
+  lastScanned: 0
 };
 
 // In-Memory Fallback Cache if network drops
@@ -428,6 +428,246 @@ let edgeSchools = [
 ];
 
 let edgeAuditLogs = [];
+
+// -----------------------------------------------------------------------------
+// PERSISTENT AUDIT TRAIL (Supabase cloudflare.audit_logs) — every data send,
+// creation, edit and deletion is written durably, not just in-process memory.
+// -----------------------------------------------------------------------------
+function makeAuditId() {
+  return (crypto.randomUUID ? crypto.randomUUID() : "log-" + Date.now().toString(36) + "-" + Math.random().toString(36).substring(2, 10));
+}
+
+function pushEdgeAuditLog(entry) {
+  edgeAuditLogs.unshift(entry);
+  if (edgeAuditLogs.length > 500) edgeAuditLogs.length = 500;
+}
+
+function edgeRowToAuditLog(row) {
+  let meta = {};
+  try { meta = typeof row.metadata === "string" ? JSON.parse(row.metadata) : (row.metadata || {}); } catch (e) { meta = { details: String(row.metadata || "") }; }
+  return {
+    id: row.id,
+    action: row.action,
+    entityType: row.entityType || "Student",
+    entityId: row.entityId || null,
+    metadata: meta.details !== undefined ? String(meta.details) : (typeof row.metadata === "string" ? row.metadata : JSON.stringify(meta)),
+    ipAddress: row.ipAddress || null,
+    createdAt: row.createdAt,
+    user: { username: meta.username || row.user || "SYSTEM", role: meta.role || "SYSTEM" }
+  };
+}
+
+async function postAuditRowsToSupabase(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  for (let i = 0; i < rows.length; i += 500) {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/audit_logs`, {
+        method: "POST",
+        headers: {
+          "apikey": SUPABASE_KEY,
+          "Authorization": `Bearer ${SUPABASE_KEY}`,
+          "Content-Type": "application/json",
+          "Content-Profile": "cloudflare",
+          "Accept-Profile": "cloudflare",
+          "Prefer": "return=minimal"
+        },
+        body: JSON.stringify(rows.slice(i, i + 500))
+      });
+      if (!res.ok) console.warn("audit_logs bulk write note:", res.status, await res.text().catch(() => ""));
+    } catch (e) {
+      console.warn("audit_logs bulk write error:", e);
+    }
+  }
+}
+
+async function writeAuditLog({ action, entityType = "Student", entityId = null, details = "", user = null, ipAddress = null, metadataExtra = null }, ctx = null) {
+  const username = user && (user.username || user.email) ? String(user.username || user.email) : "SYSTEM";
+  const role = user && user.role ? user.role : "SYSTEM";
+  const nowIso = new Date().toISOString();
+  const id = makeAuditId();
+  const row = {
+    id,
+    userId: (user && user.id) || null,
+    action,
+    entityType,
+    entityId: entityId ? String(entityId) : null,
+    metadata: JSON.stringify({ details, username, role, ...(metadataExtra || {}) }),
+    ipAddress: ipAddress || null,
+    createdAt: nowIso
+  };
+  pushEdgeAuditLog(edgeRowToAuditLog(row));
+  const persist = postAuditRowsToSupabase([row]);
+  if (ctx && typeof ctx.waitUntil === "function") {
+    ctx.waitUntil(persist);
+  } else {
+    await persist;
+  }
+  return row;
+}
+
+async function fetchPersistentAuditLogs(limit = 500) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/audit_logs?select=*&order=createdAt.desc&limit=${limit}`, {
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Accept-Profile": "cloudflare"
+      }
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
+    return data.map(edgeRowToAuditLog);
+  } catch (e) {
+    return [];
+  }
+}
+
+// -----------------------------------------------------------------------------
+// AUTHORITATIVE CLOUD COUNTS + REAL R2 BUCKET SCAN (SigV4 ListObjectsV2)
+// -----------------------------------------------------------------------------
+async function countSupabaseRows(table) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=id&limit=1`, {
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Accept-Profile": "cloudflare",
+        "Prefer": "count=exact"
+      }
+    });
+    const range = res.headers.get("content-range");
+    if (range && range.includes("/")) return parseInt(range.split("/")[1], 10) || 0;
+  } catch (e) {}
+  return 0;
+}
+
+function formatBytesSb(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(2)} MB`;
+  return `${(bytes / 1073741824).toFixed(2)} GB`;
+}
+
+async function listR2AllKeys() {
+  const enc = new TextEncoder();
+  const keys = new Map();
+  let continuationToken = null;
+  for (let page = 0; page < 40; page++) {
+    const query = [["list-type", "2"], ["max-keys", "1000"]];
+    if (continuationToken) query.push(["continuation-token", continuationToken]);
+    query.sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    const canonicalQuery = query.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
+
+    const path = `/${R2_BUCKET}/`;
+    const url = new URL(path, R2_ENDPOINT);
+    url.search = canonicalQuery;
+    const now = new Date();
+    const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+    const dateStamp = amzDate.substring(0, 8);
+    const payloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const host = url.host;
+
+    const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
+    const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+    const canonicalRequest = `GET\n${path}\n${canonicalQuery}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+    const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
+    const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${credentialScope}\n${await sha256Hex(enc.encode(canonicalRequest))}`;
+    const signingKey = await getSignatureKey(R2_SECRET_ACCESS_KEY, dateStamp, "auto", "s3");
+    const sigBytes = await hmacSha256(signingKey, enc.encode(stringToSign));
+    const signature = Array.from(sigBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+    const authHeader = `AWS4-HMAC-SHA256 Credential=${R2_ACCESS_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+    const res = await fetch(url.toString(), {
+      headers: { "Host": host, "x-amz-date": amzDate, "x-amz-content-sha256": payloadHash, "Authorization": authHeader }
+    });
+    if (!res.ok) throw new Error(`R2 list failed: ${res.status} ${await res.text().catch(() => "")}`);
+    const xml = await res.text();
+    const re = /<Contents>[\s\S]*?<Key>([^<]*)<\/Key>[\s\S]*?<Size>(\d+)<\/Size>[\s\S]*?<\/Contents>/g;
+    let m;
+    while ((m = re.exec(xml)) !== null) {
+      keys.set(m[1], parseInt(m[2], 10));
+    }
+    const truncated = /<IsTruncated>true<\/IsTruncated>/.test(xml);
+    const nextTok = (xml.match(/<NextContinuationToken>([^<]*)<\/NextContinuationToken>/) || [])[1];
+    if (!truncated || !nextTok) break;
+    continuationToken = nextTok;
+  }
+  return keys;
+}
+
+let r2ScanCache = { totalObjects: 0, totalBytes: 0, byPrefix: [], keySet: new Map(), scannedAt: 0 };
+
+async function ensureR2Scan(force = false) {
+  const TTL_MS = 5 * 60 * 1000;
+  if (!force && r2ScanCache.scannedAt > 0 && Date.now() - r2ScanCache.scannedAt < TTL_MS) return r2ScanCache;
+  try {
+    const keys = await listR2AllKeys();
+    let totalBytes = 0;
+    const prefixMap = new Map();
+    for (const [key, size] of keys.entries()) {
+      totalBytes += size;
+      const seg = key.includes("/") ? key.slice(0, key.indexOf("/")) : "(root)";
+      const cur = prefixMap.get(seg) || { fileCount: 0, sizeBytes: 0 };
+      cur.fileCount += 1;
+      cur.sizeBytes += size;
+      prefixMap.set(seg, cur);
+    }
+    const byPrefix = Array.from(prefixMap.entries())
+      .map(([name, v]) => ({ name, fileCount: v.fileCount, sizeBytes: v.sizeBytes, sizeFormatted: formatBytesSb(v.sizeBytes) }))
+      .sort((a, b) => b.sizeBytes - a.sizeBytes);
+    r2ScanCache = { totalObjects: keys.size, totalBytes, byPrefix, keySet: keys, scannedAt: Date.now() };
+    cachedR2Stats.totalObjects = keys.size;
+    cachedR2Stats.totalBytes = totalBytes;
+    cachedR2Stats.lastScanned = Date.now();
+  } catch (e) {
+    console.warn("R2 scan notice:", e);
+  }
+  return r2ScanCache;
+}
+
+// -----------------------------------------------------------------------------
+// PLATFORM SETTINGS (persisted in R2: settings/platform.json)
+// -----------------------------------------------------------------------------
+const DEFAULT_PLATFORM_SETTINGS = { photoPathTemplate: "{grade}/{name}.jpg", syncSchool: "Warka", updatedAt: null };
+let platformSettingsCache = null;
+
+async function getPlatformSettings() {
+  if (platformSettingsCache) return platformSettingsCache;
+  try {
+    const obj = await getFromR2Bucket("settings/platform.json");
+    if (obj && obj.bytes) {
+      const parsed = JSON.parse(new TextDecoder().decode(obj.bytes));
+      platformSettingsCache = { ...DEFAULT_PLATFORM_SETTINGS, ...parsed };
+      return platformSettingsCache;
+    }
+  } catch (e) {}
+  platformSettingsCache = { ...DEFAULT_PLATFORM_SETTINGS };
+  return platformSettingsCache;
+}
+
+async function savePlatformSettings(patch) {
+  const next = { ...(platformSettingsCache || DEFAULT_PLATFORM_SETTINGS), ...patch, updatedAt: new Date().toISOString() };
+  platformSettingsCache = next;
+  try {
+    await uploadToR2Bucket("settings/platform.json", new TextEncoder().encode(JSON.stringify(next, null, 2)), "application/json");
+  } catch (e) {
+    console.warn("settings persist notice:", e);
+  }
+  return next;
+}
+
+function applyPhotoPathTemplate(template, { grade, fullName, studentId }) {
+  const clean = (v, fallback) => String(v || fallback || "").trim().replace(/[\/\\:*?"<>|\s]+/g, "_");
+  let out = String(template || "{grade}/{name}.jpg")
+    .replace(/\{grade\}/gi, clean(grade, "General"))
+    .replace(/\{name\}/gi, clean(fullName, "Student"))
+    .replace(/\{id\}/gi, clean(studentId, "Student"));
+  out = out.replace(/[^a-zA-Z0-9_\-.\/{}]/g, "");
+  if (!/\.(jpg|jpeg|png|webp|gif)$/i.test(out)) out += ".jpg";
+  return out.replace(/^\/+/, "");
+}
 
 let studentCoreQueue = [];
 
@@ -556,6 +796,62 @@ async function deleteFromR2Bucket(key) {
   });
 
   return res.ok || res.status === 204 || res.status === 404;
+}
+
+function normalizeR2PhotoRef(p) {
+  if (!p) return null;
+  let s = String(p).trim();
+  if (!s) return null;
+  if (s.includes(R2_PUBLIC_BASE_URL)) s = s.replace(`${R2_PUBLIC_BASE_URL}/`, "");
+  if (s.startsWith("http")) {
+    try { s = new URL(s).pathname.replace(/^\/+/, ""); } catch (e) { return null; }
+  }
+  if (s.startsWith("api/photos/")) s = s.slice("api/photos/".length);
+  s = s.replace(/^\/+/, "");
+  try { s = decodeURIComponent(s); } catch (e) {}
+  return s || null;
+}
+
+async function isPhotoKeyReferencedByOtherStudents(key, exceptStudentId) {
+  try {
+    const variants = [key, `/api/photos/${key}`];
+    const ors = variants.flatMap(k =>
+      ["photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "storageKey"]
+        .map(col => `${col}.eq.${encodeURIComponent(k)}`)
+    ).join(",");
+    let q = `${SUPABASE_URL}/rest/v1/students?select=id&or=(${ors})&limit=1`;
+    if (exceptStudentId) q += `&studentId=neq.${encodeURIComponent(exceptStudentId)}`;
+    const res = await fetch(q, {
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Accept-Profile": "cloudflare"
+      }
+    });
+    if (!res.ok) return true; // conservative: keep the file when the check failed
+    const rows = await res.json();
+    return Array.isArray(rows) && rows.length > 0;
+  } catch (e) {
+    return true;
+  }
+}
+
+async function purgeStaleStudentPhotos(oldRefs, newKey, exceptStudentId) {
+  const keys = new Set();
+  for (const ref of (oldRefs || [])) {
+    const k = normalizeR2PhotoRef(ref);
+    if (k && k !== newKey) keys.add(k);
+  }
+  const purged = [];
+  for (const k of keys) {
+    if (await isPhotoKeyReferencedByOtherStudents(k, exceptStudentId)) continue;
+    uploadedPhotos.delete(k);
+    try {
+      if (await deleteFromR2Bucket(k)) purged.push(k);
+    } catch (e) {}
+  }
+  if (purged.length > 0) r2ScanCache.scannedAt = 0;
+  return purged;
 }
 
 async function getFromR2Bucket(key) {
@@ -1164,48 +1460,54 @@ export default {
       }
 
       if (request.method === "GET") {
+        const forceRefresh = url.searchParams.get("refresh") === "true";
+        if (forceRefresh) {
+          lastAllFetchTime = 0;
+          cachedAllStudents = null;
+        }
         const allData = await getAllStudentsDataset(env, request.url);
+        const totalStudentsLive = supabaseLiveCount || allData.length;
         const verifiedPhotos = allData.filter(s => Boolean(s.photoPath || s.thumbnailPath || s.originalPhotoPath)).length;
         const latency = supabaseLatency || Math.max(11, Date.now() - pingStart);
 
-        const cohortMap = new Map();
+        const scan = await ensureR2Scan(forceRefresh);
+        const [usersCount, auditLogsCount] = await Promise.all([
+          countSupabaseRows("users"),
+          countSupabaseRows("audit_logs")
+        ]);
+
+        // Senders with real sent records: distinct sender identity across the actual student dataset
+        const senderKeys = new Set();
         for (const s of allData) {
-          const g = s.grade || "General";
-          cohortMap.set(g, (cohortMap.get(g) || 0) + 1);
+          const k = (s.senderName || s.senderId || "").toString().trim().toLowerCase();
+          if (k) senderKeys.add(k);
         }
-        const storageFolders = Array.from(cohortMap.entries()).map(([grade, count]) => ({
-          name: grade.startsWith("Grade") || grade.startsWith("KG") || grade === "General" ? grade : `Grade ${grade}`,
-          fileCount: count,
-          sizeBytes: count * 45000,
-          sizeFormatted: `${((count * 45) / 1024).toFixed(2)} MB`
-        }));
 
         const statusPayload = {
-          databaseConnected: true,
+          databaseConnected: supabaseConnected,
           databaseLatencyMs: latency,
-          supabaseLiveCount: supabaseLiveCount || allData.length,
-          supabaseConnected: supabaseConnected || true,
-          storageConnected: true,
+          supabaseLiveCount: totalStudentsLive,
+          supabaseConnected: supabaseConnected,
+          storageConnected: scan.scannedAt > 0,
           storageBucket: R2_BUCKET,
           storageProvider: "Cloudflare R2 (Zero Egress)",
-          storageFileCount: cachedR2Stats.totalObjects,
-          storageSizeBytes: cachedR2Stats.totalBytes,
-          storageSizeFormatted: `${(cachedR2Stats.totalBytes / (1024 * 1024)).toFixed(2)} MB (${(cachedR2Stats.totalBytes / (1024 * 1024 * 1024)).toFixed(2)} GB)`,
-          r2TotalObjects: cachedR2Stats.totalObjects,
-          r2RealStorageVerified: true,
-          storageFolders: storageFolders.length > 0 ? storageFolders : [
-            { name: "Grade 9", fileCount: Math.round(verifiedPhotos * 0.35), sizeBytes: 15000000, sizeFormatted: "14.3 MB" },
-            { name: "Grade 10", fileCount: Math.round(verifiedPhotos * 0.30), sizeBytes: 12000000, sizeFormatted: "11.4 MB" }
-          ],
+          storageFileCount: scan.totalObjects,
+          storageSizeBytes: scan.totalBytes,
+          storageSizeFormatted: `${formatBytesSb(scan.totalBytes)} (${(scan.totalBytes / 1073741824).toFixed(2)} GB)`,
+          r2TotalObjects: scan.totalObjects,
+          r2RealStorageVerified: scan.scannedAt > 0,
+          storageScannedAt: new Date(scan.scannedAt || Date.now()).toISOString(),
+          storageFolders: scan.byPrefix,
+          sendersActual: senderKeys.size,
           database: {
-            studentsCount: allData.length,
+            studentsCount: totalStudentsLive,
             studentsWithPhotos: verifiedPhotos,
-            studentsWithoutPhotos: Math.max(0, allData.length - verifiedPhotos),
-            usersCount: 23,
+            studentsWithoutPhotos: Math.max(0, totalStudentsLive - verifiedPhotos),
+            usersCount: usersCount,
             batchesCount: 1,
-            auditLogsCount: 42,
-            studentPhotosCatalogCount: verifiedPhotos,
-            totalDatabaseRecords: allData.length + 65
+            auditLogsCount: auditLogsCount,
+            studentPhotosCatalogCount: scan.totalObjects,
+            totalDatabaseRecords: totalStudentsLive + usersCount + auditLogsCount
           },
           poolerHost: "aws-0-eu-central-1.pooler.supabase.com",
           supabaseUrl: SUPABASE_URL,
@@ -1222,6 +1524,86 @@ export default {
           headers: { "Content-Type": "application/json", ...corsHeaders }
         });
       }
+    }
+
+    // -------------------------------------------------------------------------
+    // 1D. STORAGE SYNCHRONIZATION ANALYSIS & ORPHAN PURGE (R2 vs Database)
+    // -------------------------------------------------------------------------
+    if (url.pathname === "/api/admin/supabase-status/sync") {
+      const scan = await ensureR2Scan(true);
+      const allData = await getAllStudentsDataset(env, request.url);
+
+      const normalizePhotoRef = (p) => {
+        if (!p) return null;
+        let s = String(p).trim();
+        if (!s) return null;
+        if (s.includes(R2_PUBLIC_BASE_URL)) s = s.replace(`${R2_PUBLIC_BASE_URL}/`, "");
+        if (s.startsWith("http")) {
+          try {
+            const u = new URL(s);
+            s = u.pathname.replace(/^\/+/, "");
+          } catch (e) { return null; }
+        }
+        if (s.startsWith("api/photos/")) s = s.slice("api/photos/".length);
+        s = s.replace(/^\/+/, "");
+        try { s = decodeURIComponent(s); } catch (e) {}
+        return s || null;
+      };
+
+      const referenced = new Set();
+      for (const s of allData) {
+        for (const f of ["photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "storageKey"]) {
+          const k = normalizePhotoRef(s[f]);
+          if (k) referenced.add(k);
+        }
+        if (s.studentId) referenced.add(String(s.studentId).trim().replace(/[\/\\:*?"<>|\s]+/g, "_") + ".jpg");
+      }
+
+      const orphans = [];
+      for (const [key, size] of scan.keySet.entries()) {
+        if (key.startsWith("records/") || key === "live_registry.json" || key.startsWith("settings/")) continue;
+        const stripped = key.startsWith("api/photos/") ? key.slice("api/photos/".length) : key;
+        if (referenced.has(stripped) || referenced.has(key)) continue;
+        orphans.push({ path: key, size });
+      }
+      const orphanBytes = orphans.reduce((a, o) => a + o.size, 0);
+
+      let purgedCount = 0;
+      if (request.method === "POST") {
+        for (const o of orphans.slice(0, 3000)) {
+          try {
+            if (await deleteFromR2Bucket(o.path)) {
+              purgedCount++;
+              uploadedPhotos.delete(o.path);
+            }
+          } catch (e) {}
+        }
+        r2ScanCache.scannedAt = 0;
+        await writeAuditLog({
+          action: "STORAGE_ORPHAN_PURGE",
+          entityType: "Storage",
+          entityId: R2_BUCKET,
+          details: `Purged ${purgedCount} orphaned photos (${formatBytesSb(orphanBytes)}) from R2 bucket '${R2_BUCKET}'`,
+          user: await authenticateRequest(request),
+          ipAddress: request.headers.get("cf-connecting-ip") || null
+        }, ctx);
+      }
+
+      return new Response(JSON.stringify({
+        success: true,
+        message: request.method === "POST" ? `Purged ${purgedCount} orphaned photos. Storage is now synchronized.` : undefined,
+        totalStorageFiles: scan.totalObjects,
+        activeStudentsCount: allData.length,
+        activeFilesCount: Math.max(0, scan.totalObjects - orphans.length),
+        orphanedCount: orphans.length,
+        orphanedBytes,
+        orphanedSizeFormatted: formatBytesSb(orphanBytes),
+        orphanedFiles: orphans.slice(0, 200),
+        purgedCount: request.method === "POST" ? purgedCount : undefined
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
     }
 
     // -------------------------------------------------------------------------
@@ -1403,7 +1785,8 @@ export default {
         const studentId = (body.studentId || body.student_id || body.id || "").toString().trim();
         const grade = (body.grade || body.class || "General").toString().trim();
         const fullName = (body.fullName || body.full_name || body.name || studentId || "Student").toString().trim();
-        const photoKey = body.filename || body.fileName || body.file_name || body._fileName || `${(grade || "General").replace(/[\/\\:*?"<>|\s]+/g, "_")}/${(fullName || "Student").replace(/[\/\\:*?"<>|\s]+/g, "_")}.jpg`;
+        const uploadSettings = await getPlatformSettings();
+        const photoKey = body.filename || body.fileName || body.file_name || body._fileName || applyPhotoPathTemplate(uploadSettings.photoPathTemplate, { grade, fullName, studentId });
 
         if (!bytes && photoInput && typeof photoInput === "string") {
           let base64Data = photoInput.trim();
@@ -1457,6 +1840,25 @@ export default {
 
         if (studentId) {
           const photoUrl = `/api/photos/${photoKey}`;
+
+          // Snapshot previous cloud photo files so replaced portraits are purged from storage on edit
+          let uploadStaleRefs = [];
+          try {
+            const oldRefRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=photoPath,thumbnailPath,previewPath,originalPhotoPath,storageKey&or=(studentId.eq.${encodeURIComponent(studentId)},id.eq.${encodeURIComponent(studentId)})&limit=1`, {
+              headers: {
+                "apikey": SUPABASE_KEY,
+                "Authorization": `Bearer ${SUPABASE_KEY}`,
+                "Accept-Profile": "cloudflare"
+              }
+            });
+            if (oldRefRes.ok) {
+              const oldRows = await oldRefRes.json();
+              if (Array.isArray(oldRows) && oldRows[0]) {
+                uploadStaleRefs = [oldRows[0].photoPath, oldRows[0].thumbnailPath, oldRows[0].previewPath, oldRows[0].originalPhotoPath, oldRows[0].storageKey].filter(Boolean);
+              }
+            }
+          } catch (e) {}
+
           try {
             await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(studentId)},id.eq.${encodeURIComponent(studentId)})`, {
               method: "PATCH",
@@ -1502,7 +1904,24 @@ export default {
           } catch (e) {
             console.warn("Notice updating student record with HD photo:", e);
           }
+
+          if (uploadStaleRefs.length > 0) {
+            const uploadPurgePromise = purgeStaleStudentPhotos(uploadStaleRefs, photoKey, studentId);
+            if (ctx && typeof ctx.waitUntil === "function") {
+              ctx.waitUntil(uploadPurgePromise.catch(() => {}));
+            }
+          }
         }
+
+        await writeAuditLog({
+          action: studentId ? "PHOTO_UPLOADED" : "FILE_UPLOADED",
+          entityType: "Student",
+          entityId: studentId || photoKey,
+          details: `Photo '${photoKey}' (${(bytes.length / 1024).toFixed(0)} KB) uploaded by ${authUser ? authUser.username : "station"}`,
+          user: authUser,
+          ipAddress: request.headers.get("cf-connecting-ip") || null,
+          metadataExtra: { storageKey: photoKey, r2Url }
+        }, ctx);
 
         return new Response(JSON.stringify({
           success: true,
@@ -1828,6 +2247,16 @@ export default {
             timestamp: Date.now()
           })
         }).catch(() => {});
+
+        await writeAuditLog({
+          action: "STUDENT_CREATED",
+          entityType: "Student",
+          entityId: insertedRecord.studentId,
+          details: `Sent by ${insertedRecord.senderName}: ${insertedRecord.fullName} (${insertedRecord.grade}, ${insertedRecord.school})`,
+          user: authUser,
+          ipAddress: request.headers.get("cf-connecting-ip") || null,
+          metadataExtra: { via: "api-create", school: insertedRecord.school }
+        }, ctx);
 
         return new Response(JSON.stringify(insertedRecord), {
           status: 201,
@@ -2159,6 +2588,30 @@ export default {
 
         lastAllFetchTime = 0;
 
+        // Immutable per-send audit trail: one persistent log line per record transmitted by the APK
+        const sendIp = request.headers.get("cf-connecting-ip") || null;
+        const sendTime = new Date().toISOString();
+        const auditRows = dbBatch.map(s => {
+          const row = {
+            id: makeAuditId(),
+            userId: null,
+            action: "DATA_SENT",
+            entityType: "Student",
+            entityId: s.studentId,
+            metadata: JSON.stringify({
+              details: `Record sent by ${s.senderName}: ${s.fullName} (${s.grade}, ${s.school})`,
+              username: s.senderName || "warka12.apk",
+              role: "SENDER",
+              school: s.school,
+              via: "apk-sync"
+            }),
+            ipAddress: sendIp,
+            createdAt: sendTime
+          };
+          pushEdgeAuditLog(edgeRowToAuditLog(row));
+          return row;
+        });
+
         // Asynchronously upsert to Supabase in batches
         const syncSupabasePromise = (async () => {
           try {
@@ -2198,6 +2651,8 @@ export default {
               body: JSON.stringify(cleanBatch)
             });
 
+            await postAuditRowsToSupabase(auditRows);
+
             if (dbBatch.length > 0) {
               fetch("https://ntfy.sh/sb_prod_sync_cloudflare_r2_v1", {
                 method: "POST",
@@ -2234,11 +2689,15 @@ export default {
     // 3D. GET STUDENTS SYNC (warka12.apk Native Integration)
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/students/sync" && request.method === "GET") {
-      const schoolFilter = (url.searchParams.get("school") || "").trim().toLowerCase();
+      // Warka Academy scope is authoritative for the native APK feed.
+      // Explicit ?school=<name> overrides; ?school=ALL opens the full multi-school registry.
+      const settings = await getPlatformSettings();
+      const rawSchool = url.searchParams.get("school");
+      const schoolFilter = (rawSchool === null ? (settings.syncSchool || "Warka") : rawSchool).trim().toLowerCase();
       let all = await getAllStudentsDataset(env, request.url);
 
       let list = all.filter(s => !s.receiverHidden);
-      if (schoolFilter) {
+      if (schoolFilter && schoolFilter !== "all") {
         list = list.filter(s => (s.school || "").toLowerCase().includes(schoolFilter));
       }
       list.forEach(normalizeStudentPhoneFields);
@@ -2246,6 +2705,7 @@ export default {
       return new Response(JSON.stringify({
         success: true,
         count: list.length,
+        school: rawSchool === null ? (settings.syncSchool || "Warka") : rawSchool,
         students: list
       }), {
         status: 200,
@@ -2277,12 +2737,15 @@ export default {
           receivedAt: new Date().toISOString()
         };
 
-        edgeAuditLogs.unshift({
+        await writeAuditLog({
           action: "ATTENDANCE_LOGGED",
+          entityType: "Attendance",
+          entityId: eventItem.studentId,
           details: `${eventItem.studentName} (${eventItem.studentId}) - ${eventItem.eventType}`,
-          timestamp: new Date().toISOString(),
-          user: "warka12.apk"
-        });
+          user: { username: "warka12.apk", role: "SENDER" },
+          ipAddress: request.headers.get("cf-connecting-ip") || null,
+          metadataExtra: { dateString: eventItem.dateString, timeString: eventItem.timeString }
+        }, ctx);
 
         fetch("https://ntfy.sh/sb_prod_sync_cloudflare_r2_v1", {
           method: "POST",
@@ -2326,10 +2789,31 @@ export default {
 
         // Automatically store base64 biometric photo in Cloudflare R2 bucket 'siliconlabs'
         let rawPhoto = updates.previewPath || updates.photoPath;
+        let stalePhotoRefs = [];
+        let newPhotoKeyForPurge = null;
         if (rawPhoto && typeof rawPhoto === "string" && rawPhoto.startsWith("data:image")) {
+          // Snapshot the student's previous cloud photo references so the old files are purged on replacement
+          try {
+            const oldRefRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=photoPath,thumbnailPath,previewPath,originalPhotoPath,storageKey&or=(studentId.eq.${encodeURIComponent(studentId)},id.eq.${encodeURIComponent(studentId)})&limit=1`, {
+              headers: {
+                "apikey": SUPABASE_KEY,
+                "Authorization": `Bearer ${SUPABASE_KEY}`,
+                "Accept-Profile": "cloudflare"
+              }
+            });
+            if (oldRefRes.ok) {
+              const oldRows = await oldRefRes.json();
+              if (Array.isArray(oldRows) && oldRows[0]) {
+                stalePhotoRefs = [oldRows[0].photoPath, oldRows[0].thumbnailPath, oldRows[0].previewPath, oldRows[0].originalPhotoPath, oldRows[0].storageKey].filter(Boolean);
+              }
+            }
+          } catch (e) {}
+
+          const patchSettings = await getPlatformSettings();
           const cleanGrade = (updates.grade || "General").trim().replace(/[\/\\:*?"<>|\s]+/g, "_");
           const cleanName = (updates.fullName || studentId || "Student").trim().replace(/[\/\\:*?"<>|\s]+/g, "_");
-          const photoKey = `${cleanGrade}/${cleanName}.jpg`;
+          const photoKey = applyPhotoPathTemplate(patchSettings.photoPathTemplate, { grade: cleanGrade, fullName: cleanName, studentId });
+          newPhotoKeyForPurge = photoKey;
 
           try {
             let base64Data = rawPhoto;
@@ -2448,6 +2932,14 @@ export default {
           console.warn("Supabase student PATCH notice:", sbErr);
         }
 
+        // Purge the replaced photo's stale cloud objects (shared files are kept)
+        if (stalePhotoRefs.length > 0 && newPhotoKeyForPurge) {
+          const purgePromise = purgeStaleStudentPhotos(stalePhotoRefs, newPhotoKeyForPurge, studentId);
+          if (ctx && typeof ctx.waitUntil === "function") {
+            ctx.waitUntil(purgePromise.catch(() => {}));
+          }
+        }
+
         // Broadcast edit to all connected stations in real-time
         const ntfyCleanEdit = { ...mergedStudent };
         delete ntfyCleanEdit.capturedPhoto;
@@ -2457,6 +2949,15 @@ export default {
           headers: { "Title": `STUDENT_UPDATED_${studentId}`, "Priority": "default" },
           body: JSON.stringify({ action: "UPSERT", student: ntfyCleanEdit, timestamp: Date.now() })
         }).catch(() => {});
+
+        await writeAuditLog({
+          action: "STUDENT_UPDATED",
+          entityType: "Student",
+          entityId: studentId,
+          details: `Edited fields: ${Object.keys(updates).filter(k => k !== "capturedPhoto" && k !== "photoBase64").join(", ")}`,
+          user: authUser,
+          ipAddress: request.headers.get("cf-connecting-ip") || null
+        }, ctx);
 
         return new Response(JSON.stringify(mergedStudent || updates), {
           headers: { "Content-Type": "application/json", ...corsHeaders }
@@ -2554,13 +3055,22 @@ export default {
             body: JSON.stringify({ action: "RESTORE", studentId: targetId, timestamp: Date.now() })
           }).catch(() => {});
 
+          await writeAuditLog({
+            action: "STUDENT_RESTORED",
+            entityType: "Student",
+            entityId: targetId,
+            details: `Student ${targetId} restored from hidden state`,
+            user: authUser,
+            ipAddress: request.headers.get("cf-connecting-ip") || null
+          }, ctx);
+
           return new Response(JSON.stringify({ success: true, restored: true, studentId: targetId }), {
             headers: { "Content-Type": "application/json", ...corsHeaders }
           });
         }
 
         if (isPermanent) {
-          // 1. PERMANENT DELETE (Purge from Everywhere: Supabase + Cloudflare R2 + Edge Cache + Local)
+          // 1. PERMANENT DELETE (Purge from Everywhere: Supabase + R2 photos + records + Edge Cache)
           edgeDeletedStudents.add(tLower);
           edgeHiddenStudents.delete(tLower);
           lastAllFetchTime = 0; // Force immediate cache invalidation
@@ -2574,8 +3084,62 @@ export default {
             cachedStudents = cachedStudents.filter(s => (s.studentId || "").toLowerCase() !== tLower && (s.id || "").toLowerCase() !== tLower);
           }
 
+          // Snapshot the target's photo references before wiping the row
+          const localMatch = (cachedAllStudents || []).find(s => (s.studentId || "").toLowerCase() === tLower || (s.id || "").toLowerCase() === tLower)
+            || customStudents.find(s => (s.studentId || "").toLowerCase() === tLower || (s.id || "").toLowerCase() === tLower);
+
+          const stripPhotoRef = (p) => {
+            if (!p) return null;
+            let s = String(p).trim();
+            if (!s) return null;
+            if (s.includes(R2_PUBLIC_BASE_URL)) s = s.replace(`${R2_PUBLIC_BASE_URL}/`, "");
+            if (s.startsWith("http")) {
+              try { s = new URL(s).pathname.replace(/^\/+/, ""); } catch (e) { return null; }
+            }
+            if (s.startsWith("api/photos/")) s = s.slice("api/photos/".length);
+            s = s.replace(/^\/+/, "");
+            try { s = decodeURIComponent(s); } catch (e) {}
+            return s || null;
+          };
+
+          const photoKeys = new Set();
+          for (const f of ["photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "storageKey"]) {
+            const k = stripPhotoRef(localMatch && localMatch[f]);
+            if (k) photoKeys.add(k);
+          }
+
           // Offload remote async network operations to background via ctx.waitUntil
           const bgDeletePromise = (async () => {
+            let cloudPurged = [];
+            let cloudSkipped = [];
+            try {
+              // Authoritative reference snapshot straight from Supabase (row still present)
+              const preRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=photoPath,thumbnailPath,previewPath,originalPhotoPath,storageKey,fullName,grade&id=or.(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
+                headers: {
+                  "apikey": SUPABASE_KEY,
+                  "Authorization": `Bearer ${SUPABASE_KEY}`,
+                  "Accept-Profile": "cloudflare"
+                }
+              });
+              if (preRes.ok) {
+                const rows = await preRes.json();
+                (Array.isArray(rows) ? rows : []).forEach(row => {
+                  for (const f of ["photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "storageKey"]) {
+                    const k = stripPhotoRef(row[f]);
+                    if (k) photoKeys.add(k);
+                  }
+                  const cn = (row.fullName || "").trim().replace(/[\/\\:*?"<>|\s]+/g, "_");
+                  if (cn) photoKeys.add(`${cn}.jpg`);
+                });
+              }
+            } catch (e) {}
+
+            const cleanAlias = (localMatch && localMatch.fullName ? String(localMatch.fullName).trim().replace(/[\/\\:*?"<>|\s]+/g, "_") : "");
+            if (cleanAlias) photoKeys.add(`${cleanAlias}.jpg`);
+            photoKeys.add(`${targetId}.jpg`);
+            photoKeys.add(`records/${targetId}.json`);
+
+            // 1. Delete the PostgreSQL row
             try {
               await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
                 method: "DELETE",
@@ -2588,22 +3152,65 @@ export default {
               });
             } catch (e) {}
 
-            try {
-              await deleteFromR2Bucket(`records/${targetId}.json`);
-            } catch (e) {}
+            // 2. Purge every cloud photo object, unless another remaining student still references it
+            for (const key of photoKeys) {
+              try {
+                if (key.startsWith("records/")) {
+                  if (await deleteFromR2Bucket(key)) cloudPurged.push(key);
+                  continue;
+                }
+                const q = `or=(photoPath.eq.${encodeURIComponent(key)},photoPath.eq.%2Fapi%2Fphotos%2F${encodeURIComponent(key)},thumbnailPath.eq.${encodeURIComponent(key)},previewPath.eq.${encodeURIComponent(key)},originalPhotoPath.eq.${encodeURIComponent(key)},storageKey.eq.${encodeURIComponent(key)})`;
+                const refRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=id&${q}&limit=1`, {
+                  headers: {
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": `Bearer ${SUPABASE_KEY}`,
+                    "Accept-Profile": "cloudflare"
+                  }
+                });
+                if (refRes.ok) {
+                  const remaining = await refRes.json();
+                  if (Array.isArray(remaining) && remaining.length > 0) {
+                    cloudSkipped.push(key);
+                    continue;
+                  }
+                }
+                uploadedPhotos.delete(key);
+                if (await deleteFromR2Bucket(key)) cloudPurged.push(key);
+              } catch (e) {
+                console.warn("permanent photo purge notice:", key, e);
+              }
+            }
+
+            r2ScanCache.scannedAt = 0;
 
             fetch("https://ntfy.sh/sb_prod_sync_cloudflare_r2_v1", {
               method: "POST",
               headers: { "Title": `STUDENT_DELETED_${targetId}`, "Priority": "high" },
-              body: JSON.stringify({ action: "DELETE_PERMANENT", studentId: targetId, timestamp: Date.now() })
+              body: JSON.stringify({ action: "DELETE_PERMANENT", studentId: targetId, purgedCloudFiles: cloudPurged.length, timestamp: Date.now() })
             }).catch(() => {});
+
+            await writeAuditLog({
+              action: "STUDENT_DELETED_PERMANENT",
+              entityType: "Student",
+              entityId: targetId,
+              details: `Permanent purge completed: database row removed, ${cloudPurged.length} cloud files deleted from R2 (${cloudPurged.slice(0, 4).join(", ")})${cloudSkipped.length ? `, ${cloudSkipped.length} shared file(s) kept` : ""}`,
+              user: authUser,
+              ipAddress: request.headers.get("cf-connecting-ip") || null,
+              metadataExtra: { purgedFiles: cloudPurged.slice(0, 20) }
+            }, null);
           })();
 
           if (ctx && typeof ctx.waitUntil === 'function') {
             ctx.waitUntil(bgDeletePromise);
           }
 
-          return new Response(JSON.stringify({ success: true, permanent: true, deletedId: targetId }), {
+          return new Response(JSON.stringify({
+            success: true,
+            permanent: true,
+            deletedId: targetId,
+            cloudPurgeInitiated: true,
+            message: `Student ${targetId} permanently deleted from the database and cloud storage.`
+          }), {
             headers: { "Content-Type": "application/json", ...corsHeaders }
           });
         } else {
@@ -2669,6 +3276,15 @@ export default {
             headers: { "Title": `STUDENT_HIDDEN_${targetId}`, "Priority": "default" },
             body: JSON.stringify({ action: "TEMPORARY_DELETE", studentId: targetId, timestamp: Date.now() })
           }).catch(() => {});
+
+          await writeAuditLog({
+            action: "STUDENT_HIDDEN",
+            entityType: "Student",
+            entityId: targetId,
+            details: `Student ${targetId} temporarily hidden (data preserved in cloud)`,
+            user: authUser,
+            ipAddress: request.headers.get("cf-connecting-ip") || null
+          }, ctx);
 
           return new Response(JSON.stringify({ success: true, temporary: true, studentId: targetId }), {
             headers: { "Content-Type": "application/json", ...corsHeaders }
@@ -3044,53 +3660,52 @@ export default {
     // 9. TELEMETRY & STATS
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/stats") {
+      const statsStart = Date.now();
+      const schoolParam = (url.searchParams.get("school") || "ALL").trim();
+      const schoolQ = schoolParam && schoolParam !== "ALL" ? `&school=ilike.*${encodeURIComponent(schoolParam)}*` : "";
+
       let totalStudents = (cachedStudents || []).length;
       let todayRecords = 0;
       let totalPhotos = 0;
 
       const todayStr = new Date().toISOString().substring(0, 10);
 
-      try {
-        const countRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=count`, {
-          headers: {
-            "apikey": SUPABASE_KEY,
-            "Authorization": `Bearer ${SUPABASE_KEY}`,
-            "Accept-Profile": "cloudflare",
-            "Prefer": "count=exact"
-          }
-        });
-        const range = countRes.headers.get("content-range");
-        if (range) totalStudents = parseInt(range.split("/")[1], 10);
+      const countStudentsQuery = async (extraFilters) => {
+        try {
+          const r = await fetch(`${SUPABASE_URL}/rest/v1/students?select=id&limit=1${extraFilters}`, {
+            headers: {
+              "apikey": SUPABASE_KEY,
+              "Authorization": `Bearer ${SUPABASE_KEY}`,
+              "Accept-Profile": "cloudflare",
+              "Prefer": "count=exact"
+            }
+          });
+          const range = r.headers.get("content-range");
+          if (range && range.includes("/")) return parseInt(range.split("/")[1], 10) || 0;
+        } catch (e) {}
+        return null;
+      };
 
-        // Count verified photos
-        const photoRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=count&photoIntegrityStatus=eq.PHOTO_VERIFIED`, {
-          headers: {
-            "apikey": SUPABASE_KEY,
-            "Authorization": `Bearer ${SUPABASE_KEY}`,
-            "Accept-Profile": "cloudflare",
-            "Prefer": "count=exact"
-          }
-        });
-        const pRange = photoRes.headers.get("content-range");
-        if (pRange) totalPhotos = parseInt(pRange.split("/")[1], 10);
-        else totalPhotos = Math.max(0, totalStudents - 40);
+      const [totalCount, photoVerifiedCount, todayCount] = await Promise.all([
+        countStudentsQuery(schoolQ),
+        countStudentsQuery(`&photoIntegrityStatus=eq.PHOTO_VERIFIED${schoolQ}`),
+        countStudentsQuery(`&createdAt=gte.${todayStr}T00:00:00${schoolQ}`)
+      ]);
 
-        // Count today's records
-        const todayRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=count&createdAt=gte.${todayStr}T00:00:00`, {
-          headers: {
-            "apikey": SUPABASE_KEY,
-            "Authorization": `Bearer ${SUPABASE_KEY}`,
-            "Accept-Profile": "cloudflare",
-            "Prefer": "count=exact"
-          }
-        });
-        const tRange = todayRes.headers.get("content-range");
-        if (tRange) todayRecords = parseInt(tRange.split("/")[1], 10);
-      } catch (e) {}
+      if (totalCount !== null) totalStudents = totalCount;
+      if (todayCount !== null) todayRecords = todayCount;
+      if (photoVerifiedCount !== null) {
+        totalPhotos = Math.min(photoVerifiedCount, totalStudents);
+      } else {
+        const fallbackPhotos = await countStudentsQuery(`&photoPath=not.is.null${schoolQ}`);
+        if (fallbackPhotos !== null) totalPhotos = Math.min(fallbackPhotos, totalStudents);
+      }
 
+      const scan = await ensureR2Scan(false);
       const missingPhotos = Math.max(0, totalStudents - totalPhotos);
 
       return new Response(JSON.stringify({
+        school: schoolParam,
         totalStudents,
         totalPhotos,
         missingPhotos,
@@ -3099,14 +3714,14 @@ export default {
         monthlyRecords: totalStudents,
         pendingReview: missingPhotos,
         acceptanceRate: totalStudents > 0 ? ((totalPhotos / totalStudents) * 100).toFixed(1) + "%" : "100%",
-        storageUsedBytes: cachedR2Stats.totalBytes,
-        storageUsedMB: Number((cachedR2Stats.totalBytes / (1024 * 1024)).toFixed(2)),
-        storageUsedGB: Number((cachedR2Stats.totalBytes / (1024 * 1024 * 1024)).toFixed(3)),
-        storageFormatted: `${(cachedR2Stats.totalBytes / (1024 * 1024)).toFixed(2)} MB (${(cachedR2Stats.totalBytes / (1024 * 1024 * 1024)).toFixed(2)} GB)`,
-        r2TotalObjects: cachedR2Stats.totalObjects,
-        r2Bucket: "siliconlabs",
-        r2RealStorageVerified: true,
-        queryLatencyMs: 0.8
+        storageUsedBytes: scan.totalBytes,
+        storageUsedMB: Number((scan.totalBytes / (1024 * 1024)).toFixed(2)),
+        storageUsedGB: Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(3)),
+        storageFormatted: `${formatBytesSb(scan.totalBytes)} (${(scan.totalBytes / 1073741824).toFixed(2)} GB)`,
+        r2TotalObjects: scan.totalObjects,
+        r2Bucket: R2_BUCKET,
+        r2RealStorageVerified: scan.scannedAt > 0,
+        queryLatencyMs: Date.now() - statsStart
       }), {
         headers: { "Content-Type": "application/json", ...corsHeaders }
       });
@@ -3116,16 +3731,18 @@ export default {
     // 9B. REAL-TIME CLOUDFLARE R2 CAPACITY AUDIT & REAL SIZE INSPECTION
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/storage/real-size" || url.pathname === "/api/r2/stats") {
+      const scan = await ensureR2Scan(url.searchParams.get("refresh") === "true");
       return new Response(JSON.stringify({
         success: true,
         bucket: R2_BUCKET,
-        totalObjects: cachedR2Stats.totalObjects,
-        totalBytes: cachedR2Stats.totalBytes,
-        totalMB: Number((cachedR2Stats.totalBytes / (1024 * 1024)).toFixed(2)),
-        totalGB: Number((cachedR2Stats.totalBytes / (1024 * 1024 * 1024)).toFixed(3)),
-        formatted: `${(cachedR2Stats.totalBytes / (1024 * 1024)).toFixed(2)} MB (${(cachedR2Stats.totalBytes / (1024 * 1024 * 1024)).toFixed(2)} GB)`,
-        verified: true,
-        lastScanned: new Date(cachedR2Stats.lastScanned).toISOString()
+        totalObjects: scan.totalObjects,
+        totalBytes: scan.totalBytes,
+        totalMB: Number((scan.totalBytes / (1024 * 1024)).toFixed(2)),
+        totalGB: Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(3)),
+        formatted: `${formatBytesSb(scan.totalBytes)} (${(scan.totalBytes / 1073741824).toFixed(2)} GB)`,
+        verified: scan.scannedAt > 0,
+        byPrefix: scan.byPrefix,
+        lastScanned: scan.scannedAt ? new Date(scan.scannedAt).toISOString() : null
       }), {
         headers: { "Content-Type": "application/json", ...corsHeaders }
       });
@@ -3702,8 +4319,97 @@ export default {
       }
     }
 
-    if (url.pathname === "/api/audit-logs") {
-      return new Response(JSON.stringify(edgeAuditLogs), { headers: { "Content-Type": "application/json", ...corsHeaders } });
+    if (url.pathname === "/api/audit-logs" && request.method === "GET") {
+      const serverLogs = await fetchPersistentAuditLogs(500);
+      const byId = new Map();
+      for (const l of [...edgeAuditLogs, ...serverLogs]) {
+        const id = l.id || `edge-${l.timestamp || l.createdAt}-${l.action}`;
+        const createdAt = l.createdAt || l.timestamp;
+        const userObj = (l.user && typeof l.user === "object")
+          ? l.user
+          : { username: typeof l.user === "string" ? l.user : "SYSTEM", role: "SYSTEM" };
+        const metadata = l.metadata !== undefined && l.metadata !== null
+          ? l.metadata
+          : (l.details !== undefined ? String(l.details) : null);
+        byId.set(id, {
+          id,
+          action: l.action,
+          entityType: l.entityType || "Student",
+          entityId: l.entityId || null,
+          metadata,
+          ipAddress: l.ipAddress || null,
+          createdAt,
+          user: userObj
+        });
+      }
+      const merged = Array.from(byId.values())
+        .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+        .slice(0, 800);
+      return new Response(JSON.stringify(merged), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-cache, no-store, must-revalidate", ...corsHeaders }
+      });
+    }
+
+    if (url.pathname === "/api/audit-logs" && request.method === "DELETE") {
+      try {
+        await fetch(`${SUPABASE_URL}/rest/v1/audit_logs?id=not.is.null`, {
+          method: "DELETE",
+          headers: {
+            "apikey": SUPABASE_KEY,
+            "Authorization": `Bearer ${SUPABASE_KEY}`,
+            "Content-Profile": "cloudflare",
+            "Accept-Profile": "cloudflare"
+          }
+        });
+      } catch (e) {}
+      edgeAuditLogs = [];
+      return new Response(JSON.stringify({ success: true, purged: true }), {
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+
+    // -------------------------------------------------------------------------
+    // 12B. PLATFORM SETTINGS (photo path template, sync scope) — R2 persisted
+    // -------------------------------------------------------------------------
+    if (url.pathname === "/api/settings" && request.method === "GET") {
+      const settings = await getPlatformSettings();
+      return new Response(JSON.stringify(settings), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-cache, no-store, must-revalidate", ...corsHeaders }
+      });
+    }
+
+    if (url.pathname === "/api/settings" && request.method === "POST") {
+      const authUser = await authenticateRequest(request);
+      const authErr = requireAuthorization(authUser, ["RECEIVER", "ADMIN", "SUPER_ADMIN"]);
+      if (authErr) return authErr;
+      try {
+        const body = await parseRequestBody(request);
+        const patch = {};
+        if (typeof body.photoPathTemplate === "string" && body.photoPathTemplate.trim()) {
+          const t = body.photoPathTemplate.trim();
+          if (!/\{(?:grade|name|id)\}/i.test(t)) {
+            return new Response(JSON.stringify({ error: "photoPathTemplate must contain at least one of {grade}, {name}, {id}" }), {
+              status: 400, headers: { "Content-Type": "application/json", ...corsHeaders }
+            });
+          }
+          patch.photoPathTemplate = t;
+        }
+        if (typeof body.syncSchool === "string" && body.syncSchool.trim()) patch.syncSchool = body.syncSchool.trim();
+        const saved = await savePlatformSettings(patch);
+        await writeAuditLog({
+          action: "SETTINGS_UPDATED",
+          entityType: "Settings",
+          entityId: "platform",
+          details: `Updated: ${Object.keys(patch).join(", ") || "none"}`,
+          user: authUser,
+          ipAddress: request.headers.get("cf-connecting-ip") || null
+        }, ctx);
+        return new Response(JSON.stringify(saved), {
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 400, headers: { "Content-Type": "application/json", ...corsHeaders } });
+      }
     }
 
     // -------------------------------------------------------------------------

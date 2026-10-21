@@ -1,779 +1,647 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   HardDrive,
-  CheckCircle2,
-  RefreshCw,
-  Server,
-  Shield,
-  ExternalLink,
-  Image,
-  AlertCircle,
-  Globe,
-  Activity,
-  Zap,
-  TrendingUp,
-  Clock,
-  Check,
-  AlertTriangle,
-  Sliders,
-  DollarSign,
-  Layers,
   Database,
-  ArrowUpRight,
-  Info
+  RefreshCw,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+  AlertTriangle,
+  Clock,
+  FolderTree,
+  ShieldCheck,
+  Image as ImageIcon,
+  Boxes,
+  ChevronDown,
+  ChevronUp,
+  ArrowUpDown
 } from 'lucide-react';
-import { getStudents } from '@/lib/store';
-import { R2_PUBLIC_BASE_URL } from '@/lib/syncEngine';
+
+/* ------------------------------------------------------------------ */
+/* Payload shape served by /api/admin/supabase-status                  */
+/* ------------------------------------------------------------------ */
+
+interface FolderStat {
+  name: string;
+  fileCount: number;
+  sizeBytes: number;
+  sizeFormatted: string;
+}
+
+interface DatabaseStats {
+  studentsCount?: number;
+  studentsWithPhotos?: number;
+  studentsWithoutPhotos?: number;
+  usersCount?: number;
+  batchesCount?: number;
+  auditLogsCount?: number;
+  studentPhotosCatalogCount?: number;
+  totalDatabaseRecords?: number;
+}
+
+interface StorageStatusData {
+  databaseConnected?: boolean;
+  databaseLatencyMs?: number;
+  storageConnected?: boolean;
+  storageBucket?: string;
+  storageProvider?: string;
+  storagePublicBaseUrl?: string;
+  storageFileCount?: number;
+  storageSizeBytes?: number;
+  storageSizeFormatted?: string;
+  storageFolders?: FolderStat[];
+  database?: DatabaseStats;
+  lastActivity?: string;
+  timestamp?: string;
+}
+
+interface EdgeRealSizeData {
+  success?: boolean;
+  bucket?: string;
+  totalObjects?: number;
+  totalBytes?: number;
+  formatted?: string;
+  verified?: boolean;
+  lastScanned?: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Formatting helpers (never fabricate — null renders as em dash)      */
+/* ------------------------------------------------------------------ */
+
+const fmtInt = (n: number | null | undefined): string =>
+  typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString() : '—';
+
+const fmtBytes = (bytes: number | null | undefined): string => {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes)) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(2)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+};
+
+const fmtTime = (iso: string | null | undefined): string => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+};
+
+const pctOf = (part: number, total: number): number =>
+  total > 0 && Number.isFinite(part) ? Math.min((part / total) * 100, 100) : 0;
+
+/* ------------------------------------------------------------------ */
+/* Reusable primitives                                                  */
+/* ------------------------------------------------------------------ */
+
+const SectionCard: React.FC<{
+  icon: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  aside?: React.ReactNode;
+  children: React.ReactNode;
+}> = ({ icon, title, subtitle, aside, children }) => (
+  <section className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#161d19] shadow-xs">
+    <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-3 border-b border-[#dce7e1] dark:border-[#223126]">
+      <div className="flex items-center gap-2.5">
+        <span className="text-[#366804] dark:text-[#8fe617]">{icon}</span>
+        <div>
+          <h2 className="text-sm font-bold tracking-tight text-[#0B1118] dark:text-white">{title}</h2>
+          {subtitle && (
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{subtitle}</p>
+          )}
+        </div>
+      </div>
+      {aside}
+    </header>
+    <div className="p-4">{children}</div>
+  </section>
+);
+
+const StatCell: React.FC<{ label: string; value: string; sub?: string; accent?: boolean }> = ({
+  label,
+  value,
+  sub,
+  accent = false
+}) => (
+  <div className="bg-[#f7faf9] dark:bg-[#161d19] border border-[#dce7e1] dark:border-[#223126] p-3.5">
+    <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+      {label}
+    </span>
+    <span
+      className={`block text-xl font-black mt-1 tabular-nums ${
+        accent ? 'text-[#366804] dark:text-[#9EE617]' : 'text-[#0B1118] dark:text-white'
+      }`}
+    >
+      {value}
+    </span>
+    {sub && <span className="block text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{sub}</span>}
+  </div>
+);
+
+/* ------------------------------------------------------------------ */
+/* Page                                                                 */
+/* ------------------------------------------------------------------ */
+
+type PrefixSortKey = 'size' | 'files' | 'name';
 
 export const SuperAdminStoragePage: React.FC = () => {
-  const students = getStudents();
-  const withPhoto = students.filter(s => s.photoPath).length;
-  const missingPhoto = students.length - withPhoto;
+  const [data, setData] = useState<StorageStatusData | null>(null);
+  const [edgeStats, setEdgeStats] = useState<EdgeRealSizeData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<PrefixSortKey>('size');
+  const [sortDesc, setSortDesc] = useState(true);
 
-  const [testingCdn, setTestingCdn] = useState(false);
-  const [cdnStatus, setCdnStatus] = useState<'Operational' | 'Testing' | 'Error'>('Operational');
-  const [latencyMs, setLatencyMs] = useState<number>(42);
-  const [domainStatus, setDomainStatus] = useState<any>({
-    domain: 'student-bridge.pages.dev',
-    ssl: 'Active (Universal SSL)',
-    status: 'Online',
-    edgeColo: 'ADD / FRA',
-    httpVersion: 'HTTP/3 Quic'
-  });
-  const [testUploadResult, setTestUploadResult] = useState<{
-    status: 'idle' | 'uploading' | 'success' | 'error';
-    url?: string;
-    message?: string;
-  }>({
-    status: 'idle'
-  });
-
-  // Interactive Burn-Rate Simulation State
-  // Default simulate based on current today's registrations or benchmark 100/day
-  const [simulatedDailyPace, setSimulatedDailyPace] = useState<number>(100);
-
-  // Constants for Free Tier Limits
-  const R2_STORAGE_LIMIT_GB = 10; // 10 GB Free Storage
-  const R2_STORAGE_LIMIT_BYTES = R2_STORAGE_LIMIT_GB * 1024 * 1024 * 1024;
-  const R2_CLASS_A_LIMIT_MONTHLY = 1000000; // 1M writes/uploads per month
-  const R2_CLASS_B_LIMIT_MONTHLY = 10000000; // 10M reads per month
-  const SUPABASE_DB_LIMIT_MB = 500; // 500 MB DB storage
-  const SUPABASE_ROW_LIMIT = 500000; // 500k rows
-  const AVG_PORTRAIT_SIZE_KB = 48; // average optimized WebP/JPEG portrait
-  const AVG_DB_ROW_SIZE_KB = 2.4; // student row + metadata + audit log
-
-  // Computed Real Storage Metrics
-  const currentPhotoStorageBytes = useMemo(() => {
-    return withPhoto * AVG_PORTRAIT_SIZE_KB * 1024;
-  }, [withPhoto]);
-
-  const currentPhotoStorageMB = useMemo(() => {
-    return Number((currentPhotoStorageBytes / (1024 * 1024)).toFixed(2));
-  }, [currentPhotoStorageBytes]);
-
-  const currentPhotoStorageGB = useMemo(() => {
-    return Number((currentPhotoStorageBytes / (1024 * 1024 * 1024)).toFixed(3));
-  }, [currentPhotoStorageBytes]);
-
-  const storageUsedPercent = useMemo(() => {
-    return Number(((currentPhotoStorageBytes / R2_STORAGE_LIMIT_BYTES) * 100).toFixed(2));
-  }, [currentPhotoStorageBytes, R2_STORAGE_LIMIT_BYTES]);
-
-  const remainingStorageGB = useMemo(() => {
-    return Number((R2_STORAGE_LIMIT_GB - currentPhotoStorageGB).toFixed(2));
-  }, [currentPhotoStorageGB]);
-
-  // Zero-Egress Calculations
-  const estimatedMonthlyEgressMB = useMemo(() => {
-    // Estimated reads: each student photo viewed ~4 times during review/print
-    return Number(((withPhoto * 4 * AVG_PORTRAIT_SIZE_KB) / 1024).toFixed(1));
-  }, [withPhoto]);
-
-  const awsS3CostAvoidance = useMemo(() => {
-    // AWS S3 charges $0.09 per GB egress after first 100GB
-    // Cloudflare R2 is strictly $0.00
-    const egressGB = estimatedMonthlyEgressMB / 1024;
-    return (egressGB * 0.09).toFixed(2);
-  }, [estimatedMonthlyEgressMB]);
-
-  // Operations
-  const estimatedClassAOps = useMemo(() => {
-    // Each student registration + edits = ~2 Class A ops
-    return withPhoto * 2 + 150;
-  }, [withPhoto]);
-
-  const classAUsedPercent = useMemo(() => {
-    return Number(((estimatedClassAOps / R2_CLASS_A_LIMIT_MONTHLY) * 100).toFixed(3));
-  }, [estimatedClassAOps]);
-
-  const estimatedClassBOps = useMemo(() => {
-    // Views and ID badge cards rendering
-    return withPhoto * 12 + 450;
-  }, [withPhoto]);
-
-  const classBUsedPercent = useMemo(() => {
-    return Number(((estimatedClassBOps / R2_CLASS_B_LIMIT_MONTHLY) * 100).toFixed(3));
-  }, [estimatedClassBOps]);
-
-  // Supabase Database Free Tier Metrics
-  const estimatedDbStorageMB = useMemo(() => {
-    return Number(((students.length * AVG_DB_ROW_SIZE_KB) / 1024).toFixed(2));
-  }, [students.length]);
-
-  const dbStorageUsedPercent = useMemo(() => {
-    return Number(((estimatedDbStorageMB / SUPABASE_DB_LIMIT_MB) * 100).toFixed(2));
-  }, [estimatedDbStorageMB]);
-
-  const dbRowUsedPercent = useMemo(() => {
-    return Number(((students.length / SUPABASE_ROW_LIMIT) * 100).toFixed(2));
-  }, [students.length]);
-
-  // Predictive Exhaustion Calculations based on simulatedDailyPace
-  const predictions = useMemo(() => {
-    const dailyPace = simulatedDailyPace || 1;
-    const dailyStorageGrowthMB = (dailyPace * AVG_PORTRAIT_SIZE_KB) / 1024;
-    const dailyStorageGrowthGB = dailyStorageGrowthMB / 1024;
-    const remainingMB = (R2_STORAGE_LIMIT_GB * 1024) - currentPhotoStorageMB;
-
-    const daysUntilR2StorageLimit = Math.max(1, Math.round(remainingMB / dailyStorageGrowthMB));
-    const yearsUntilR2StorageLimit = (daysUntilR2StorageLimit / 365).toFixed(1);
-
-    const monthlyClassAFromPace = dailyPace * 30 * 2; // 2 writes per student
-    const classAMonthlyUsagePercent = Number(((monthlyClassAFromPace / R2_CLASS_A_LIMIT_MONTHLY) * 100).toFixed(1));
-
-    const dailyDbGrowthMB = (dailyPace * AVG_DB_ROW_SIZE_KB) / 1024;
-    const remainingDbMB = SUPABASE_DB_LIMIT_MB - estimatedDbStorageMB;
-    const daysUntilDbLimit = Math.max(1, Math.round(remainingDbMB / dailyDbGrowthMB));
-    const yearsUntilDbLimit = (daysUntilDbLimit / 365).toFixed(1);
-
-    // Projected storage footprints
-    const storageAt30DaysMB = Number((currentPhotoStorageMB + (dailyStorageGrowthMB * 30)).toFixed(1));
-    const storageAt90DaysMB = Number((currentPhotoStorageMB + (dailyStorageGrowthMB * 90)).toFixed(1));
-    const storageAt180DaysMB = Number((currentPhotoStorageMB + (dailyStorageGrowthMB * 180)).toFixed(1));
-    const storageAt365DaysGB = Number(((currentPhotoStorageMB + (dailyStorageGrowthMB * 365)) / 1024).toFixed(2));
-
-    const isStorageSafe = daysUntilR2StorageLimit > 180;
-    const isClassASafe = monthlyClassAFromPace < R2_CLASS_A_LIMIT_MONTHLY;
-    const isDbSafe = daysUntilDbLimit > 180;
-
-    return {
-      dailyStorageGrowthMB: dailyStorageGrowthMB.toFixed(2),
-      daysUntilR2StorageLimit,
-      yearsUntilR2StorageLimit,
-      monthlyClassAFromPace,
-      classAMonthlyUsagePercent,
-      daysUntilDbLimit,
-      yearsUntilDbLimit,
-      storageAt30DaysMB,
-      storageAt90DaysMB,
-      storageAt180DaysMB,
-      storageAt365DaysGB,
-      isStorageSafe,
-      isClassASafe,
-      isDbSafe
-    };
-  }, [simulatedDailyPace, currentPhotoStorageMB, estimatedDbStorageMB]);
-
-  const checkLiveCloudflareTelemetry = async () => {
-    setTestingCdn(true);
-    setCdnStatus('Testing');
-    const start = performance.now();
+  const load = useCallback(async (force: boolean) => {
+    if (force) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    setError(null);
 
     try {
-      const res = await fetch('/api/storage/status').catch(() => null);
-      if (res && res.ok) {
-        setLatencyMs(Math.round(performance.now() - start));
-        setCdnStatus('Operational');
-      } else {
-        await fetch(`${R2_PUBLIC_BASE_URL}/health_probe.txt`, { method: 'HEAD', mode: 'no-cors' }).catch(() => null);
-        setLatencyMs(Math.round(performance.now() - start));
-        setCdnStatus('Operational');
+      const res = await fetch(
+        `/api/admin/supabase-status${force ? '?refresh=true' : ''}`,
+        { cache: 'no-store' }
+      );
+      if (!res.ok) {
+        throw new Error(`Live scan endpoint returned HTTP ${res.status}`);
       }
-
-      const dRes = await fetch('/api/domain/status').catch(() => null);
-      if (dRes && dRes.ok) {
-        const dData = await dRes.json();
-        setDomainStatus(dData);
-      }
-    } catch {
-      setCdnStatus('Operational');
-      setLatencyMs(46);
+      const json: StorageStatusData = await res.json();
+      setData(json);
+      setFetchedAt(new Date().toISOString());
+    } catch (err) {
+      // Honest failure state — never inject placeholder numbers.
+      setData(null);
+      setEdgeStats(null);
+      setError(err instanceof Error ? err.message : 'Live scan request failed.');
     } finally {
-      setTestingCdn(false);
+      setLoading(false);
+      setRefreshing(false);
     }
-  };
 
-  useEffect(() => {
-    checkLiveCloudflareTelemetry();
+    // Independent edge object-listing cross-check; absence is displayed, not faked.
+    try {
+      const r = await fetch('/api/storage/real-size', { cache: 'no-store' });
+      setEdgeStats(r.ok ? await r.json().catch(() => null) : null);
+    } catch {
+      setEdgeStats(null);
+    }
   }, []);
 
-  const runLiveR2VerificationTest = async () => {
-    setTestUploadResult({ status: 'uploading' });
+  useEffect(() => {
+    load(false);
+  }, [load]);
 
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width = 120;
-      canvas.height = 120;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.fillStyle = '#85E510';
-        ctx.fillRect(0, 0, 120, 120);
-        ctx.fillStyle = '#062404';
-        ctx.font = 'bold 14px monospace';
-        ctx.fillText('R2 VERIFIED', 12, 65);
-      }
-      const testDataUrl = canvas.toDataURL('image/jpeg', 0.9);
-      const testKey = `diagnostics/probe_${Date.now()}.jpg`;
+  const folders = useMemo<FolderStat[]>(() => {
+    const list = Array.isArray(data?.storageFolders) ? data!.storageFolders! : [];
+    const sorted = [...list].sort((a, b) => {
+      if (sortKey === 'name') return a.name.localeCompare(b.name) * (sortDesc ? -1 : 1);
+      const av = sortKey === 'size' ? a.sizeBytes : a.fileCount;
+      const bv = sortKey === 'size' ? b.sizeBytes : b.fileCount;
+      return (av - bv) * (sortDesc ? -1 : 1);
+    });
+    return sorted;
+  }, [data, sortKey, sortDesc]);
 
-      const upRes = await fetch('/api/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentId: 'R2-PROBE',
-          grade: 'diagnostics',
-          filename: testKey,
-          data: testDataUrl
-        })
-      });
-
-      if (upRes.ok) {
-        const json = await upRes.json();
-        const uploadedUrl = json.url || `${R2_PUBLIC_BASE_URL}/${testKey}`;
-        setTestUploadResult({
-          status: 'success',
-          url: uploadedUrl,
-          message: `Direct S3 SigV4 write verified on Cloudflare R2 bucket 'siliconlabs'!`
-        });
-      } else {
-        setTestUploadResult({
-          status: 'success',
-          url: `${R2_PUBLIC_BASE_URL}/${testKey}`,
-          message: `Cloudflare R2 Bucket 'siliconlabs' endpoint verified!`
-        });
-      }
-    } catch {
-      setTestUploadResult({
-        status: 'success',
-        url: `${R2_PUBLIC_BASE_URL}/diagnostics/probe_verified.jpg`,
-        message: `Cloudflare R2 Bucket 'siliconlabs' active via Edge Worker.`
-      });
+  const toggleSort = (key: PrefixSortKey) => {
+    if (sortKey === key) {
+      setSortDesc(v => !v);
+    } else {
+      setSortKey(key);
+      setSortDesc(key !== 'name');
     }
   };
 
+  const db = data?.database;
+  const fileCount = data?.storageFileCount;
+  const sizeBytes = data?.storageSizeBytes;
+  const studentsCount = db?.studentsCount;
+  const withPhotos = db?.studentsWithPhotos;
+  const withoutPhotos = db?.studentsWithoutPhotos;
+  const catalogCount = db?.studentPhotosCatalogCount;
+  const totalRecords = db?.totalDatabaseRecords;
+
+  const totalBytes = typeof sizeBytes === 'number' ? sizeBytes : 0;
+  const folderBytesSum = useMemo(() => folders.reduce((s, f) => s + f.sizeBytes, 0), [folders]);
+  const folderFilesSum = useMemo(() => folders.reduce((s, f) => s + f.fileCount, 0), [folders]);
+  const breakdownDenom = totalBytes > 0 ? totalBytes : folderBytesSum;
+
+  const avgObjectBytes =
+    typeof fileCount === 'number' && fileCount > 0 && typeof sizeBytes === 'number'
+      ? sizeBytes / fileCount
+      : null;
+
+  const orphanDelta =
+    typeof catalogCount === 'number' && typeof studentsCount === 'number'
+      ? catalogCount - studentsCount
+      : null;
+
+  const edgeTotal = edgeStats?.totalObjects;
+  const edgeBytes = edgeStats?.totalBytes;
+  const edgeAligned =
+    typeof edgeTotal === 'number' &&
+    typeof fileCount === 'number' &&
+    edgeTotal === fileCount &&
+    typeof edgeBytes === 'number' &&
+    edgeBytes === sizeBytes;
+
+  const connected = !!data && data.storageConnected !== false;
+  const lastScan = data?.timestamp || fetchedAt;
+
+  const SortHeader: React.FC<{ label: string; sortFor: PrefixSortKey; align?: 'left' | 'right' }> = ({
+    label,
+    sortFor,
+    align = 'right'
+  }) => (
+    <th className={`py-2 px-3 font-bold ${align === 'right' ? 'text-right' : 'text-left'}`}>
+      <button
+        type="button"
+        onClick={() => toggleSort(sortFor)}
+        className={`inline-flex items-center gap-1 uppercase tracking-wider hover:text-[#0B1118] dark:hover:text-white cursor-pointer transition-colors ${
+          sortKey === sortFor ? 'text-[#366804] dark:text-[#8fe617]' : ''
+        }`}
+      >
+        <span>{label}</span>
+        {sortKey === sortFor ? (
+          sortDesc ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />
+        ) : (
+          <ArrowUpDown className="w-3 h-3 opacity-40" />
+        )}
+      </button>
+    </th>
+  );
+
   return (
-    <div className="space-y-6 max-w-7xl mx-auto pb-14 font-mono select-none animate-in fade-in duration-200">
-      {/* Top Header & Breadcrumb */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-3 border-b border-[#E2E8F0] dark:border-[#223126]">
-        <div>
-          <div className="flex items-center gap-2 text-xs font-mono text-slate-500 mb-1">
-            <span className="text-[#366804] dark:text-[#8fe617] font-bold">INFRASTRUCTURE ARCHITECTURE</span>
-            <span>/</span>
-            <span className="font-semibold text-slate-700 dark:text-slate-300">CLOUDFLARE R2 &amp; SUPABASE POSTGRESQL</span>
-            <span>/</span>
-            <span className="text-[#85E510] font-bold">ZERO-EGRESS &amp; PREDICTIVE CAPACITY COMMAND</span>
+    <div className="space-y-5 max-w-6xl mx-auto pb-14 font-mono animate-in fade-in duration-200">
+      {/* ── Bucket identity header ───────────────────────────────── */}
+      <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#161d19] p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#1b241f] flex items-center justify-center text-[#366804] dark:text-[#8fe617] shrink-0">
+            <HardDrive className="w-5 h-5" />
           </div>
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-[#85E510]/20 border border-[#85E510]/40 flex items-center justify-center text-[#256002] dark:text-[#8fe617] shadow-xs">
-              <HardDrive className="w-5 h-5 animate-pulse" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-black tracking-tight text-[#0B1118] dark:text-white flex items-center gap-2">
-                Storage, Zero-Egress Telemetry &amp; Predictive Capacity Command
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-lg font-black tracking-tight text-[#0B1118] dark:text-white">
+                Storage Bucket Console
               </h1>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Authoritative capacity telemetry, global $0.00 zero-egress data transfer, Class A/B cryptographic mutations, and deterministic capacity horizon forecasting
+              {loading && !data ? (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#1b241f] text-slate-500 dark:text-slate-400">
+                  SCANNING…
+                </span>
+              ) : error ? (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-400 inline-flex items-center gap-1">
+                  <XCircle className="w-3 h-3" /> OFFLINE
+                </span>
+              ) : connected ? (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 inline-flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" /> LIVE · CONNECTED
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400 inline-flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3" /> DISCONNECTED
+                </span>
+              )}
+            </div>
+            <dl className="grid grid-cols-2 sm:flex sm:flex-wrap gap-x-6 gap-y-1 mt-2 text-[11px]">
+              <div className="flex items-center gap-1.5">
+                <dt className="text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider">Provider</dt>
+                <dd className="text-[#0B1118] dark:text-white font-bold">{data?.storageProvider ?? '—'}</dd>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <dt className="text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider">Bucket</dt>
+                <dd className="text-[#0B1118] dark:text-white font-bold">{data?.storageBucket ?? '—'}</dd>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <dt className="text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider">DB latency</dt>
+                <dd className="text-[#0B1118] dark:text-white font-bold tabular-nums">
+                  {typeof data?.databaseLatencyMs === 'number' ? `${data?.databaseLatencyMs} ms` : '—'}
+                </dd>
+              </div>
+              {data?.storagePublicBaseUrl && (
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <dt className="text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider shrink-0">Public URL</dt>
+                  <dd className="text-[#366804] dark:text-[#8fe617] font-bold truncate max-w-[260px]">
+                    {data.storagePublicBaseUrl}
+                  </dd>
+                </div>
+              )}
+            </dl>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between lg:justify-end gap-4 shrink-0">
+          <div className="text-right">
+            <div className="flex items-center gap-1.5 text-[10px] uppercase font-bold tracking-wider text-slate-500 dark:text-slate-400 justify-end">
+              <Clock className="w-3 h-3" /> Last scan
+            </div>
+            <div className="text-[11px] font-bold text-[#0B1118] dark:text-white mt-0.5">{fmtTime(lastScan)}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => load(true)}
+            disabled={loading || refreshing}
+            className="px-3.5 py-2 rounded-2xl bg-[#9EE617] hover:bg-[#8fe617] disabled:opacity-50 text-[#062404] font-black text-xs shadow-xs transition-all flex items-center gap-2 cursor-pointer border border-[#366804]/20"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            <span>{refreshing ? 'Scanning…' : 'Force live scan'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* ── Honest error state ───────────────────────────────────── */}
+      {error && (
+        <div className="rounded-2xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20 p-4 flex items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+            <div>
+              <h2 className="text-sm font-black text-red-800 dark:text-red-300">Live scan failed</h2>
+              <p className="text-xs text-red-700 dark:text-red-400 mt-0.5">{error}</p>
+              <p className="text-[11px] text-red-600/80 dark:text-red-400/70 mt-1">
+                No capacity figures are shown because the storage API is unreachable. Placeholder data is never displayed.
               </p>
             </div>
           </div>
-        </div>
-
-        {/* Global Controls & Status */}
-        <div className="flex flex-wrap items-center gap-2.5 text-xs font-mono">
-          <div className="px-3.5 py-1.5 rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 flex items-center gap-2 font-bold">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
-            <span>INFRASTRUCTURE STATUS: NOMINAL (ZERO SATURATION RISK)</span>
-          </div>
-
           <button
-            onClick={checkLiveCloudflareTelemetry}
-            disabled={testingCdn}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:border-[#85E510] hover:text-black font-bold transition-all shadow-xs cursor-pointer"
+            type="button"
+            onClick={() => load(true)}
+            disabled={loading || refreshing}
+            className="px-3 py-1.5 rounded-2xl border border-red-300 dark:border-red-800 bg-white dark:bg-[#161d19] text-red-700 dark:text-red-400 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-950/40 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${testingCdn ? 'animate-spin text-[#85E510]' : ''}`} />
-            <span>Execute Synthetic Edge Probe</span>
+            Retry
           </button>
         </div>
-      </div>
+      )}
 
-      {/* ─────────────────────────────────────────────────────────────────── */}
-      {/* 1. TOP QUOTA & LIMIT MONITORING CARDS                               */}
-      {/* ─────────────────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Card 1: Cloudflare R2 Storage (10 GB Free Tier) */}
-        <div className="p-4.5 rounded-2xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] shadow-xs space-y-3 relative overflow-hidden">
-          <div className="flex items-center justify-between text-xs text-slate-500">
-            <span className="uppercase font-bold tracking-wider">Cloudflare R2 Object Fabric</span>
-            <HardDrive className="w-4 h-4 text-[#85E510]" />
-          </div>
-
-          <div>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-black text-[#0B1118] dark:text-white">
-                {currentPhotoStorageMB} MB
-              </span>
-              <span className="text-xs text-slate-400 font-bold">/ 10.00 GB Tier Capacity</span>
-            </div>
-            <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-bold mt-0.5">
-              {remainingStorageGB} GB Provisioned Headroom Available
-            </div>
-          </div>
-
-          {/* Progress bar */}
-          <div className="space-y-1">
-            <div className="w-full h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-[#85E510] to-emerald-500 transition-all duration-500"
-                style={{ width: `${Math.max(storageUsedPercent, 1.5)}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-[10px] text-slate-400">
-              <span>{storageUsedPercent}% utilized</span>
-              <span>Bucket &apos;siliconlabs&apos;</span>
-            </div>
-          </div>
+      {/* ── Loading placeholder (no numbers) ─────────────────────── */}
+      {loading && !data && !error && (
+        <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#161d19] p-8 text-center">
+          <RefreshCw className="w-5 h-5 mx-auto text-[#366804] dark:text-[#8fe617] animate-spin" />
+          <p className="text-xs font-bold text-slate-500 dark:text-slate-400 mt-3">
+            Querying live bucket inventory…
+          </p>
         </div>
+      )}
 
-        {/* Card 2: Zero-Egress Bandwidth Telemetry */}
-        <div className="p-4.5 rounded-2xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] shadow-xs space-y-3 relative overflow-hidden">
-          <div className="flex items-center justify-between text-xs text-slate-500">
-            <span className="uppercase font-bold tracking-wider">Global Zero-Egress Bandwidth</span>
-            <DollarSign className="w-4 h-4 text-emerald-500" />
-          </div>
-
-          <div>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
-                $0.00
-              </span>
-              <span className="text-xs text-slate-400 font-bold">Incurred Egress Fee</span>
-            </div>
-            <div className="text-[11px] text-slate-500 dark:text-slate-400 font-bold mt-0.5 flex items-center gap-1">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-              <span>{estimatedMonthlyEgressMB} MB Biometric Assets Transferred Globally</span>
-            </div>
-          </div>
-
-          <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/40 text-[10px] text-emerald-700 dark:text-emerald-400 font-bold flex items-center justify-between">
-            <span>Avoided Cloud Surcharge:</span>
-            <span className="font-mono text-xs">+${awsS3CostAvoidance} Optimized</span>
-          </div>
-        </div>
-
-        {/* Card 3: Class A Operations (1,000,000 Free Writes/Month) */}
-        <div className="p-4.5 rounded-2xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] shadow-xs space-y-3 relative overflow-hidden">
-          <div className="flex items-center justify-between text-xs text-slate-500">
-            <span className="uppercase font-bold tracking-wider">Class A State Mutations</span>
-            <Zap className="w-4 h-4 text-blue-500" />
-          </div>
-
-          <div>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-black text-blue-600 dark:text-blue-400">
-                {estimatedClassAOps.toLocaleString()}
-              </span>
-              <span className="text-xs text-slate-400 font-bold">/ 1,000,000</span>
-            </div>
-            <div className="text-[11px] text-blue-600 dark:text-blue-400 font-bold mt-0.5">
-              Biometric Ingestion &amp; Cryptographic Writes
-            </div>
-          </div>
-
-          {/* Progress bar */}
-          <div className="space-y-1">
-            <div className="w-full h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-blue-500 transition-all duration-500"
-                style={{ width: `${Math.max(classAUsedPercent, 1.2)}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-[10px] text-slate-400">
-              <span>{classAUsedPercent}% consumed</span>
-              <span>1M Allocation Reset Monthly</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Card 4: Supabase Database Relational Quota (500 MB & 500k Rows) */}
-        <div className="p-4.5 rounded-2xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] shadow-xs space-y-3 relative overflow-hidden">
-          <div className="flex items-center justify-between text-xs text-slate-500">
-            <span className="uppercase font-bold tracking-wider">Supabase Managed PostgreSQL</span>
-            <Database className="w-4 h-4 text-purple-500" />
-          </div>
-
-          <div>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-black text-purple-600 dark:text-purple-400">
-                {students.length.toLocaleString()}
-              </span>
-              <span className="text-xs text-slate-400 font-bold">/ 500,000 Records</span>
-            </div>
-            <div className="text-[11px] text-purple-600 dark:text-purple-400 font-bold mt-0.5">
-              Relational Footprint: ~{estimatedDbStorageMB} MB of 500.00 MB
-            </div>
-          </div>
-
-          {/* Progress bar */}
-          <div className="space-y-1">
-            <div className="w-full h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-purple-500 transition-all duration-500"
-                style={{ width: `${Math.max(dbRowUsedPercent, 1.2)}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-[10px] text-slate-400">
-              <span>{dbRowUsedPercent}% record limit</span>
-              <span>{dbStorageUsedPercent}% volume limit</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ─────────────────────────────────────────────────────────────────── */}
-      {/* 2. PREDICTIVE CAPACITY & RUNWAY FORECASTER                         */}
-      {/* ─────────────────────────────────────────────────────────────────── */}
-      <div className="rounded-3xl border border-slate-200 dark:border-[#223126] bg-white dark:bg-[#111613] p-5.5 shadow-xs space-y-5">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <TrendingUp className="w-5 h-5 text-[#85E510]" />
-              <h2 className="text-base font-black font-mono tracking-tight text-slate-900 dark:text-white">
-                Predictive Capacity Depletion Forecasting &amp; Ingestion Simulation Engine
-              </h2>
-            </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
-              Deterministic statistical projection of operating days and calendar horizons remaining prior to capacity scaling across Cloudflare R2 and Supabase managed infrastructure
-            </p>
-          </div>
-
-          {/* Interactive Simulation Scale Control */}
-          <div className="flex items-center gap-3 p-2 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 text-xs">
-            <span className="font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5 shrink-0">
-              <Sliders className="w-3.5 h-3.5 text-[#85E510]" />
-              Simulated Ingestion Velocity:
-            </span>
-            <div className="flex items-center gap-1.5">
-              {[25, 50, 100, 250, 500, 1000].map(val => (
-                <button
-                  key={val}
-                  type="button"
-                  onClick={() => setSimulatedDailyPace(val)}
-                  className={`px-2.5 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    simulatedDailyPace === val
-                      ? 'bg-[#85E510] text-[#062404] shadow-xs'
-                      : 'text-slate-500 hover:text-black dark:hover:text-white'
-                  }`}
-                >
-                  {val}/d
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Predictive Exhaustion Countdown Highlights */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono">
-          {/* Prediction 1: 10 GB R2 Limit Exhaustion */}
-          <div className="p-4 rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/40 space-y-2">
-            <div className="flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-400 font-bold uppercase">
-              <span>Cloudflare R2 10.00 GB Saturation Horizon</span>
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            </div>
-            <div className="text-3xl font-black text-emerald-700 dark:text-emerald-400">
-              ~{predictions.daysUntilR2StorageLimit.toLocaleString()} Days
-            </div>
-            <div className="text-xs text-emerald-800 dark:text-emerald-300 font-medium">
-              Projected operational runway exceeds {predictions.yearsUntilR2StorageLimit} years at {simulatedDailyPace} students/day (+{predictions.dailyStorageGrowthMB} MB/day incremental storage)
-            </div>
-          </div>
-
-          {/* Prediction 2: 1M Monthly Class A Writes */}
-          <div className="p-4 rounded-2xl bg-blue-50/60 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/40 space-y-2">
-            <div className="flex items-center justify-between text-xs text-blue-800 dark:text-blue-400 font-bold uppercase">
-              <span>Monthly Class A Mutation Allocation</span>
-              <CheckCircle2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-            </div>
-            <div className="text-3xl font-black text-blue-700 dark:text-blue-400">
-              {predictions.classAMonthlyUsagePercent}% Max
-            </div>
-            <div className="text-xs text-blue-800 dark:text-blue-300 font-medium">
-              Projected {predictions.monthlyClassAFromPace.toLocaleString()} operations/month. Capacity resets dynamically every 30 operating days.
-            </div>
-          </div>
-
-          {/* Prediction 3: 500 MB Supabase PostgreSQL Horizon */}
-          <div className="p-4 rounded-2xl bg-purple-50/60 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-900/40 space-y-2">
-            <div className="flex items-center justify-between text-xs text-purple-800 dark:text-purple-400 font-bold uppercase">
-              <span>Supabase 500.00 MB PostgreSQL Volume</span>
-              <CheckCircle2 className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-            </div>
-            <div className="text-3xl font-black text-purple-700 dark:text-purple-400">
-              ~{predictions.daysUntilDbLimit.toLocaleString()} Days
-            </div>
-            <div className="text-xs text-purple-800 dark:text-purple-300 font-medium">
-              Projected database headroom exceeds {predictions.yearsUntilDbLimit} years prior to reaching relational tier capacity threshold.
-            </div>
-          </div>
-        </div>
-
-        {/* Projected Milestone Timeline */}
-        <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-3 font-mono">
-          <div className="flex items-center justify-between text-xs">
-            <span className="font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-              <Clock className="w-4 h-4 text-[#85E510]" />
-              Projected Storage Footprint Over Time (at {simulatedDailyPace} students/day pace)
-            </span>
-            <span className="text-[11px] text-slate-400">
-              Daily Volume: +{predictions.dailyStorageGrowthMB} MB
-            </span>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
-            <div className="p-3 rounded-xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800">
-              <span className="text-[10px] text-slate-400 uppercase font-bold block">30 Operating Days</span>
-              <span className="text-lg font-black text-slate-800 dark:text-slate-200 mt-0.5 block">
-                {predictions.storageAt30DaysMB} MB
-              </span>
-              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">Operational Status: Nominal</span>
-            </div>
-
-            <div className="p-3 rounded-xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800">
-              <span className="text-[10px] text-slate-400 uppercase font-bold block">90 Operating Days</span>
-              <span className="text-lg font-black text-slate-800 dark:text-slate-200 mt-0.5 block">
-                {predictions.storageAt90DaysMB} MB
-              </span>
-              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">Operational Status: Nominal</span>
-            </div>
-
-            <div className="p-3 rounded-xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800">
-              <span className="text-[10px] text-slate-400 uppercase font-bold block">180 Operating Days</span>
-              <span className="text-lg font-black text-slate-800 dark:text-slate-200 mt-0.5 block">
-                {predictions.storageAt180DaysMB} MB
-              </span>
-              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">Operational Status: Nominal</span>
-            </div>
-
-            <div className="p-3 rounded-xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800">
-              <span className="text-[10px] text-slate-400 uppercase font-bold block">365 Operating Days (1 Year)</span>
-              <span className="text-lg font-black text-[#256002] dark:text-[#8fe617] mt-0.5 block">
-                {predictions.storageAt365DaysGB} GB
-              </span>
-              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">Within 10.00 GB Allocation</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ─────────────────────────────────────────────────────────────────── */}
-      {/* 3. ENTERPRISE QUOTA COMPLIANCE & ZERO-EGRESS ECONOMICS LEDGER       */}
-      {/* ─────────────────────────────────────────────────────────────────── */}
-      <div className="bg-white dark:bg-[#111613] rounded-3xl border border-slate-200 dark:border-[#223126] p-5.5 shadow-xs space-y-4 font-mono">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 gap-2">
-          <div>
-            <h3 className="font-black text-sm text-slate-900 dark:text-white flex items-center gap-2">
-              <Layers className="w-4 h-4 text-[#85E510]" />
-              <span>Enterprise Cloud Capacity Compliance &amp; Zero-Egress Economics Ledger</span>
-            </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Comprehensive telemetry accounting for storage capacity allocation, cryptographic mutation throughput, and bandwidth cost avoidance
-            </p>
-          </div>
-          <span className="text-[11px] text-[#256002] dark:text-[#8fe617] font-bold px-2.5 py-1 rounded-xl bg-[#85E510]/15 border border-[#85E510]/30 shrink-0">
-            AUDITED ENTERPRISE DATA
-          </span>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs font-mono text-left">
-            <thead className="bg-slate-50 dark:bg-[#070908] text-slate-400 uppercase text-[10px]">
-              <tr>
-                <th className="py-2.5 pl-3">Infrastructure Service</th>
-                <th className="py-2.5">Provisioned Tier Allocation</th>
-                <th className="py-2.5 text-right">Actual Ingestion</th>
-                <th className="py-2.5 text-right">Available Headroom</th>
-                <th className="py-2.5 text-center">Utilization</th>
-                <th className="py-2.5 pr-3 text-right">Compliance Audit</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
-                <td className="py-3 pl-3 font-bold text-slate-900 dark:text-white">
-                  <div className="flex items-center gap-2">
-                    <HardDrive className="w-4 h-4 text-[#85E510]" />
-                    <div>
-                      <div className="font-bold">Cloudflare R2 Object Store</div>
-                      <div className="text-[10px] text-slate-400">Bucket &apos;siliconlabs&apos; &bull; WebP Biometrics</div>
-                    </div>
-                  </div>
-                </td>
-                <td className="py-3 text-slate-700 dark:text-slate-300 font-bold">10.00 GB Tier</td>
-                <td className="py-3 text-right font-black text-slate-900 dark:text-white">{currentPhotoStorageMB} MB</td>
-                <td className="py-3 text-right font-bold text-emerald-600 dark:text-emerald-400">{remainingStorageGB} GB Free</td>
-                <td className="py-3 text-center font-bold">{storageUsedPercent}%</td>
-                <td className="py-3 pr-3 text-right">
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
-                    <CheckCircle2 className="w-3 h-3" /> Nominal (0% Risk)
-                  </span>
-                </td>
-              </tr>
-
-              <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
-                <td className="py-3 pl-3 font-bold text-slate-900 dark:text-white">
-                  <div className="flex items-center gap-2">
-                    <DollarSign className="w-4 h-4 text-emerald-500" />
-                    <div>
-                      <div className="font-bold">Global Zero-Egress Bandwidth</div>
-                      <div className="text-[10px] text-slate-400">Cloudflare Edge CDN Delivery</div>
-                    </div>
-                  </div>
-                </td>
-                <td className="py-3 text-slate-700 dark:text-slate-300 font-bold">Unlimited ($0.00/GB)</td>
-                <td className="py-3 text-right font-black text-emerald-600 dark:text-emerald-400">{estimatedMonthlyEgressMB} MB Streamed</td>
-                <td className="py-3 text-right font-bold text-emerald-600 dark:text-emerald-400">Infinite (No Egress Fee)</td>
-                <td className="py-3 text-center font-bold text-emerald-600 dark:text-emerald-400">$0.00 Incurred</td>
-                <td className="py-3 pr-3 text-right">
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
-                    <CheckCircle2 className="w-3 h-3" /> 100% Zero-Tax Rate
-                  </span>
-                </td>
-              </tr>
-
-              <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
-                <td className="py-3 pl-3 font-bold text-slate-900 dark:text-white">
-                  <div className="flex items-center gap-2">
-                    <Zap className="w-4 h-4 text-blue-500" />
-                    <div>
-                      <div className="font-bold">Class A Mutation Operations</div>
-                      <div className="text-[10px] text-slate-400">PutObject, CompleteMultipart, State Mutations</div>
-                    </div>
-                  </div>
-                </td>
-                <td className="py-3 text-slate-700 dark:text-slate-300 font-bold">1,000,000 Writes / Mo</td>
-                <td className="py-3 text-right font-black text-blue-600 dark:text-blue-400">{estimatedClassAOps.toLocaleString()} Ops</td>
-                <td className="py-3 text-right font-bold text-slate-700 dark:text-slate-300">{(R2_CLASS_A_LIMIT_MONTHLY - estimatedClassAOps).toLocaleString()} Free Ops</td>
-                <td className="py-3 text-center font-bold">{classAUsedPercent}%</td>
-                <td className="py-3 pr-3 text-right">
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
-                    <CheckCircle2 className="w-3 h-3" /> Nominal
-                  </span>
-                </td>
-              </tr>
-
-              <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
-                <td className="py-3 pl-3 font-bold text-slate-900 dark:text-white">
-                  <div className="flex items-center gap-2">
-                    <Database className="w-4 h-4 text-purple-500" />
-                    <div>
-                      <div className="font-bold">Supabase PostgreSQL Instance</div>
-                      <div className="text-[10px] text-slate-400">Managed Relational Database &bull; Row &amp; Table Storage</div>
-                    </div>
-                  </div>
-                </td>
-                <td className="py-3 text-slate-700 dark:text-slate-300 font-bold">500.00 MB / 500k Rows</td>
-                <td className="py-3 text-right font-black text-purple-600 dark:text-purple-400">{students.length.toLocaleString()} Rows (~{estimatedDbStorageMB} MB)</td>
-                <td className="py-3 text-right font-bold text-slate-700 dark:text-slate-300">{(SUPABASE_ROW_LIMIT - students.length).toLocaleString()} Rows Free</td>
-                <td className="py-3 text-center font-bold">{dbRowUsedPercent}%</td>
-                <td className="py-3 pr-3 text-right">
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
-                    <CheckCircle2 className="w-3 h-3" /> Nominal
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* ─────────────────────────────────────────────────────────────────── */}
-      {/* 4. CLOUDFLARE R2 VERIFICATION & DIAGNOSTIC EDGE PROBE              */}
-      {/* ─────────────────────────────────────────────────────────────────── */}
-      <div className="rounded-3xl border border-slate-200 dark:border-[#223126] bg-white dark:bg-[#111613] p-5.5 shadow-xs space-y-4 font-mono">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-slate-100 dark:border-slate-800 border-b">
-          <div>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
-              <Shield className="w-4 h-4 text-[#85E510]" />
-              <span>Cloudflare R2 Direct Storage Integrity &amp; Synthetic Ingestion Probe</span>
-            </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Validate end-to-end SigV4 authenticated binary ingestion and global edge retrieval across the Cloudflare R2 &apos;siliconlabs&apos; object repository
-            </p>
-          </div>
-
-          <button
-            onClick={runLiveR2VerificationTest}
-            disabled={testUploadResult.status === 'uploading'}
-            className="px-4 py-2 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] disabled:opacity-50 text-[#062404] font-black text-xs shadow-xs transition-all flex items-center gap-2 cursor-pointer shrink-0"
+      {data && !error && (
+        <>
+          {/* ── Capacity Overview ──────────────────────────────────── */}
+          <SectionCard
+            icon={<Boxes className="w-4 h-4" />}
+            title="Capacity Overview"
+            subtitle="Object inventory reported by the latest live scan of the bucket"
           >
-            {testUploadResult.status === 'uploading' ? (
-              <>
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                <span>Dispatching Cryptographic Probe...</span>
-              </>
-            ) : (
-              <>
-                <Check className="w-3.5 h-3.5" />
-                <span>Execute Synthetic Write &amp; Readback Probe</span>
-              </>
-            )}
-          </button>
-        </div>
-
-        {testUploadResult.status === 'success' && (
-          <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-300 text-xs space-y-2 animate-in fade-in">
-            <div className="flex items-center gap-2 font-bold text-emerald-800 dark:text-emerald-400">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-              <span>Cloudflare R2 Object Fabric &amp; Edge Route Verified Operational</span>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+              <StatCell label="Total objects" value={fmtInt(fileCount)} sub="Files in bucket" />
+              <StatCell
+                label="Total size"
+                value={data.storageSizeFormatted || fmtBytes(sizeBytes)}
+                sub={typeof sizeBytes === 'number' ? `${sizeBytes.toLocaleString()} bytes` : undefined}
+                accent
+              />
+              <StatCell label="Avg object size" value={fmtBytes(avgObjectBytes)} sub="Size ÷ object count" />
+              <StatCell
+                label="Student-linked photos"
+                value={fmtInt(withPhotos)}
+                sub={
+                  typeof withoutPhotos === 'number'
+                    ? `${withoutPhotos.toLocaleString()} students without`
+                    : undefined
+                }
+              />
+              <StatCell label="Records in DB" value={fmtInt(totalRecords)} sub="All tables" />
             </div>
-            <p className="font-medium">{testUploadResult.message}</p>
-            {testUploadResult.url && (
-              <div className="p-2.5 bg-white dark:bg-[#070908] rounded-lg border border-emerald-200 dark:border-emerald-900 font-mono text-[11px] break-all flex items-center justify-between gap-2">
-                <span className="text-emerald-700 dark:text-emerald-400">{testUploadResult.url}</span>
-                <a
-                  href={testUploadResult.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs font-bold text-blue-600 hover:underline shrink-0 flex items-center gap-1"
-                >
-                  <ExternalLink className="w-3 h-3" /> Inspect Edge Asset
-                </a>
-              </div>
-            )}
-          </div>
-        )}
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs pt-1">
-          <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-1">
-            <span className="text-slate-500 font-bold block text-[10px] uppercase">Object Bucket Identifier:</span>
-            <span className="font-bold text-slate-900 dark:text-white">siliconlabs</span>
-          </div>
+            {/* Edge cross-check line — real numbers or explicit unavailability */}
+            <div className="mt-3 pt-3 border-t border-[#dce7e1] dark:border-[#223126] flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+              <span className="uppercase font-bold tracking-wider text-slate-500 dark:text-slate-400">
+                Edge listing cross-check
+              </span>
+              {edgeStats && typeof edgeStats.totalObjects === 'number' ? (
+                <>
+                  <span className="text-[#0B1118] dark:text-white font-bold tabular-nums">
+                    {edgeStats.totalObjects.toLocaleString()} objects · {edgeStats.formatted || fmtBytes(edgeStats.totalBytes)}
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                      edgeAligned
+                        ? 'border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400'
+                        : 'border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400'
+                    }`}
+                  >
+                    {edgeAligned ? 'ALIGNED WITH STATUS API' : 'DIVERGED — RE-SCAN ADVISED'}
+                  </span>
+                  {edgeStats.lastScanned && (
+                    <span className="text-slate-400 dark:text-slate-500">edge scan {fmtTime(edgeStats.lastScanned)}</span>
+                  )}
+                </>
+              ) : (
+                <span className="text-slate-500 dark:text-slate-400 font-bold">
+                  Unavailable — /api/storage/real-size did not respond
+                </span>
+              )}
+            </div>
+          </SectionCard>
 
-          <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-1">
-            <span className="text-slate-500 font-bold block text-[10px] uppercase">R2 CDN Edge Base URL:</span>
-            <span className="font-bold text-emerald-600 dark:text-emerald-400 truncate block text-[11px]">
-              {R2_PUBLIC_BASE_URL}
-            </span>
-          </div>
+          {/* ── Prefix Breakdown ───────────────────────────────────── */}
+          <SectionCard
+            icon={<FolderTree className="w-4 h-4" />}
+            title="Prefix Breakdown"
+            subtitle="Objects grouped by top-level R2 prefix, from the live bucket listing"
+            aside={
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">
+                {folders.length} prefix{folders.length === 1 ? '' : 'es'}
+              </span>
+            }
+          >
+            <div className="overflow-x-auto rounded-2xl border border-[#dce7e1] dark:border-[#223126]">
+              <table className="w-full text-[11px] font-mono text-left">
+                <thead className="bg-[#f7faf9] dark:bg-[#1b241f] text-slate-500 dark:text-slate-400 text-[10px] border-b border-[#dce7e1] dark:border-[#223126]">
+                  <tr>
+                    <SortHeader label="Prefix" sortFor="name" align="left" />
+                    <SortHeader label="Files" sortFor="files" />
+                    <SortHeader label="Size" sortFor="size" />
+                    <th className="py-2 px-3 font-bold uppercase tracking-wider w-[34%]">
+                      <span className="float-right">Share of total</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#dce7e1] dark:divide-[#223126]">
+                  {folders.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="py-6 px-3 text-center text-slate-500 dark:text-slate-400">
+                        <AlertCircle className="w-4 h-4 mx-auto mb-1.5 text-slate-400" />
+                        No prefixes returned by the live scan. Run “Force live scan” to refresh the bucket listing.
+                      </td>
+                    </tr>
+                  ) : (
+                    folders.map(f => {
+                      const pct = pctOf(f.sizeBytes, breakdownDenom);
+                      return (
+                        <tr key={f.name} className="hover:bg-[#f7faf9] dark:hover:bg-[#1b241f] transition-colors">
+                          <td className="py-2.5 px-3">
+                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#1b241f] text-[#0B1118] dark:text-white font-bold">
+                              <FolderTree className="w-3 h-3 text-slate-400" />
+                              {f.name}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right tabular-nums font-bold text-[#0B1118] dark:text-white">
+                            {fmtInt(f.fileCount)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right tabular-nums font-bold text-[#0B1118] dark:text-white">
+                            {f.sizeFormatted || fmtBytes(f.sizeBytes)}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 h-1 rounded-full bg-[#dce7e1] dark:bg-[#223126] overflow-hidden">
+                                <div
+                                  className="h-full rounded-full bg-[#8fe617] dark:bg-[#9EE617]"
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                              <span className="w-12 text-right tabular-nums text-slate-500 dark:text-slate-400 font-bold">
+                                {pct.toFixed(1)}%
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+                {folders.length > 0 && (
+                  <tfoot className="bg-[#f7faf9] dark:bg-[#1b241f] border-t border-[#dce7e1] dark:border-[#223126]">
+                    <tr>
+                      <td className="py-2.5 px-3 font-black uppercase text-[10px] tracking-wider text-slate-500 dark:text-slate-400">
+                        Prefix sum
+                      </td>
+                      <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                        {folderFilesSum.toLocaleString()}
+                      </td>
+                      <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                        {fmtBytes(folderBytesSum)}
+                      </td>
+                      <td className="py-2.5 px-3 text-right tabular-nums font-bold text-slate-500 dark:text-slate-400">
+                        {breakdownDenom > 0 ? `${pctOf(folderBytesSum, breakdownDenom).toFixed(1)}%` : '—'}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </SectionCard>
 
-          <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-1">
-            <span className="text-slate-500 font-bold block text-[10px] uppercase">Network Egress Policy:</span>
-            <span className="font-bold text-purple-600 dark:text-purple-400 block">$0.00 / GB (Strict Zero-Egress)</span>
-          </div>
-
-          <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-1">
-            <span className="text-slate-500 font-bold block text-[10px] uppercase">Global Edge Latency:</span>
-            <span className="font-bold text-blue-600 dark:text-blue-400 block">~{latencyMs}ms (HTTP/3 Protocol)</span>
-          </div>
-        </div>
-      </div>
+          {/* ── Integrity ──────────────────────────────────────────── */}
+          <SectionCard
+            icon={<ShieldCheck className="w-4 h-4" />}
+            title="Integrity"
+            subtitle="Photo coverage across the student roster and catalog-row consistency"
+          >
+            <div className="overflow-x-auto rounded-2xl border border-[#dce7e1] dark:border-[#223126]">
+              <table className="w-full text-[11px] font-mono text-left">
+                <thead className="bg-[#f7faf9] dark:bg-[#1b241f] text-slate-500 dark:text-slate-400 text-[10px] uppercase tracking-wider border-b border-[#dce7e1] dark:border-[#223126]">
+                  <tr>
+                    <th className="py-2 px-3 font-bold">Check</th>
+                    <th className="py-2 px-3 font-bold text-right">Value</th>
+                    <th className="py-2 px-3 font-bold">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#dce7e1] dark:divide-[#223126]">
+                  <tr>
+                    <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
+                      <span className="inline-flex items-center gap-1.5">
+                        <ImageIcon className="w-3.5 h-3.5 text-slate-400" />
+                        Students with linked photos
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                      {fmtInt(withPhotos)}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <span className="text-slate-500 dark:text-slate-400 font-bold tabular-nums">
+                        {pctOf(withPhotos ?? 0, studentsCount ?? 0).toFixed(1)}% of roster
+                      </span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
+                      <span className="inline-flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                        Students without photo links
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                      {fmtInt(withoutPhotos)}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      {typeof withoutPhotos === 'number' && withoutPhotos > 0 ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400">
+                          Coverage gap
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400">
+                          <CheckCircle2 className="w-3 h-3" /> Full coverage
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Database className="w-3.5 h-3.5 text-slate-400" />
+                        Photo catalog rows vs student rows
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                      {fmtInt(catalogCount)} / {fmtInt(studentsCount)}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      {orphanDelta === null ? (
+                        <span className="text-slate-400 font-bold">—</span>
+                      ) : orphanDelta > 0 ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400">
+                          <AlertTriangle className="w-3 h-3" />
+                          {orphanDelta.toLocaleString()} orphan catalog row{orphanDelta === 1 ? '' : 's'}
+                        </span>
+                      ) : orphanDelta < 0 ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400">
+                          <AlertTriangle className="w-3 h-3" />
+                          {Math.abs(orphanDelta).toLocaleString()} student{Math.abs(orphanDelta) === 1 ? '' : 's'} without catalog row
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400">
+                          <CheckCircle2 className="w-3 h-3" /> Aligned
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
+                      <span className="inline-flex items-center gap-1.5">
+                        <HardDrive className="w-3.5 h-3.5 text-slate-400" />
+                        Bucket objects vs student-linked photos
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                      {fmtInt(fileCount)} / {fmtInt(withPhotos)}
+                    </td>
+                    <td className="py-2.5 px-3 text-slate-500 dark:text-slate-400 font-bold tabular-nums">
+                      {typeof fileCount === 'number' && typeof withPhotos === 'number'
+                        ? `${(fileCount - withPhotos).toLocaleString()} non-roster objects (diagnostics, exports, misc prefixes)`
+                        : '—'}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </SectionCard>
+        </>
+      )}
     </div>
   );
 };

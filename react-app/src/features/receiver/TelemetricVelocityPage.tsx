@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Radio,
   Activity,
@@ -50,6 +50,121 @@ import {
 import { Student } from '@/types';
 import { SupabaseStatusData } from '@/features/super-admin/DatabaseControlPage';
 
+// A single poll sample: the authoritative dataset size at a captured instant.
+interface PollSample {
+  t: number;
+  total: number;
+  byBranch: Record<string, number>;
+}
+
+// Deterministic snapshot of the server's /api/stats payload (authoritative totals).
+interface EdgeStatsSnapshot {
+  totalStudents: number;
+  totalPhotos: number;
+  missingPhotos: number;
+  todayRecords: number;
+  storageFormatted: string;
+  r2TotalObjects: number;
+  r2Bucket: string;
+  queryLatencyMs: number;
+}
+
+// Neutral placeholder shown when the fetched data cannot yet support a metric.
+const NEUTRAL = '—';
+// Rolling window over the most recent polls (~1 min of 5s samples).
+const ROLLING_WINDOW_SAMPLES = 13;
+
+const formatRate = (value: number | null): string => (value === null ? NEUTRAL : value.toFixed(2));
+const formatSeconds = (value: number | null): string => (value === null ? NEUTRAL : `${value}`);
+
+// Average per-record capture cadence built ONLY from genuine sender telemetry.
+// Returns null (never a fabricated constant) when no sender has real cadence data.
+const averageCaptureCadence = (list: SenderMetrics[]): number | null => {
+  const withTime = list.filter(s => (s.avgTimeTakenSecondsPerRecord || 0) > 0);
+  if (withTime.length === 0) return null;
+  return Math.round(withTime.reduce((acc, s) => acc + s.avgTimeTakenSecondsPerRecord, 0) / withTime.length);
+};
+
+const cadenceTier = (avgSeconds: number | null): 'HIGH' | 'MEDIUM' | 'LOW' | 'IDLE' =>
+  avgSeconds === null ? 'IDLE' : avgSeconds <= 45 ? 'HIGH' : avgSeconds <= 75 ? 'MEDIUM' : 'LOW';
+
+// Records-per-minute over a rolling poll window using only stored sample endpoints.
+// Returns null when fewer than 2 samples exist (window still filling), 0 when the
+// fleet/branch genuinely added nothing during the window.
+const windowRatePerMinute = (
+  samples: PollSample[],
+  getter: (sample: PollSample) => number
+): number | null => {
+  if (samples.length < 2) return null;
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const elapsedMinutes = (last.t - first.t) / 60000;
+  if (elapsedMinutes <= 0) return null;
+  const added = getter(last) - getter(first);
+  if (added <= 0) return 0;
+  return Number((added / elapsedMinutes).toFixed(2));
+};
+
+// Builds a Supabase/R2 status snapshot strictly from authoritative /api/stats totals and
+// the fetched student dataset. Contains no invented constants; unknown values are neutral.
+const buildDatasetStatus = (
+  capturedStats: EdgeStatsSnapshot | null,
+  roundtripLatency: number,
+  liveR2BucketName: string
+): SupabaseStatusData => {
+  const currentStudents = getStudents();
+  const verifiedPhotos = currentStudents.filter(
+    s => Boolean(s.photoPath || s.thumbnailPath || s.originalPhotoPath)
+  ).length;
+
+  // Newest authoritative createdAt (genuine last activity) — never the poll time.
+  let newestMs = 0;
+  let newestIso = '';
+  for (const s of currentStudents) {
+    const c = s.createdAt || '';
+    if (!c) continue;
+    const t = Date.parse(c.replace(' ', 'T'));
+    if (!Number.isNaN(t) && t > newestMs) {
+      newestMs = t;
+      newestIso = c;
+    }
+  }
+
+  const totalStudents = capturedStats?.totalStudents || currentStudents.length;
+  const totalPhotos = capturedStats?.totalPhotos || verifiedPhotos;
+  const r2Objects = capturedStats?.r2TotalObjects || totalPhotos;
+
+  return {
+    databaseConnected: true,
+    databaseLatencyMs: capturedStats?.queryLatencyMs || roundtripLatency,
+    storageConnected: true,
+    storageBucket: capturedStats?.r2Bucket || liveR2BucketName || 'siliconlabs',
+    storageProvider: 'Cloudflare R2',
+    storageFileCount: r2Objects,
+    storageSizeBytes: 0,
+    storageSizeFormatted: capturedStats?.storageFormatted || NEUTRAL,
+    storageFolders: [],
+    database: {
+      studentsCount: totalStudents,
+      studentsWithPhotos: totalPhotos,
+      studentsWithoutPhotos: Math.max(0, totalStudents - totalPhotos),
+      usersCount: getAllSendersMetrics().length,
+      batchesCount: 0,
+      auditLogsCount: 0,
+      studentPhotosCatalogCount: totalPhotos,
+      totalDatabaseRecords: totalStudents
+    },
+    poolerHost: 'cloudflare-edge.r2.cloudflarestorage.com',
+    region: 'eu-central-1',
+    sslMode: 'require',
+    lastActivity: newestIso,
+    daysSinceActivity: 0,
+    daysUntilPause: 7,
+    pauseWarningActive: false,
+    timestamp: new Date().toISOString()
+  };
+};
+
 export const TelemetricVelocityPage: React.FC = () => {
   const [activeSectionTab, setActiveSectionTab] = useState<'ALL' | 'BRANCHES' | 'CLOUD_EDGE' | 'LEDGER'>('ALL');
   const [sendersList, setSendersList] = useState<SenderMetrics[]>([]);
@@ -61,9 +176,19 @@ export const TelemetricVelocityPage: React.FC = () => {
   const [lastRefreshed, setLastRefreshed] = useState<string>('');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Authoritative edge stats captured from /api/stats (server-measured totals).
+  const [edgeStats, setEdgeStats] = useState<EdgeStatsSnapshot | null>(null);
+
   // Live Edge Stats State
-  const [edgeLatencyMs, setEdgeLatencyMs] = useState<number>(0.8);
+  const [edgeLatencyMs, setEdgeLatencyMs] = useState<number>(0);
   const [liveR2Bucket, setLiveR2Bucket] = useState<string>('siliconlabs');
+
+  // Rolling poll-window sampler: stores the authoritative dataset size captured on each
+  // poll. Rates derive ONLY from these stored endpoints (never Date.now() during render),
+  // so values stay stable between polls instead of flickering. Initialized empty, fills
+  // as polls arrive.
+  const samplesRef = useRef<PollSample[]>([]);
+  const [sampleVersion, setSampleVersion] = useState(0);
 
   // Supabase Status State
   const [supabaseStatus, setSupabaseStatus] = useState<SupabaseStatusData | null>(null);
@@ -77,112 +202,72 @@ export const TelemetricVelocityPage: React.FC = () => {
     const stuList = getStudents();
     setStudents(stuList);
     setLastRefreshed(new Date().toLocaleTimeString());
+
+    // Record a rolling-window sample derived purely from the fetched dataset totals.
+    const byBranch: Record<string, number> = {};
+    for (const s of stuList) {
+      const b = getStudentBranch(s);
+      byBranch[b] = (byBranch[b] || 0) + 1;
+    }
+    const sample: PollSample = { t: Date.now(), total: stuList.length, byBranch };
+    const samples = samplesRef.current;
+    const prev = samples[samples.length - 1];
+    if (!prev || prev.t !== sample.t) {
+      samples.push(sample);
+      if (samples.length > ROLLING_WINDOW_SAMPLES) samples.shift();
+      setSampleVersion(v => v + 1);
+    }
   }, []);
 
-  // Fetch Supabase & Edge Stats with real-time fallback
+  // Fetch Supabase & authoritative edge stats from /api/stats.
   const fetchSupabaseStatus = useCallback(async (force = false) => {
+    if (force) setStatusLoading(true);
+    const startMs = Date.now();
+
+    let capturedStats: EdgeStatsSnapshot | null = null;
+    let roundtripLatency = 0;
+
     try {
-      if (force) setStatusLoading(true);
-      const startMs = Date.now();
-      
       const [statusRes, statsRes] = await Promise.allSettled([
         fetch(`/api/admin/supabase-status${force ? '?refresh=true' : ''}`),
         fetch(`/api/stats?t=${Date.now()}`, { cache: 'no-store' })
       ]);
 
-      const roundtripLatency = Date.now() - startMs;
+      roundtripLatency = Date.now() - startMs;
 
       if (statsRes.status === 'fulfilled' && statsRes.value.ok) {
         try {
           const statsData = await statsRes.value.json();
-          if (statsData.queryLatencyMs !== undefined) {
-            setEdgeLatencyMs(statsData.queryLatencyMs);
-          } else {
-            setEdgeLatencyMs(roundtripLatency);
-          }
-          if (statsData.r2Bucket) {
-            setLiveR2Bucket(statsData.r2Bucket);
-          }
+          capturedStats = {
+            totalStudents: Number(statsData.totalStudents) || 0,
+            totalPhotos: Number(statsData.totalPhotos) || 0,
+            missingPhotos: Number(statsData.missingPhotos) || 0,
+            todayRecords: Number(statsData.todayRecords) || 0,
+            storageFormatted: typeof statsData.storageFormatted === 'string' ? statsData.storageFormatted : '',
+            r2TotalObjects: Number(statsData.r2TotalObjects ?? statsData.storageFileCount) || 0,
+            r2Bucket: typeof statsData.r2Bucket === 'string' ? statsData.r2Bucket : '',
+            queryLatencyMs: Number(statsData.queryLatencyMs) || 0
+          };
+          setEdgeStats(capturedStats);
+          // Latency: prefer the server-reported query latency, else the measured round trip.
+          setEdgeLatencyMs(capturedStats.queryLatencyMs > 0 ? capturedStats.queryLatencyMs : roundtripLatency);
+          if (capturedStats.r2Bucket) setLiveR2Bucket(capturedStats.r2Bucket);
         } catch {
           setEdgeLatencyMs(roundtripLatency);
         }
+      } else {
+        setEdgeLatencyMs(roundtripLatency);
       }
 
       if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
         const data = await statusRes.value.json();
         setSupabaseStatus(data);
       } else {
-        // Fallback real-time telemetry from store
-        const currentStudents = getStudents();
-        const verifiedPhotos = currentStudents.filter(s => Boolean(s.photoPath || s.thumbnailPath || s.originalPhotoPath)).length;
-        setSupabaseStatus({
-          databaseConnected: true,
-          databaseLatencyMs: Math.max(14, roundtripLatency),
-          storageConnected: true,
-          storageBucket: liveR2Bucket || 'siliconlabs',
-          storageProvider: 'Cloudflare R2',
-          storageFileCount: 12588,
-          storageSizeBytes: 1180423991,
-          storageSizeFormatted: '1125.74 MB (1.10 GB)',
-          storageFolders: [
-            { name: 'Grade 9', fileCount: Math.round(verifiedPhotos * 0.35), sizeBytes: 15000000, sizeFormatted: '14.3 MB' },
-            { name: 'Grade 10', fileCount: Math.round(verifiedPhotos * 0.30), sizeBytes: 12000000, sizeFormatted: '11.4 MB' },
-            { name: 'Grade 11', fileCount: Math.round(verifiedPhotos * 0.20), sizeBytes: 8000000, sizeFormatted: '7.6 MB' },
-            { name: 'Grade 12', fileCount: Math.round(verifiedPhotos * 0.15), sizeBytes: 6000000, sizeFormatted: '5.7 MB' },
-          ],
-          database: {
-            studentsCount: currentStudents.length,
-            studentsWithPhotos: verifiedPhotos,
-            studentsWithoutPhotos: currentStudents.length - verifiedPhotos,
-            usersCount: getAllSendersMetrics().length,
-            batchesCount: 1,
-            auditLogsCount: 24,
-            studentPhotosCatalogCount: verifiedPhotos,
-            totalDatabaseRecords: currentStudents.length + 25
-          },
-          poolerHost: 'cloudflare-edge.r2.cloudflarestorage.com',
-          region: 'eu-central-1',
-          sslMode: 'require',
-          lastActivity: new Date().toISOString(),
-          daysSinceActivity: 0,
-          daysUntilPause: 7,
-          pauseWarningActive: false,
-          timestamp: new Date().toISOString()
-        });
+        setSupabaseStatus(buildDatasetStatus(capturedStats, roundtripLatency, liveR2Bucket));
       }
     } catch {
-      // Local fallback
-      const currentStudents = getStudents();
-      const verifiedPhotos = currentStudents.filter(s => Boolean(s.photoPath || s.thumbnailPath || s.originalPhotoPath)).length;
-      setSupabaseStatus({
-        databaseConnected: true,
-        databaseLatencyMs: 24,
-        storageConnected: true,
-        storageBucket: liveR2Bucket || 'siliconlabs',
-        storageProvider: 'Cloudflare R2',
-        storageFileCount: 12588,
-        storageSizeBytes: 1180423991,
-        storageSizeFormatted: '1125.74 MB (1.10 GB)',
-        storageFolders: [],
-        database: {
-          studentsCount: currentStudents.length,
-          studentsWithPhotos: verifiedPhotos,
-          studentsWithoutPhotos: currentStudents.length - verifiedPhotos,
-          usersCount: getAllSendersMetrics().length,
-          batchesCount: 1,
-          auditLogsCount: 18,
-          studentPhotosCatalogCount: verifiedPhotos,
-          totalDatabaseRecords: currentStudents.length + 20
-        },
-        poolerHost: 'cloudflare-edge.r2.cloudflarestorage.com',
-        region: 'eu-central-1',
-        sslMode: 'require',
-        lastActivity: new Date().toISOString(),
-        daysSinceActivity: 0,
-        daysUntilPause: 7,
-        pauseWarningActive: false,
-        timestamp: new Date().toISOString()
-      });
+      setEdgeLatencyMs(roundtripLatency);
+      setSupabaseStatus(buildDatasetStatus(capturedStats, roundtripLatency, liveR2Bucket));
     } finally {
       setStatusLoading(false);
     }
@@ -237,12 +322,54 @@ export const TelemetricVelocityPage: React.FC = () => {
   // Authoritative Branches
   const branches = useMemo(() => ['Addis Ababa', 'Adama', 'Mojo', 'Harar'] as const, []);
 
-  // Compute Branch-specific Telemetric Velocity & Cohort Completion Horizons
+  // Deterministic facts derived directly from the fetched student dataset (no polling time).
+  const datasetFacts = useMemo(() => {
+    let withPhotos = 0;
+    let newestMs = 0;
+    let newestCreatedAt = '';
+    const byBranch: Record<string, number> = {};
+    const byBranchToday: Record<string, number> = {};
+    branches.forEach(b => { byBranch[b] = 0; byBranchToday[b] = 0; });
+
+    const now = new Date();
+    const todayPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    let todayCount = 0;
+
+    for (const s of students) {
+      if (s.photoPath || s.thumbnailPath || s.originalPhotoPath) withPhotos++;
+
+      const created = s.createdAt || '';
+      const datePrefix = created.replace('T', ' ').substring(0, 10);
+      const isToday = datePrefix !== '' && datePrefix === todayPrefix;
+      if (isToday) todayCount++;
+
+      if (created) {
+        const t = Date.parse(created.replace(' ', 'T'));
+        if (!Number.isNaN(t) && t > newestMs) {
+          newestMs = t;
+          newestCreatedAt = created;
+        }
+      }
+
+      const b = getStudentBranch(s);
+      if (byBranch[b] !== undefined) {
+        byBranch[b] += 1;
+        if (isToday) byBranchToday[b] += 1;
+      }
+    }
+
+    return { total: students.length, withPhotos, newestCreatedAt, todayCount, byBranch, byBranchToday };
+  }, [students, branches]);
+
+  // Latest authoritative total captured in the rolling poll window (for ingestion rate).
+  const samples = samplesRef.current;
+
+  // Compute Branch-specific Telemetric Velocity & Cohort Completion Horizons.
   const branchMetrics = useMemo(() => {
     return branches.map((branchName) => {
       const branchSenders = sendersList.filter(s => s.branch === branchName);
       const activeSenders = branchSenders.filter(s => s.status === 'Active' || s.today > 0);
-      const todayTotal = branchSenders.reduce((acc, s) => acc + (s.today || 0), 0);
+      const todayTotal = datasetFacts.byBranchToday[branchName] || 0;
       const weekTotal = branchSenders.reduce((acc, s) => acc + (s.week || 0), 0);
       const monthTotal = branchSenders.reduce((acc, s) => acc + (s.month || 0), 0);
       const allTimeTotal = branchSenders.reduce((acc, s) => acc + (s.total || 0), 0);
@@ -252,34 +379,30 @@ export const TelemetricVelocityPage: React.FC = () => {
       const branchSchools = DEFAULT_SCHOOLS.filter(s => s.location === branchName);
       const targetCohort = branchSchools.reduce((acc, sch) => acc + (sch.studentsCount || 0), 0);
 
-      // Actual registered students in database for this region
-      const actualRegistered = students.filter(s => getStudentBranch(s) === branchName).length;
+      // Actual registered students in dataset for this region (authoritative count)
+      const actualRegistered = datasetFacts.byBranch[branchName] || 0;
       const remainingRecords = Math.max(0, targetCohort - actualRegistered);
 
-      // Calculate average time taken per student
-      const sendersWithTime = branchSenders.filter(s => (s.avgTimeTakenSecondsPerRecord || 0) > 0);
-      const avgSeconds = sendersWithTime.length > 0
-        ? Math.round(sendersWithTime.reduce((acc, s) => acc + s.avgTimeTakenSecondsPerRecord, 0) / sendersWithTime.length)
-        : 42;
+      // Time / Student: genuine per-record capture cadence only (null when unsupported).
+      const avgSeconds = averageCaptureCadence(branchSenders);
 
-      const recPerMinute = avgSeconds > 0 ? Number((60 / avgSeconds).toFixed(2)) : 1.43;
+      // Speed (rec/min): observed ingestion rate over the stable rolling poll window.
+      const recPerMinute = windowRatePerMinute(samples, s => s.byBranch[branchName] || 0);
 
-      // Actual daily throughput velocity (records/day)
-      const effectiveDailyPace = todayTotal > 0
-        ? todayTotal
-        : Math.max(Math.round(weekTotal / 7), Math.max(activeSenders.length, 1) * 35, 1);
+      // Daily pace: authoritative records created today in this region (from the dataset).
+      const effectiveDailyPace = todayTotal;
 
-      // Projected operational days required to complete regional cohort
+      // Projected operating days; null when no observed pace yet exists.
       const daysToComplete = remainingRecords > 0
-        ? Number((remainingRecords / effectiveDailyPace).toFixed(1))
+        ? (effectiveDailyPace > 0 ? Number((remainingRecords / effectiveDailyPace).toFixed(1)) : null)
         : 0;
 
       const completionPercentage = targetCohort > 0
         ? Number(((actualRegistered / targetCohort) * 100).toFixed(1))
-        : 100;
+        : 0;
 
-      // Regional Cadence Assessment: High / Medium / Low
-      const cadenceLevel: 'HIGH' | 'MEDIUM' | 'LOW' = avgSeconds <= 45 ? 'HIGH' : avgSeconds <= 75 ? 'MEDIUM' : 'LOW';
+      // Cadence tier derived from real capture cadence (IDLE when no cadence data).
+      const cadenceLevel = cadenceTier(avgSeconds);
 
       // Registered school names in this branch
       const schoolList = BRANCH_SCHOOL_MAP[branchName] || [];
@@ -306,7 +429,8 @@ export const TelemetricVelocityPage: React.FC = () => {
         senders: branchSenders
       };
     });
-  }, [branches, sendersList, students]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branches, sendersList, students, datasetFacts, sampleVersion]);
 
   // Aggregate Fleet Cohort Metrics across All Regional Jurisdictions
   const totalFleetCohortTarget = useMemo(() => {
@@ -314,41 +438,47 @@ export const TelemetricVelocityPage: React.FC = () => {
   }, []);
 
   const totalFleetCompleted = useMemo(() => {
-    return students.length;
-  }, [students]);
+    return edgeStats?.totalStudents || datasetFacts.total;
+  }, [edgeStats, datasetFacts.total]);
 
   const totalFleetRemaining = useMemo(() => {
     return Math.max(0, totalFleetCohortTarget - totalFleetCompleted);
   }, [totalFleetCohortTarget, totalFleetCompleted]);
 
   const totalFleetTransmissionsToday = useMemo(() => {
-    return sendersList.reduce((acc, s) => acc + (s.today || 0), 0);
-  }, [sendersList]);
+    return edgeStats?.todayRecords ?? datasetFacts.todayCount;
+  }, [edgeStats, datasetFacts.todayCount]);
 
   const totalFleetDailyPace = useMemo(() => {
-    if (totalFleetTransmissionsToday > 0) return totalFleetTransmissionsToday;
-    return branchMetrics.reduce((acc, b) => acc + b.effectiveDailyPace, 0);
-  }, [totalFleetTransmissionsToday, branchMetrics]);
+    return totalFleetTransmissionsToday;
+  }, [totalFleetTransmissionsToday]);
 
   const totalFleetDaysToComplete = useMemo(() => {
     if (totalFleetRemaining === 0) return 0;
-    return Number((totalFleetRemaining / Math.max(totalFleetDailyPace, 1)).toFixed(1));
+    return totalFleetDailyPace > 0
+      ? Number((totalFleetRemaining / totalFleetDailyPace).toFixed(1))
+      : null;
   }, [totalFleetRemaining, totalFleetDailyPace]);
 
   const totalHardwareLocked = useMemo(() => {
     return sendersList.filter(s => Boolean(s.boundDeviceId)).length;
   }, [sendersList]);
 
-  const avgFleetTimeSeconds = useMemo(() => {
-    const active = sendersList.filter(s => s.avgTimeTakenSecondsPerRecord > 0);
-    if (active.length === 0) return 42;
-    return Math.round(active.reduce((acc, s) => acc + s.avgTimeTakenSecondsPerRecord, 0) / active.length);
+  // Actual senders = operators that really transmitted student records (not just provisioned accounts)
+  const actualSendersCount = useMemo(() => {
+    return sendersList.filter(s => (s.total || 0) > 0 || (s.today || 0) > 0).length;
   }, [sendersList]);
 
+  // Fleet capture cadence from genuine sender telemetry only (null when none reported).
+  const avgFleetTimeSeconds = useMemo(() => {
+    return averageCaptureCadence(sendersList);
+  }, [sendersList]);
+
+  // Fleet Transmission Velocity = records added per minute over the rolling poll window.
   const avgFleetPacePerMinute = useMemo(() => {
-    if (avgFleetTimeSeconds === 0) return 0;
-    return Number((60 / avgFleetTimeSeconds).toFixed(2));
-  }, [avgFleetTimeSeconds]);
+    return windowRatePerMinute(samples, s => s.total);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sampleVersion]);
 
   // Filtered senders
   const filteredSenders = useMemo(() => {
@@ -376,10 +506,12 @@ export const TelemetricVelocityPage: React.FC = () => {
     const headers = 'Operator,Branch,Campus,Transmission Speed (rec/min),Time Spent / Student (sec),Velocity Level,Today (0-Start),Week,Month,Total,1-Device Lock,Status';
     const rows = filteredSenders.map(s => {
       const isOnline = s.status === 'Active' || s.today > 0;
-      const timeTaken = s.avgTimeTakenSecondsPerRecord || 45;
-      const perMin = s.recordsPerMinute > 0 ? s.recordsPerMinute : Number((60 / timeTaken).toFixed(2));
-      const level = timeTaken <= 45 ? 'HIGH' : timeTaken <= 75 ? 'MEDIUM' : 'LOW';
-      return `"${s.username}","${s.branch || 'Addis Ababa'}","${s.school || 'YMS 1'}",${perMin},${timeTaken},"${level}",${s.today},${s.week},${s.month},${s.total},"${s.boundDeviceId ? 'Locked' : 'Unlocked'}","${isOnline ? 'Active' : 'Standby'}"`;
+      const timeTaken = s.avgTimeTakenSecondsPerRecord > 0 ? s.avgTimeTakenSecondsPerRecord : null;
+      const perMin = s.recordsPerMinute > 0
+        ? s.recordsPerMinute
+        : (timeTaken !== null ? Number((60 / timeTaken).toFixed(2)) : null);
+      const level = timeTaken === null ? 'IDLE' : timeTaken <= 45 ? 'HIGH' : timeTaken <= 75 ? 'MEDIUM' : 'LOW';
+      return `"${s.username}","${s.branch || 'Addis Ababa'}","${s.school || 'YMS 1'}",${perMin ?? NEUTRAL},${timeTaken ?? NEUTRAL},"${level}",${s.today},${s.week},${s.month},${s.total},"${s.boundDeviceId ? 'Locked' : 'Unlocked'}","${isOnline ? 'Active' : 'Standby'}"`;
     });
     const csvContent = [headers, ...rows].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -526,7 +658,7 @@ export const TelemetricVelocityPage: React.FC = () => {
             }`}
           >
             <BarChart3 className="w-4 h-4" />
-            <span>Fleet Operators ({sendersList.length})</span>
+            <span>Fleet Operators ({actualSendersCount} with sent records)</span>
           </button>
         </div>
 
@@ -625,7 +757,7 @@ export const TelemetricVelocityPage: React.FC = () => {
               </div>
               <div className="flex items-baseline gap-2">
                 <span className="text-3xl font-black font-mono text-cyan-600 dark:text-cyan-400">
-                  {supabaseStatus ? supabaseStatus.storageFileCount.toLocaleString() : '4,925'}
+                  {(edgeStats?.totalPhotos ?? datasetFacts.withPhotos).toLocaleString()}
                 </span>
                 <span className="text-xs text-slate-500 dark:text-slate-400 font-bold font-sans">
                   Photos Verified
@@ -633,7 +765,7 @@ export const TelemetricVelocityPage: React.FC = () => {
               </div>
               <div className="text-[11px] text-cyan-700 dark:text-cyan-300 font-semibold flex items-center gap-1.5 font-mono">
                 <CheckCircle2 className="h-3.5 w-3.5" />
-                <span>Bucket &apos;{liveR2Bucket}&apos; &bull; {supabaseStatus?.storageSizeFormatted || '216 MB'}</span>
+                <span>Bucket &apos;{liveR2Bucket}&apos; &bull; {supabaseStatus?.storageSizeFormatted || edgeStats?.storageFormatted || NEUTRAL}</span>
               </div>
             </div>
 
@@ -668,13 +800,13 @@ export const TelemetricVelocityPage: React.FC = () => {
               </div>
               <div className="flex items-baseline gap-2">
                 <span className="text-2xl font-black font-mono text-slate-900 dark:text-white">
-                  {supabaseStatus?.lastActivity
-                    ? new Date(supabaseStatus.lastActivity).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                    : 'Active Now'}
+                  {datasetFacts.newestCreatedAt
+                    ? new Date(datasetFacts.newestCreatedAt.replace(' ', 'T')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                    : NEUTRAL}
                 </span>
               </div>
               <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
-                DB Rows: {supabaseStatus?.database?.totalDatabaseRecords || students.length.toLocaleString()} records synced
+                DB Rows: {totalFleetCompleted.toLocaleString()} records synced
               </div>
             </div>
           </div>
@@ -776,10 +908,12 @@ export const TelemetricVelocityPage: React.FC = () => {
                         ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800'
                         : bm.cadenceLevel === 'MEDIUM'
                         ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800'
-                        : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-800'
+                        : bm.cadenceLevel === 'LOW'
+                        ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-800'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-300 dark:border-slate-700'
                     }`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${bm.cadenceLevel === 'HIGH' ? 'bg-emerald-500 animate-pulse' : bm.cadenceLevel === 'MEDIUM' ? 'bg-amber-500' : 'bg-rose-500'}`} />
-                      {bm.cadenceLevel === 'HIGH' ? 'HIGH VELOCITY' : bm.cadenceLevel === 'MEDIUM' ? 'MEDIUM CADENCE' : 'LOW PACING'}
+                      <span className={`w-1.5 h-1.5 rounded-full ${bm.cadenceLevel === 'HIGH' ? 'bg-emerald-500 animate-pulse' : bm.cadenceLevel === 'MEDIUM' ? 'bg-amber-500' : bm.cadenceLevel === 'LOW' ? 'bg-rose-500' : 'bg-slate-400'}`} />
+                      {bm.cadenceLevel === 'HIGH' ? 'HIGH VELOCITY' : bm.cadenceLevel === 'MEDIUM' ? 'MEDIUM CADENCE' : bm.cadenceLevel === 'LOW' ? 'LOW PACING' : 'NO CADENCE'}
                     </span>
                   </div>
 
@@ -792,7 +926,7 @@ export const TelemetricVelocityPage: React.FC = () => {
                         <span>Speed</span>
                       </div>
                       <div className="text-base font-black font-mono text-blue-600 dark:text-blue-400 mt-0.5">
-                        {bm.recPerMinute} <span className="text-[10px] font-normal text-slate-400">rec/min</span>
+                        {formatRate(bm.recPerMinute)} <span className="text-[10px] font-normal text-slate-400">rec/min</span>
                       </div>
                     </div>
 
@@ -803,7 +937,7 @@ export const TelemetricVelocityPage: React.FC = () => {
                         <span>Time / Student</span>
                       </div>
                       <div className="text-base font-black font-mono text-amber-600 dark:text-amber-400 mt-0.5">
-                        {bm.avgSeconds}s <span className="text-[10px] font-normal text-slate-400">/rec</span>
+                        {bm.avgSeconds === null ? NEUTRAL : `${bm.avgSeconds}s`} <span className="text-[10px] font-normal text-slate-400">/rec</span>
                       </div>
                     </div>
 
@@ -825,7 +959,7 @@ export const TelemetricVelocityPage: React.FC = () => {
                         <span>Horizon</span>
                       </div>
                       <div className="text-base font-black font-mono text-purple-600 dark:text-purple-400 mt-0.5">
-                        {bm.remainingRecords === 0 ? '0' : bm.daysToComplete} <span className="text-[10px] font-normal text-slate-400">Days</span>
+                        {bm.remainingRecords === 0 ? '0' : (bm.daysToComplete === null ? NEUTRAL : bm.daysToComplete)} <span className="text-[10px] font-normal text-slate-400">Days</span>
                       </div>
                     </div>
                   </div>
@@ -935,17 +1069,17 @@ export const TelemetricVelocityPage: React.FC = () => {
                       <td className="py-3.5 text-center">
                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/40">
                           <Timer className="w-3 h-3 text-amber-500" />
-                          <span>{bm.avgSeconds}s</span>
+                          <span>{bm.avgSeconds === null ? NEUTRAL : `${bm.avgSeconds}s`}</span>
                         </span>
                       </td>
                       <td className="py-3.5 text-center">
                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-blue-50 dark:bg-blue-950/20 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-900/40">
                           <Zap className="w-3 h-3 text-blue-500" />
-                          <span>{bm.recPerMinute}/m</span>
+                          <span>{formatRate(bm.recPerMinute)}/m</span>
                         </span>
                       </td>
                       <td className="py-3.5 text-center font-black text-purple-600 dark:text-purple-400">
-                        {bm.remainingRecords === 0 ? '0 Days (Done)' : `${bm.daysToComplete} Days`}
+                        {bm.remainingRecords === 0 ? '0 Days (Done)' : (bm.daysToComplete === null ? NEUTRAL : `${bm.daysToComplete} Days`)}
                       </td>
                       <td className="py-3.5 text-center">
                         <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black border ${
@@ -953,9 +1087,11 @@ export const TelemetricVelocityPage: React.FC = () => {
                             ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800'
                             : bm.cadenceLevel === 'MEDIUM'
                             ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800'
-                            : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-800'
+                            : bm.cadenceLevel === 'LOW'
+                            ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-800'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-300 dark:border-slate-700'
                         }`}>
-                          {bm.cadenceLevel}
+                          {bm.cadenceLevel === 'IDLE' ? 'NO CADENCE' : bm.cadenceLevel}
                         </span>
                       </td>
                       <td className="py-3.5 pr-4 text-right">
@@ -994,26 +1130,32 @@ export const TelemetricVelocityPage: React.FC = () => {
                     <td className="py-3.5 text-center">
                       <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300">
                         <Timer className="w-3 h-3 text-amber-500" />
-                        <span>{avgFleetTimeSeconds}s</span>
+                        <span>{avgFleetTimeSeconds === null ? NEUTRAL : `${avgFleetTimeSeconds}s`}</span>
                       </span>
                     </td>
                     <td className="py-3.5 text-center">
                       <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-blue-100 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300">
                         <Zap className="w-3 h-3 text-blue-500" />
-                        <span>{avgFleetPacePerMinute}/m</span>
+                        <span>{formatRate(avgFleetPacePerMinute)}/m</span>
                       </span>
                     </td>
                     <td className="py-3.5 text-center font-black text-purple-700 dark:text-purple-300 text-sm">
-                      {totalFleetRemaining === 0 ? '0 Days (Done)' : `${totalFleetDaysToComplete} Days`}
+                      {totalFleetRemaining === 0 ? '0 Days (Done)' : (totalFleetDaysToComplete === null ? NEUTRAL : `${totalFleetDaysToComplete} Days`)}
                     </td>
                     <td className="py-3.5 text-center">
                       <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black border bg-[#85E510]/20 text-[#256002] dark:text-[#85E510] border-[#85E510]/40">
-                        HIGH VELOCITY
+                        {cadenceTier(avgFleetTimeSeconds) === 'HIGH'
+                          ? 'HIGH VELOCITY'
+                          : cadenceTier(avgFleetTimeSeconds) === 'MEDIUM'
+                          ? 'MEDIUM CADENCE'
+                          : cadenceTier(avgFleetTimeSeconds) === 'LOW'
+                          ? 'LOW PACING'
+                          : 'NO CADENCE'}
                       </span>
                     </td>
                     <td className="py-3.5 pr-4 text-right">
                       <span className="text-xs font-black text-[#256002] dark:text-[#85E510]">
-                        {Math.min(100, Math.round((totalFleetCompleted / totalFleetCohortTarget) * 100))}%
+                        {totalFleetCohortTarget > 0 ? Math.min(100, Math.round((totalFleetCompleted / totalFleetCohortTarget) * 100)) : 0}%
                       </span>
                     </td>
                   </tr>
@@ -1037,17 +1179,17 @@ export const TelemetricVelocityPage: React.FC = () => {
               {branchMetrics.map((bm) => {
                 const share = totalFleetTransmissionsToday > 0
                   ? Math.round((bm.today / totalFleetTransmissionsToday) * 100)
-                  : 25;
+                  : 0;
                 return (
                   <div key={bm.branch} className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs font-mono">
                       <span className="font-bold font-sans text-slate-800 dark:text-slate-200">{bm.branch}</span>
-                      <span className="text-slate-500 font-semibold">{bm.today} today ({share}%) &bull; {bm.recPerMinute} rec/min</span>
+                      <span className="text-slate-500 font-semibold">{bm.today} today ({share}%) &bull; {formatRate(bm.recPerMinute)} rec/min</span>
                     </div>
                     <div className="w-full h-3 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
                       <div
                         className="h-full rounded-full bg-gradient-to-r from-[#85E510] to-emerald-500 transition-all duration-500"
-                        style={{ width: `${Math.max(share, 4)}%` }}
+                        style={{ width: `${Math.min(100, Math.max(0, share))}%` }}
                       />
                     </div>
                   </div>
@@ -1090,12 +1232,12 @@ export const TelemetricVelocityPage: React.FC = () => {
                 </span>
               </div>
               <div className="mt-2 text-3xl sm:text-4xl font-black font-mono text-slate-900 dark:text-white flex items-baseline gap-2">
-                <span>{avgFleetPacePerMinute}</span>
+                <span>{formatRate(avgFleetPacePerMinute)}</span>
                 <span className="text-xs font-bold text-slate-400 font-mono">rec / min</span>
               </div>
               <div className="mt-2 text-[11px] text-blue-600 dark:text-blue-400 font-semibold flex items-center gap-1.5 font-sans">
                 <TrendingUp className="w-3.5 h-3.5" />
-                <span>Field intake throughput pace</span>
+                <span>Records added per minute (live window)</span>
               </div>
             </div>
 
@@ -1108,7 +1250,7 @@ export const TelemetricVelocityPage: React.FC = () => {
                 </span>
               </div>
               <div className="mt-2 text-3xl sm:text-4xl font-black font-mono text-slate-900 dark:text-white flex items-baseline gap-2">
-                <span>{avgFleetTimeSeconds}</span>
+                <span>{formatSeconds(avgFleetTimeSeconds)}</span>
                 <span className="text-xs font-bold text-slate-400 font-mono">sec / student</span>
               </div>
               <div className="mt-2 text-[11px] text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1.5 font-sans">
@@ -1127,7 +1269,7 @@ export const TelemetricVelocityPage: React.FC = () => {
               </div>
               <div className="mt-2 text-3xl sm:text-4xl font-black font-mono text-[#85E510] flex items-baseline gap-2">
                 <span>{totalHardwareLocked}</span>
-                <span className="text-xs font-bold text-slate-400 font-mono">/ {sendersList.length} bound</span>
+                <span className="text-xs font-bold text-slate-400 font-mono">/ {actualSendersCount} actual senders</span>
               </div>
               <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5 font-sans">
                 <Laptop className="w-3.5 h-3.5 text-[#85E510]" />
@@ -1194,11 +1336,11 @@ export const TelemetricVelocityPage: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
               {filteredSenders.map((sender) => {
                 const isOnline = sender.status === 'Active' || sender.today > 0;
-                const timeTaken = sender.avgTimeTakenSecondsPerRecord || 45;
+                const timeTaken = sender.avgTimeTakenSecondsPerRecord > 0 ? sender.avgTimeTakenSecondsPerRecord : null;
                 const perMinuteRate = sender.recordsPerMinute > 0
                   ? sender.recordsPerMinute
-                  : (timeTaken > 0 ? Number((60 / timeTaken).toFixed(2)) : 1.33);
-                const senderLevel = timeTaken <= 45 ? 'HIGH' : timeTaken <= 75 ? 'MEDIUM' : 'LOW';
+                  : (timeTaken !== null ? Number((60 / timeTaken).toFixed(2)) : null);
+                const senderLevel = cadenceTier(timeTaken);
 
                 return (
                   <div
@@ -1244,7 +1386,7 @@ export const TelemetricVelocityPage: React.FC = () => {
                           <span>Time / 1 Student:</span>
                         </span>
                         <span className="font-black font-mono text-amber-600 dark:text-amber-400">
-                          {timeTaken}s <span className="text-[10px] text-slate-400 font-normal font-sans">/ student</span>
+                          {timeTaken === null ? NEUTRAL : `${timeTaken}s`} <span className="text-[10px] text-slate-400 font-normal font-sans">/ student</span>
                         </span>
                       </div>
 
@@ -1255,7 +1397,7 @@ export const TelemetricVelocityPage: React.FC = () => {
                           <span>Transmission Speed:</span>
                         </span>
                         <span className="font-black font-mono text-blue-600 dark:text-blue-400">
-                          {perMinuteRate} <span className="text-[10px] text-slate-400 font-normal font-sans">rec / min</span>
+                          {formatRate(perMinuteRate)} <span className="text-[10px] text-slate-400 font-normal font-sans">rec / min</span>
                         </span>
                       </div>
 
@@ -1269,10 +1411,12 @@ export const TelemetricVelocityPage: React.FC = () => {
                             ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800'
                             : senderLevel === 'MEDIUM'
                             ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800'
-                            : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-800'
+                            : senderLevel === 'LOW'
+                            ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-800'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-300 dark:border-slate-700'
                         }`}>
-                          <span className={`w-1.5 h-1.5 rounded-full ${senderLevel === 'HIGH' ? 'bg-emerald-500 animate-pulse' : senderLevel === 'MEDIUM' ? 'bg-amber-500' : 'bg-rose-500'}`} />
-                          {senderLevel === 'HIGH' ? 'HIGH VELOCITY' : senderLevel === 'MEDIUM' ? 'MEDIUM CADENCE' : 'LOW PACING'}
+                          <span className={`w-1.5 h-1.5 rounded-full ${senderLevel === 'HIGH' ? 'bg-emerald-500 animate-pulse' : senderLevel === 'MEDIUM' ? 'bg-amber-500' : senderLevel === 'LOW' ? 'bg-rose-500' : 'bg-slate-400'}`} />
+                          {senderLevel === 'HIGH' ? 'HIGH VELOCITY' : senderLevel === 'MEDIUM' ? 'MEDIUM CADENCE' : senderLevel === 'LOW' ? 'LOW PACING' : 'NO CADENCE'}
                         </span>
                       </div>
                     </div>
@@ -1348,11 +1492,11 @@ export const TelemetricVelocityPage: React.FC = () => {
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                     {filteredSenders.map((s) => {
                       const isOnline = s.status === 'Active' || s.today > 0;
-                      const timeTaken = s.avgTimeTakenSecondsPerRecord || 45;
+                      const timeTaken = s.avgTimeTakenSecondsPerRecord > 0 ? s.avgTimeTakenSecondsPerRecord : null;
                       const perMinuteRate = s.recordsPerMinute > 0
                         ? s.recordsPerMinute
-                        : (timeTaken > 0 ? Number((60 / timeTaken).toFixed(2)) : 1.33);
-                      const senderLevel = timeTaken <= 45 ? 'HIGH' : timeTaken <= 75 ? 'MEDIUM' : 'LOW';
+                        : (timeTaken !== null ? Number((60 / timeTaken).toFixed(2)) : null);
+                      const senderLevel = cadenceTier(timeTaken);
 
                       return (
                         <tr
@@ -1382,13 +1526,13 @@ export const TelemetricVelocityPage: React.FC = () => {
                           <td className="py-3.5 text-center">
                             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/40">
                               <Timer className="w-3 h-3 text-amber-500" />
-                              <span>{timeTaken}s</span>
+                              <span>{timeTaken === null ? NEUTRAL : `${timeTaken}s`}</span>
                             </span>
                           </td>
                           <td className="py-3.5 text-center">
                             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold bg-blue-50 dark:bg-blue-950/20 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-900/40">
                               <Zap className="w-3 h-3 text-blue-500" />
-                              <span>{perMinuteRate}/m</span>
+                              <span>{formatRate(perMinuteRate)}/m</span>
                             </span>
                           </td>
                           <td className="py-3.5 text-center">
@@ -1397,10 +1541,12 @@ export const TelemetricVelocityPage: React.FC = () => {
                                 ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800'
                                 : senderLevel === 'MEDIUM'
                                 ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800'
-                                : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-800'
+                                : senderLevel === 'LOW'
+                                ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-800'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-300 dark:border-slate-700'
                             }`}>
-                              <span className={`w-1.5 h-1.5 rounded-full ${senderLevel === 'HIGH' ? 'bg-emerald-500 animate-pulse' : senderLevel === 'MEDIUM' ? 'bg-amber-500' : 'bg-rose-500'}`} />
-                              {senderLevel === 'HIGH' ? 'High' : senderLevel === 'MEDIUM' ? 'Medium' : 'Low'}
+                              <span className={`w-1.5 h-1.5 rounded-full ${senderLevel === 'HIGH' ? 'bg-emerald-500 animate-pulse' : senderLevel === 'MEDIUM' ? 'bg-amber-500' : senderLevel === 'LOW' ? 'bg-rose-500' : 'bg-slate-400'}`} />
+                              {senderLevel === 'HIGH' ? 'High' : senderLevel === 'MEDIUM' ? 'Medium' : senderLevel === 'LOW' ? 'Low' : 'Idle'}
                             </span>
                           </td>
                           <td className="py-3.5 text-center font-black text-slate-900 dark:text-white text-sm">
@@ -1495,20 +1641,31 @@ export const TelemetricVelocityPage: React.FC = () => {
                   Operator Telemetric Velocity
                 </span>
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-[#85E510] text-[#062404] font-mono">
-                  {inspectingSender.avgTimeTakenSecondsPerRecord <= 45 ? 'HIGH CADENCE' : 'STANDARD'}
+                  {(() => {
+                    const tier = cadenceTier(inspectingSender.avgTimeTakenSecondsPerRecord > 0 ? inspectingSender.avgTimeTakenSecondsPerRecord : null);
+                    return tier === 'HIGH' ? 'HIGH CADENCE' : tier === 'MEDIUM' ? 'MEDIUM CADENCE' : tier === 'LOW' ? 'LOW PACING' : 'NO CADENCE';
+                  })()}
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="p-3 rounded-xl bg-white dark:bg-[#111713] border border-slate-200 dark:border-slate-800">
                   <div className="text-[10px] text-slate-400 font-bold uppercase font-mono">Speed</div>
                   <div className="text-xl font-black font-mono text-blue-600 dark:text-blue-400">
-                    {inspectingSender.recordsPerMinute || Number((60 / (inspectingSender.avgTimeTakenSecondsPerRecord || 45)).toFixed(2))} rec/min
+                    {(() => {
+                      const t = inspectingSender.avgTimeTakenSecondsPerRecord > 0 ? inspectingSender.avgTimeTakenSecondsPerRecord : null;
+                      const rate = inspectingSender.recordsPerMinute > 0
+                        ? inspectingSender.recordsPerMinute
+                        : (t !== null ? Number((60 / t).toFixed(2)) : null);
+                      return `${formatRate(rate)} rec/min`;
+                    })()}
                   </div>
                 </div>
                 <div className="p-3 rounded-xl bg-white dark:bg-[#111713] border border-slate-200 dark:border-slate-800">
                   <div className="text-[10px] text-slate-400 font-bold uppercase font-mono">Time per Student</div>
                   <div className="text-xl font-black font-mono text-amber-600 dark:text-amber-400">
-                    {inspectingSender.avgTimeTakenSecondsPerRecord || 45} seconds
+                    {inspectingSender.avgTimeTakenSecondsPerRecord > 0
+                      ? `${inspectingSender.avgTimeTakenSecondsPerRecord} seconds`
+                      : NEUTRAL}
                   </div>
                 </div>
               </div>

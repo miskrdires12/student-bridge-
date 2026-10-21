@@ -58,7 +58,7 @@ export const SuperAdminIntegrationsPage: React.FC = () => {
             <h1 className="text-2xl font-heading font-extrabold text-[#202833] tracking-tight">StudentCore Live Sync Pipeline</h1>
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-[#85E510]/15 text-[#366804] border border-[#85E510]/30 uppercase flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-[#85E510] animate-pulse" />
-              <span>Real-Time Edge Stream Active</span>
+              <span>Real-Time Edge Sync Live</span>
             </span>
           </div>
           <p className="text-xs text-[#64748B] mt-0.5">
@@ -104,7 +104,7 @@ export const SuperAdminIntegrationsPage: React.FC = () => {
         <div className="p-4 border-b border-[#E2E8F0] flex items-center justify-between">
           <h2 className="text-xs font-heading font-bold text-[#202833] uppercase tracking-wider flex items-center gap-2">
             <Activity className="w-4 h-4 text-[#85E510]" />
-            <span>Biometric Synchronization Stream</span>
+            <span>Biometric Synchronization — Live</span>
           </h2>
           <span className="text-xs font-mono text-[#64748B]">Displaying 20 recent events</span>
         </div>

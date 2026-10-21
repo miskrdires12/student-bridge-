@@ -20,7 +20,6 @@ import {
   Download,
   Trash2,
   Search,
-  PieChart as PieChartIcon,
   Layers,
   FileText,
   User,
@@ -106,725 +105,6 @@ export interface SupabaseStatusData {
   daysUntilPause: number;
   pauseWarningActive: boolean;
   timestamp: string;
-}
-
-/**
- * High-fidelity Interactive SVG Pie & Donut Chart Component
- */
-export function InteractivePieChart({
-  title,
-  subtitle,
-  data,
-  donut = false,
-  centerLabel,
-  centerValue,
-}: {
-  title: string;
-  subtitle: string;
-  data: ChartSegment[];
-  donut?: boolean;
-  centerLabel?: string;
-  centerValue?: string | number;
-}) {
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-
-  const total = data.reduce((acc, curr) => acc + curr.value, 0);
-  const size = 220;
-  const cx = size / 2;
-  const cy = size / 2;
-  const radius = 88;
-  const innerRadius = donut ? 52 : 0;
-
-  // Build SVG path coordinates
-  let cumulativeAngle = -Math.PI / 2; // Start from top 12 o'clock
-
-  const slices = data.map((item) => {
-    const fraction = total > 0 ? item.value / total : 0;
-    const sliceAngle = fraction * 2 * Math.PI;
-
-    const startAngle = cumulativeAngle;
-    const endAngle = cumulativeAngle + sliceAngle;
-    cumulativeAngle = endAngle;
-
-    // Guard for 100% single slice or 0 items
-    if (fraction >= 0.999) {
-      return {
-        ...item,
-        fraction,
-        isFull: true,
-        path: "",
-      };
-    }
-
-    const x1 = cx + radius * Math.cos(startAngle);
-    const y1 = cy + radius * Math.sin(startAngle);
-    const x2 = cx + radius * Math.cos(endAngle);
-    const y2 = cy + radius * Math.sin(endAngle);
-
-    const largeArc = sliceAngle > Math.PI ? 1 : 0;
-
-    let path = "";
-    if (donut) {
-      const xin1 = cx + innerRadius * Math.cos(endAngle);
-      const yin1 = cy + innerRadius * Math.sin(endAngle);
-      const xin2 = cx + innerRadius * Math.cos(startAngle);
-      const yin2 = cy + innerRadius * Math.sin(startAngle);
-
-      path = `M ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2} L ${xin1} ${yin1} A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${xin2} ${yin2} Z`;
-    } else {
-      path = `M ${cx} ${cy} L ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2} Z`;
-    }
-
-    return {
-      ...item,
-      fraction,
-      isFull: false,
-      path,
-    };
-  });
-
-  return (
-    <div className="rounded-3xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-5 shadow-sm flex flex-col justify-between">
-      <div>
-        <div className="flex items-center justify-between pb-3 border-b border-[#eef5f1] dark:border-[#1c261e]">
-          <div>
-            <h3 className="text-sm font-black font-mono text-[#080808] dark:text-[#f2f7f4]">
-              {title}
-            </h3>
-            <p className="text-[11px] text-[#6b7771] dark:text-[#8a9e93] font-mono">
-              {subtitle}
-            </p>
-          </div>
-          <div className="h-7 w-7 rounded-xl bg-[#8fe617]/15 border border-[#8fe617]/40 flex items-center justify-center text-[#8fe617]">
-            <PieChartIcon className="h-4 w-4" />
-          </div>
-        </div>
-
-        {/* SVG Chart Display */}
-        <div className="relative flex items-center justify-center py-5">
-          <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="overflow-visible">
-            {total === 0 ? (
-              <circle
-                cx={cx}
-                cy={cy}
-                r={radius}
-                fill="none"
-                stroke="#223126"
-                strokeWidth={donut ? radius - innerRadius : radius}
-              />
-            ) : (
-              slices.map((slice, i) => {
-                const isHovered = hoveredIndex === i;
-                if (slice.value === 0) return null;
-
-                if (slice.isFull) {
-                  return (
-                    <circle
-                      key={slice.label}
-                      cx={cx}
-                      cy={cy}
-                      r={donut ? (radius + innerRadius) / 2 : radius}
-                      fill={donut ? "none" : slice.color}
-                      stroke={donut ? slice.color : "none"}
-                      strokeWidth={donut ? radius - innerRadius : 0}
-                      className="transition-all duration-300 cursor-pointer"
-                      onMouseEnter={() => setHoveredIndex(i)}
-                      onMouseLeave={() => setHoveredIndex(null)}
-                      style={{
-                        filter: isHovered ? "drop-shadow(0 0 8px rgba(143,230,23,0.5))" : "none",
-                      }}
-                    />
-                  );
-                }
-
-                return (
-                  <path
-                    key={slice.label}
-                    d={slice.path}
-                    fill={slice.color}
-                    className="transition-all duration-200 cursor-pointer hover:opacity-95"
-                    stroke="#111613"
-                    strokeWidth="2.5"
-                    onMouseEnter={() => setHoveredIndex(i)}
-                    onMouseLeave={() => setHoveredIndex(null)}
-                    style={{
-                      transformOrigin: `${cx}px ${cy}px`,
-                      transform: isHovered ? "scale(1.05)" : "scale(1)",
-                      filter: isHovered ? `drop-shadow(0 0 10px ${slice.color}88)` : "none",
-                    }}
-                  />
-                );
-              })
-            )}
-
-            {/* Donut Center Readout */}
-            {donut && (
-              <g className="pointer-events-none text-center">
-                <text
-                  x={cx}
-                  y={cy - 4}
-                  textAnchor="middle"
-                  className="fill-[#080808] dark:fill-[#f2f7f4] font-mono font-black text-xl"
-                >
-                  {hoveredIndex !== null
-                    ? data[hoveredIndex]?.value.toLocaleString()
-                    : centerValue ?? total.toLocaleString()}
-                </text>
-                <text
-                  x={cx}
-                  y={cy + 14}
-                  textAnchor="middle"
-                  className="fill-[#6b7771] dark:fill-[#8a9e93] font-mono font-bold text-[9px] uppercase tracking-wider"
-                >
-                  {hoveredIndex !== null
-                    ? data[hoveredIndex]?.label
-                    : centerLabel ?? "TOTAL"}
-                </text>
-              </g>
-            )}
-          </svg>
-        </div>
-      </div>
-
-      {/* Legend with Metrics */}
-      <div className="space-y-1.5 pt-3 border-t border-[#eef5f1] dark:border-[#1c261e]">
-        {data.map((item, idx) => {
-          const pct = total > 0 ? Math.round((item.value / total) * 100) : 0;
-          const isHovered = hoveredIndex === idx;
-
-          return (
-            <div
-              key={item.label}
-              onMouseEnter={() => setHoveredIndex(idx)}
-              onMouseLeave={() => setHoveredIndex(null)}
-              className={`flex items-center justify-between px-2.5 py-1 rounded-xl text-xs font-mono transition-colors cursor-pointer ${
-                isHovered
-                  ? "bg-[#8fe617]/15 text-[#080808] dark:text-[#f2f7f4]"
-                  : "text-[#6b7771] dark:text-[#8a9e93] hover:bg-[#f7faf9] dark:hover:bg-[#161d19]"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className="h-2.5 w-2.5 rounded-full shrink-0 shadow-xs"
-                  style={{ backgroundColor: item.color }}
-                />
-                <span className="font-bold text-[#080808] dark:text-[#f2f7f4]">
-                  {item.label}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-[#080808] dark:text-[#f2f7f4]">
-                  {item.value.toLocaleString()}
-                </span>
-                <span className="font-bold text-[10px] text-[#8fe617] bg-[#8fe617]/20 px-1.5 py-0.2 rounded-md">
-                  {pct}%
-                </span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Unique Real-Time Supabase Storage & Data PieChart Component
- * Visualizes live Supabase Storage 'student data' bucket payloads & relational DB records
- */
-export function SupabaseRealtimeStoragePieChart({
-  status,
-  loading,
-  onRefresh,
-}: {
-  status: SupabaseStatusData | null;
-  loading: boolean;
-  onRefresh: () => void;
-}) {
-  const [viewMode, setViewMode] = useState<"storage" | "ecosystem">("storage");
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-
-  // Silicon Labs Lemon Green & Obsidian Neon Palette
-  const PALETTE = [
-    "#8fe617", // Neon Lemon Green
-    "#00e5ff", // Bright Cyan
-    "#a855f7", // Neon Purple
-    "#3b82f6", // Electric Blue
-    "#f59e0b", // Amber
-    "#10b981", // Emerald
-    "#ec4899", // Neon Pink
-    "#14b8a6", // Teal
-    "#8b5cf6", // Violet
-    "#eab308", // Yellow
-    "#06b6d4", // Sky Cyan
-    "#f97316", // Orange
-    "#6366f1", // Indigo
-    "#84cc16", // Lime
-    "#d946ef", // Fuchsia
-    "#22c55e", // Green
-    "#64748b", // Slate
-  ];
-
-  const totalFiles = status?.storageFileCount || 0;
-  const totalDbRecords = status?.database?.totalDatabaseRecords || 0;
-
-  // Segments based on active view mode
-  const segments: {
-    label: string;
-    subLabel: string;
-    value: number;
-    sizeFormatted?: string;
-    color: string;
-    percentage: number;
-  }[] = [];
-
-  if (viewMode === "storage") {
-    const folders = status?.storageFolders || [];
-    const sumFiles = folders.reduce((acc, f) => acc + f.fileCount, 0) || totalFiles;
-
-    if (folders.length > 0) {
-      folders.forEach((f, idx) => {
-        const pct = sumFiles > 0 ? Math.round((f.fileCount / sumFiles) * 100) : 0;
-        segments.push({
-          label:
-            f.name.startsWith("Grade") || f.name.startsWith("KG") || f.name === "General"
-              ? f.name
-              : `Grade ${f.name}`,
-          subLabel: f.sizeFormatted,
-          value: f.fileCount,
-          sizeFormatted: f.sizeFormatted,
-          color: PALETTE[idx % PALETTE.length],
-          percentage: pct,
-        });
-      });
-    } else {
-      segments.push({
-        label: "Storage Photos",
-        subLabel: status?.storageSizeFormatted || "56.15 MB",
-        value: totalFiles || 1,
-        sizeFormatted: status?.storageSizeFormatted || "56.15 MB",
-        color: "#8fe617",
-        percentage: 100,
-      });
-    }
-  } else {
-    // Ecosystem view: Cloud Storage Photos + DB Records
-    const rawItems = [
-      {
-        label: "Cloud Storage Photos",
-        subLabel: `${status?.storageSizeFormatted || "56.15 MB"} binary payload`,
-        value: totalFiles,
-        sizeFormatted: status?.storageSizeFormatted || "56.15 MB",
-        color: "#8fe617", // Lemon Green
-      },
-      {
-        label: "Student Profiles (Postgres)",
-        subLabel: `${status?.database?.studentsWithPhotos || 0} portraits linked`,
-        value: status?.database?.studentsCount || 0,
-        sizeFormatted: "~2.4 MB relational data",
-        color: "#00e5ff", // Cyan
-      },
-      {
-        label: "Security Audit Logs",
-        subLabel: "Immutable event audit trail",
-        value: status?.database?.auditLogsCount || 0,
-        sizeFormatted: "~1.1 MB relational data",
-        color: "#a855f7", // Purple
-      },
-      {
-        label: "Photo Catalog & Batches",
-        subLabel: "Upload metadata & batches",
-        value:
-          (status?.database?.batchesCount || 0) +
-          (status?.database?.studentPhotosCatalogCount || 0),
-        sizeFormatted: "~850 KB relational data",
-        color: "#f59e0b", // Amber
-      },
-      {
-        label: "RBAC Accounts & Profiles",
-        subLabel: "Admin / Operator Credentials",
-        value: status?.database?.usersCount || 0,
-        sizeFormatted: "~45 KB auth data",
-        color: "#10b981", // Emerald
-      },
-    ];
-
-    const sumEco = rawItems.reduce((acc, r) => acc + r.value, 0);
-    rawItems.forEach((r) => {
-      const pct = sumEco > 0 ? Math.round((r.value / sumEco) * 100) : 0;
-      segments.push({
-        ...r,
-        percentage: pct,
-      });
-    });
-  }
-
-  const totalValue = segments.reduce((acc, s) => acc + s.value, 0);
-
-  // SVG Geometry
-  const size = 260;
-  const cx = size / 2;
-  const cy = size / 2;
-  const radius = 104;
-  const innerRadius = 66;
-
-  let cumulativeAngle = -Math.PI / 2;
-  const slices = segments.map((item) => {
-    const fraction = totalValue > 0 ? item.value / totalValue : 0;
-    const sliceAngle = fraction * 2 * Math.PI;
-    const startAngle = cumulativeAngle;
-    const endAngle = cumulativeAngle + sliceAngle;
-    cumulativeAngle = endAngle;
-
-    if (fraction >= 0.999) {
-      return { ...item, fraction, isFull: true, path: "" };
-    }
-
-    const x1 = cx + radius * Math.cos(startAngle);
-    const y1 = cy + radius * Math.sin(startAngle);
-    const x2 = cx + radius * Math.cos(endAngle);
-    const y2 = cy + radius * Math.sin(endAngle);
-
-    const largeArc = sliceAngle > Math.PI ? 1 : 0;
-
-    const xin1 = cx + innerRadius * Math.cos(endAngle);
-    const yin1 = cy + innerRadius * Math.sin(endAngle);
-    const xin2 = cx + innerRadius * Math.cos(startAngle);
-    const yin2 = cy + innerRadius * Math.sin(startAngle);
-
-    const path = `M ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2} L ${xin1} ${yin1} A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${xin2} ${yin2} Z`;
-
-    return { ...item, fraction, isFull: false, path };
-  });
-
-  const activeSegment = hoveredIndex !== null ? segments[hoveredIndex] : null;
-
-  return (
-    <div className="space-y-4">
-      {/* Real-time Storage & Data Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-5 border-t border-[#dce7e1] dark:border-[#223126]">
-        <div>
-          <div className="flex items-center gap-2">
-            <h4 className="text-sm font-black font-mono tracking-tight text-[#080808] dark:text-[#f2f7f4] flex items-center gap-2">
-              <span className="h-2 w-2 rounded-full bg-[#8fe617] animate-pulse" />
-              Real-Time {status?.storageProvider || "Cloudflare R2"} Storage &amp; Data Matrix
-            </h4>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#8fe617]/15 text-[#8fe617] border border-[#8fe617]/30 font-mono font-bold">
-              LIVE BUCKET TELEMETRY
-            </span>
-          </div>
-          <p className="text-xs text-[#6b7771] dark:text-[#8a9e93] font-mono mt-0.5">
-            Real-time payload inspection for {status?.storageProvider || "Cloudflare R2"} bucket{" "}
-            <code className="text-[#8fe617] font-bold">&apos;{status?.storageBucket || "siliconlabs"}&apos;</code> &amp;
-            PostgreSQL relational catalog
-          </p>
-
-        </div>
-
-        {/* View Mode Switcher */}
-        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-[#f7faf9] dark:bg-[#161d19] border border-[#dce7e1] dark:border-[#223126]">
-          <button
-            type="button"
-            onClick={() => {
-              setViewMode("storage");
-              setHoveredIndex(null);
-            }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
-              viewMode === "storage"
-                ? "bg-[#8fe617] text-[#062404] shadow-xs"
-                : "text-[#6b7771] dark:text-[#8a9e93] hover:text-[#080808] dark:hover:text-[#f2f7f4]"
-            }`}
-          >
-            Photos by Grade ({totalFiles})
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setViewMode("ecosystem");
-              setHoveredIndex(null);
-            }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
-              viewMode === "ecosystem"
-                ? "bg-[#8fe617] text-[#062404] shadow-xs"
-                : "text-[#6b7771] dark:text-[#8a9e93] hover:text-[#080808] dark:hover:text-[#f2f7f4]"
-            }`}
-          >
-            Storage vs DB Ecosystem
-          </button>
-        </div>
-      </div>
-
-      {/* Main Chart + Metrics Display Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9]/50 dark:bg-[#0d120f]/60 p-5">
-        {/* Left: SVG Pie / Donut Chart with Radar HUD */}
-        <div className="lg:col-span-6 flex flex-col items-center justify-center relative">
-          <div className="relative">
-            {/* Outer Subtle Orbit / Radar Ring */}
-            <svg
-              width={size}
-              height={size}
-              viewBox={`0 0 ${size} ${size}`}
-              className="overflow-visible select-none"
-            >
-              {/* Outer decorative track */}
-              <circle
-                cx={cx}
-                cy={cy}
-                r={radius + 8}
-                fill="none"
-                stroke="#8fe617"
-                strokeOpacity="0.15"
-                strokeWidth="1"
-                strokeDasharray="4 6"
-              />
-              <circle
-                cx={cx}
-                cy={cy}
-                r={innerRadius - 8}
-                fill="none"
-                stroke="#223126"
-                strokeWidth="1"
-                strokeDasharray="2 4"
-              />
-
-              {/* Pie Slices */}
-              {totalValue === 0 ? (
-                <circle
-                  cx={cx}
-                  cy={cy}
-                  r={(radius + innerRadius) / 2}
-                  fill="none"
-                  stroke="#223126"
-                  strokeWidth={radius - innerRadius}
-                />
-              ) : (
-                slices.map((slice, i) => {
-                  const isHovered = hoveredIndex === i;
-                  if (slice.value === 0) return null;
-
-                  if (slice.isFull) {
-                    return (
-                      <circle
-                        key={slice.label}
-                        cx={cx}
-                        cy={cy}
-                        r={(radius + innerRadius) / 2}
-                        fill="none"
-                        stroke={slice.color}
-                        strokeWidth={radius - innerRadius}
-                        className="transition-all duration-300 cursor-pointer"
-                        onMouseEnter={() => setHoveredIndex(i)}
-                        onMouseLeave={() => setHoveredIndex(null)}
-                        style={{
-                          filter: isHovered ? `drop-shadow(0 0 14px ${slice.color})` : "none",
-                        }}
-                      />
-                    );
-                  }
-
-                  return (
-                    <path
-                      key={slice.label}
-                      d={slice.path}
-                      fill={slice.color}
-                      stroke="#0d120f"
-                      strokeWidth="2.5"
-                      className="transition-all duration-200 cursor-pointer hover:opacity-95"
-                      onMouseEnter={() => setHoveredIndex(i)}
-                      onMouseLeave={() => setHoveredIndex(null)}
-                      style={{
-                        transformOrigin: `${cx}px ${cy}px`,
-                        transform: isHovered ? "scale(1.06)" : "scale(1)",
-                        filter: isHovered ? `drop-shadow(0 0 14px ${slice.color})` : "none",
-                      }}
-                    />
-                  );
-                })
-              )}
-
-              {/* Center HUD Readout */}
-              <g className="pointer-events-none text-center">
-                {/* Live Dot Indicator */}
-                <circle cx={cx} cy={cy - 24} r="3" fill="#8fe617" className="animate-ping opacity-75" />
-                <circle cx={cx} cy={cy - 24} r="2.5" fill="#8fe617" />
-                <text
-                  x={cx + 8}
-                  y={cy - 21}
-                  className="fill-[#8fe617] font-mono font-black text-[8px] uppercase tracking-widest"
-                >
-                  LIVE SYNC
-                </text>
-
-                {/* Main Dynamic Value */}
-                <text
-                  x={cx}
-                  y={cy + 2}
-                  textAnchor="middle"
-                  className="fill-[#080808] dark:fill-[#f2f7f4] font-mono font-black text-2xl"
-                >
-                  {activeSegment
-                    ? activeSegment.value.toLocaleString()
-                    : viewMode === "storage"
-                    ? totalFiles.toLocaleString()
-                    : totalValue.toLocaleString()}
-                </text>
-
-                {/* Subtitle / Category Label */}
-                <text
-                  x={cx}
-                  y={cy + 18}
-                  textAnchor="middle"
-                  className="fill-[#6b7771] dark:fill-[#8a9e93] font-mono font-bold text-[9px] uppercase tracking-wider"
-                >
-                  {activeSegment
-                    ? activeSegment.label
-                    : viewMode === "storage"
-                    ? "PHOTOS STORED"
-                    : "TOTAL ARTIFACTS"}
-                </text>
-
-                {/* Detail or MB Readout */}
-                <text
-                  x={cx}
-                  y={cy + 30}
-                  textAnchor="middle"
-                  className="fill-[#8fe617] font-mono font-black text-[9px]"
-                >
-                  {activeSegment
-                    ? `${activeSegment.subLabel} (${activeSegment.percentage}%)`
-                    : viewMode === "storage"
-                    ? `${status?.storageSizeFormatted || "56.15 MB"} • ${status?.storageFolders?.length || 0} Cohorts`
-                    : `${status?.storageSizeFormatted || "56.15 MB"} + DB Records`}
-                </text>
-              </g>
-            </svg>
-          </div>
-
-          <div className="mt-2 text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93] flex items-center gap-2">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#8fe617]" />
-            <span>Hover slices to inspect cohort size &amp; bucket allocation</span>
-          </div>
-        </div>
-
-        {/* Right: Detailed Breakdown List & Quick Telemetry Metrics */}
-        <div className="lg:col-span-6 space-y-3">
-          {/* Quick Metrics Header Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pb-2">
-            <div className="p-2.5 rounded-xl bg-white dark:bg-[#111613] border border-[#dce7e1] dark:border-[#223126]">
-              <div className="text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93] uppercase font-bold">
-                Total Photos
-              </div>
-              <div className="text-base font-black font-mono text-[#8fe617]">
-                {totalFiles.toLocaleString()}
-              </div>
-              <div className="text-[9px] font-mono text-[#6b7771] dark:text-[#8a9e93] truncate">
-                Bucket &apos;{status?.storageBucket || "siliconlabs"}&apos;
-              </div>
-            </div>
-
-            <div className="p-2.5 rounded-xl bg-white dark:bg-[#111613] border border-[#dce7e1] dark:border-[#223126]">
-              <div className="text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93] uppercase font-bold">
-                Storage Size
-              </div>
-              <div className="text-base font-black font-mono text-[#00e5ff]">
-                {status?.storageSizeFormatted || "56.15 MB"}
-              </div>
-              <div className="text-[9px] font-mono text-[#6b7771] dark:text-[#8a9e93] truncate">
-                {totalFiles > 0
-                  ? `~${Math.round(((status?.storageSizeBytes || 58875416) / totalFiles) / 1024)} KB/portrait`
-                  : "—"}
-              </div>
-            </div>
-
-            <div className="p-2.5 rounded-xl bg-white dark:bg-[#111613] border border-[#dce7e1] dark:border-[#223126] col-span-2 sm:col-span-1">
-              <div className="text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93] uppercase font-bold">
-                DB Data Rows
-              </div>
-              <div className="text-base font-black font-mono text-[#a855f7]">
-                {totalDbRecords.toLocaleString()}
-              </div>
-              <div className="text-[9px] font-mono text-[#6b7771] dark:text-[#8a9e93] truncate">
-                {status?.database?.studentsCount || 0} Students • {status?.database?.auditLogsCount || 0} Logs
-              </div>
-            </div>
-          </div>
-
-          {/* Interactive Scrollable Segment List with Progress Meters */}
-          <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
-            {segments.map((item, idx) => {
-              const isHovered = hoveredIndex === idx;
-              return (
-                <div
-                  key={item.label}
-                  onMouseEnter={() => setHoveredIndex(idx)}
-                  onMouseLeave={() => setHoveredIndex(null)}
-                  className={`flex flex-col p-2 rounded-xl text-xs font-mono transition-all cursor-pointer border ${
-                    isHovered
-                      ? "bg-[#8fe617]/15 border-[#8fe617]/50 text-[#080808] dark:text-[#f2f7f4] shadow-xs"
-                      : "bg-white/60 dark:bg-[#111613]/60 border-transparent hover:border-[#dce7e1] dark:hover:border-[#223126] text-[#6b7771] dark:text-[#8a9e93]"
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span
-                        className="h-2.5 w-2.5 rounded-full shrink-0 shadow-xs"
-                        style={{ backgroundColor: item.color }}
-                      />
-                      <span className="font-bold text-[#080808] dark:text-[#f2f7f4] truncate">
-                        {item.label}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-[11px] font-mono font-bold text-[#080808] dark:text-[#f2f7f4]">
-                        {item.value.toLocaleString()} {viewMode === "storage" ? "photos" : "items"}
-                      </span>
-                      {item.sizeFormatted && (
-                        <span className="text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93]">
-                          ({item.sizeFormatted})
-                        </span>
-                      )}
-                      <span className="text-[10px] font-mono font-black text-[#8fe617] bg-[#8fe617]/20 px-1.5 py-0.5 rounded-md">
-                        {item.percentage}%
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Visual allocation progress bar */}
-                  <div className="w-full bg-[#eef5f1] dark:bg-[#1c261e] h-1.5 rounded-full mt-1.5 overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all duration-300"
-                      style={{
-                        width: `${Math.max(item.percentage, 2)}%`,
-                        backgroundColor: item.color,
-                      }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Real-time Footer Indicator */}
-          <div className="flex items-center justify-between text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93] pt-2 border-t border-[#eef5f1] dark:border-[#1c261e]">
-            <div className="flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#8fe617] animate-ping" />
-              <span>Real-time polling active (15s cycle)</span>
-            </div>
-            <button
-              type="button"
-              onClick={onRefresh}
-              disabled={loading}
-              className="hover:text-[#8fe617] transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
-            >
-              <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin text-[#8fe617]" : ""}`} />
-              <span>Force Live Refresh</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 export function DatabaseClient({
@@ -915,6 +195,10 @@ export function DatabaseClient({
   };
 
   const fetchSupabaseStatus = useCallback(async (force = false) => {
+    const liveVerified = metrics.verifiedPhotoCount;
+    const liveStudents = metrics.studentCount;
+    const liveUsers = metrics.userCount;
+    const liveAudits = auditLogs.length;
     try {
       if (force) setStatusLoading(true);
       const startMs = Date.now();
@@ -922,147 +206,80 @@ export function DatabaseClient({
       const latency = Date.now() - startMs;
       if (res.ok) {
         const data = await res.json();
-        // If API returns zero storageFileCount or zero database records, seamlessly overlay with authoritative live store counts
-        const liveVerified = metrics.verifiedPhotoCount;
-        const liveStudents = metrics.studentCount;
-        const liveUsers = metrics.userCount;
-        const liveAudits = auditLogs.length;
-
-        const effectiveFileCount = (data.storageFileCount && data.storageFileCount > 0) ? data.storageFileCount : liveVerified;
-        const effectiveStudentsCount = (data.database?.studentsCount && data.database?.studentsCount > 0) ? data.database.studentsCount : liveStudents;
-
-        const mergedFolders = (data.storageFolders && data.storageFolders.length > 0)
-          ? data.storageFolders
-          : gradeCohorts.map(gc => ({
-              name: gc.grade,
-              fileCount: gc.count,
-              sizeBytes: gc.count * 45000,
-              sizeFormatted: `${((gc.count * 45) / 1024).toFixed(2)} MB`
-            }));
-
+        const formatBytes = (bytes: number) => {
+          if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+          if (bytes < 1024) return `${bytes} B`;
+          if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+          if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(2)} MB`;
+          return `${(bytes / 1073741824).toFixed(2)} GB`;
+        };
+        const storageFileCount = data.storageFileCount ?? 0;
+        const storageSizeBytes = data.storageSizeBytes ?? 0;
         setSupabaseStatus({
           ...data,
           databaseLatencyMs: data.databaseLatencyMs || Math.max(18, latency),
-          storageFileCount: data.storageFileCount || 12588,
           storageBucket: data.storageBucket || "siliconlabs",
           storageProvider: data.storageProvider || "Cloudflare R2",
-          storageSizeBytes: data.storageSizeBytes || 1180423991,
+          storageFileCount,
+          storageSizeBytes,
           storageSizeFormatted: data.storageSizeFormatted && data.storageSizeFormatted !== "0 B"
             ? data.storageSizeFormatted
-            : "1125.74 MB (1.10 GB)",
-          storageFolders: mergedFolders,
+            : formatBytes(storageSizeBytes),
+          storageFolders: Array.isArray(data.storageFolders) ? data.storageFolders : [],
           database: {
-            ...data.database,
-            studentsCount: effectiveStudentsCount,
-            studentsWithPhotos: data.database?.studentsWithPhotos || liveVerified,
-            studentsWithoutPhotos: data.database?.studentsWithoutPhotos || Math.max(0, liveStudents - liveVerified),
-            usersCount: (data.database?.usersCount && data.database?.usersCount > 0) ? data.database.usersCount : liveUsers,
-            batchesCount: data.database?.batchesCount || 1,
-            auditLogsCount: (data.database?.auditLogsCount && data.database?.auditLogsCount > 0) ? data.database.auditLogsCount : liveAudits,
-            studentPhotosCatalogCount: data.database?.studentPhotosCatalogCount || effectiveFileCount,
-            totalDatabaseRecords: (data.database?.totalDatabaseRecords && data.database?.totalDatabaseRecords > 0)
-              ? data.database.totalDatabaseRecords
-              : (effectiveStudentsCount + liveAudits + liveUsers + 1)
+            studentsCount: data.database?.studentsCount ?? liveStudents,
+            studentsWithPhotos: data.database?.studentsWithPhotos ?? liveVerified,
+            studentsWithoutPhotos: data.database?.studentsWithoutPhotos ?? Math.max(0, liveStudents - liveVerified),
+            usersCount: data.database?.usersCount ?? liveUsers,
+            batchesCount: data.database?.batchesCount ?? 1,
+            auditLogsCount: data.database?.auditLogsCount ?? liveAudits,
+            studentPhotosCatalogCount: data.database?.studentPhotosCatalogCount ?? storageFileCount,
+            totalDatabaseRecords: data.database?.totalDatabaseRecords
+              ?? ((data.database?.studentsCount ?? liveStudents) + (data.database?.usersCount ?? liveUsers) + (data.database?.auditLogsCount ?? liveAudits))
           }
         });
       } else {
-        // Fallback when /api/admin/supabase-status is unavailable (Cloudflare Pages SPA)
-        const liveVerified = metrics.verifiedPhotoCount;
-        const liveStudents = metrics.studentCount;
-        const liveUsers = metrics.userCount;
-        const liveAudits = auditLogs.length;
-
-        const cohortFolders = gradeCohorts.map(gc => ({
-          name: gc.grade,
-          fileCount: gc.count,
-          sizeBytes: gc.count * 45000,
-          sizeFormatted: `${((gc.count * 45) / 1024).toFixed(2)} MB`
-        }));
-
-        setSupabaseStatus({
-          databaseConnected: true,
-          databaseLatencyMs: Math.max(18, latency),
-          storageConnected: true,
-          storageBucket: "siliconlabs",
-          storageProvider: "Cloudflare R2",
-          storageFileCount: 12588,
-          storageSizeBytes: 1180423991,
-          storageSizeFormatted: "1125.74 MB (1.10 GB)",
-          storageFolders: cohortFolders.length > 0 ? cohortFolders : [
-            { name: "Grade 10", fileCount: Math.round(liveVerified * 0.5), sizeBytes: 25000000, sizeFormatted: "23.8 MB" },
-            { name: "Grade 11", fileCount: Math.round(liveVerified * 0.3), sizeBytes: 15000000, sizeFormatted: "14.3 MB" },
-            { name: "Grade 12", fileCount: Math.round(liveVerified * 0.2), sizeBytes: 10000000, sizeFormatted: "9.5 MB" }
-          ],
-          database: {
-            studentsCount: liveStudents,
-            studentsWithPhotos: liveVerified,
-            studentsWithoutPhotos: Math.max(0, liveStudents - liveVerified),
-            usersCount: liveUsers,
-            batchesCount: 1,
-            auditLogsCount: liveAudits,
-            studentPhotosCatalogCount: liveVerified,
-            totalDatabaseRecords: liveStudents + liveAudits + liveUsers + 1
-          },
-          poolerHost: "aws-0-eu-central-1.pooler.supabase.com:6543",
-          region: "eu-central-1",
-          sslMode: "require",
-          lastActivity: new Date().toISOString(),
-          daysSinceActivity: 0,
-          daysUntilPause: 7,
-          pauseWarningActive: false,
-          timestamp: new Date().toISOString()
-        });
+        setSupabaseStatus(null);
       }
     } catch {
-      const liveVerified = metrics.verifiedPhotoCount;
-      const liveStudents = metrics.studentCount;
-      const liveUsers = metrics.userCount;
-      const liveAudits = auditLogs.length;
-
-      setSupabaseStatus({
-        databaseConnected: true,
-        databaseLatencyMs: 24,
-        storageConnected: true,
-        storageBucket: "siliconlabs",
-        storageProvider: "Cloudflare R2",
-        storageFileCount: liveVerified,
-        storageSizeBytes: liveVerified * 45000,
-        storageSizeFormatted: `${((liveVerified * 45) / 1024).toFixed(2)} MB`,
-        storageFolders: gradeCohorts.map(gc => ({
-          name: gc.grade,
-          fileCount: gc.count,
-          sizeBytes: gc.count * 45000,
-          sizeFormatted: `${((gc.count * 45) / 1024).toFixed(2)} MB`
-        })),
-        database: {
-          studentsCount: liveStudents,
-          studentsWithPhotos: liveVerified,
-          studentsWithoutPhotos: Math.max(0, liveStudents - liveVerified),
-          usersCount: liveUsers,
-          batchesCount: 1,
-          auditLogsCount: liveAudits,
-          studentPhotosCatalogCount: liveVerified,
-          totalDatabaseRecords: liveStudents + liveAudits + liveUsers + 1
-        },
-        poolerHost: "aws-0-eu-central-1.pooler.supabase.com:6543",
-        region: "eu-central-1",
-        sslMode: "require",
-        lastActivity: new Date().toISOString(),
-        daysSinceActivity: 0,
-        daysUntilPause: 7,
-        pauseWarningActive: false,
-        timestamp: new Date().toISOString()
-      });
+      setSupabaseStatus(null);
     } finally {
       setStatusLoading(false);
     }
-  }, [metrics, auditLogs.length, gradeCohorts]);
+  }, [metrics, auditLogs.length]);
 
   useEffect(() => {
     fetchSupabaseStatus();
     const interval = setInterval(fetchSupabaseStatus, 15000);
     return () => clearInterval(interval);
   }, [fetchSupabaseStatus]);
+
+  // Persistent server-side audit trail (every data send, edit and deletion is logged)
+  useEffect(() => {
+    let cancelled = false;
+    const loadServerLogs = async () => {
+      try {
+        const res = await fetch("/api/audit-logs");
+        if (!res.ok || cancelled) return;
+        const serverLogs: AuditLogItem[] = await res.json();
+        if (cancelled || !Array.isArray(serverLogs)) return;
+        setAuditLogs((prev) => {
+          const byId = new Map<string, AuditLogItem>();
+          for (const log of [...prev, ...serverLogs]) {
+            byId.set(log.id, { ...byId.get(log.id), ...log });
+          }
+          return Array.from(byId.values()).sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          ).slice(0, 1000);
+        });
+      } catch {
+        // Edge offline: keep locally known logs
+      }
+    };
+    loadServerLogs();
+    const interval = setInterval(loadServerLogs, 20000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   const handleKeepAlivePing = async () => {
     setPinging(true);
@@ -1085,44 +302,6 @@ export function DatabaseClient({
       setPinging(false);
     }
   };
-
-  // 1. Photo Linkage Distribution Data
-  const photoChartData: ChartSegment[] = [
-    {
-      label: "Verified Portraits",
-      value: metrics.verifiedPhotoCount,
-      color: "#8fe617", // Neon Lemon Green
-    },
-    {
-      label: "Missing Portraits",
-      value: metrics.missingPhotoCount,
-      color: "#f59e0b", // Amber warning
-    },
-  ];
-
-  // 2. Grade Cohort Distribution Data
-  const cohortPalette = ["#8fe617", "#06b6d4", "#a855f7", "#3b82f6", "#ec4899", "#10b981"];
-  const cohortChartData: ChartSegment[] = gradeCohorts.map((gc, i) => ({
-    label: gc.grade.startsWith("Grade") ? gc.grade : `Grade ${gc.grade}`,
-    value: gc.count,
-    color: cohortPalette[i % cohortPalette.length],
-  }));
-
-  if (cohortChartData.length === 0) {
-    cohortChartData.push({ label: "No Cohorts", value: 1, color: "#223126" });
-  }
-
-  // 3. User Role Distribution Data
-  const roleColors: Record<string, string> = {
-    ADMIN: "#f59e0b",
-    RECEIVER: "#8fe617",
-    SENDER: "#3b82f6",
-  };
-  const roleChartData: ChartSegment[] = userRoles.map((ur) => ({
-    label: ur.role,
-    value: ur.count,
-    color: roleColors[ur.role] || "#10b981",
-  }));
 
   // Unique actions and operators for filters
   const uniqueActions = Array.from(new Set(auditLogs.map((l) => l.action))).sort();
@@ -1185,7 +364,7 @@ export function DatabaseClient({
   };
 
   // Clear / Purge all audit logs
-  const handleClearAuditLogs = () => {
+  const handleClearAuditLogs = async () => {
     if (
       !confirm(
         "⚠️ PURGE AUDIT LOGS: Are you sure you want to delete all historical operational audit logs? This action is irreversible."
@@ -1196,6 +375,7 @@ export function DatabaseClient({
 
     try {
       localStorage.removeItem('sb_audit_logs');
+      await fetch("/api/audit-logs", { method: "DELETE" });
       setAuditLogs([]);
       setFeedback({
         type: "success",
@@ -1558,13 +738,6 @@ export function DatabaseClient({
             </div>
           </div>
         </div>
-
-        {/* Unique Real-Time Supabase Storage & Data PieChart */}
-        <SupabaseRealtimeStoragePieChart
-          status={supabaseStatus}
-          loading={statusLoading}
-          onRefresh={() => fetchSupabaseStatus(true)}
-        />
       </div>
 
       {/* Core Database Metrics Overview */}
@@ -1621,53 +794,6 @@ export function DatabaseClient({
           <div className="mt-2 text-[10px] text-[#8fe617] font-mono font-bold">
             8-Up Imposition Engine Ready
           </div>
-        </div>
-      </div>
-
-      {/* SECTION 1: INTERACTIVE PIE & DONUT CHARTS (User Requirement) */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="h-7 w-7 rounded-xl bg-[#8fe617]/20 border border-[#8fe617] flex items-center justify-center text-[#062404] dark:text-[#8fe617]">
-              <PieChartIcon className="h-4 w-4 text-[#8fe617]" />
-            </div>
-            <h2 className="text-base font-black tracking-tight text-[#080808] dark:text-[#f2f7f4]">
-              Visual Analytics &amp; Demographics Breakdown
-            </h2>
-          </div>
-          <span className="text-xs font-mono text-[#6b7771] dark:text-[#8a9e93]">
-            Real-time Database Telemetry
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-          {/* Pie Chart 1: Photo Matching Linkage */}
-          <InteractivePieChart
-            title="Studio Photo Linkage"
-            subtitle="Matched vs Missing Portraits"
-            data={photoChartData}
-            donut={true}
-            centerLabel="STUDENTS"
-            centerValue={metrics.studentCount}
-          />
-
-          {/* Pie Chart 2: Grade Cohorts Demographics */}
-          <InteractivePieChart
-            title="Grade Cohorts Distribution"
-            subtitle="Student Population Demographics"
-            data={cohortChartData}
-            donut={true}
-            centerLabel="TOTAL"
-            centerValue={metrics.studentCount}
-          />
-
-          {/* Pie Chart 3: Operator Privileges */}
-          <InteractivePieChart
-            title="Operator Privilege Allocation"
-            subtitle="RBAC Role Distribution"
-            data={roleChartData}
-            donut={false}
-          />
         </div>
       </div>
 
@@ -1808,7 +934,7 @@ export function DatabaseClient({
               <span>Operational Log Management</span>
             </h2>
             <p className="text-xs text-[#6b7771] dark:text-[#8a9e93] font-mono mt-0.5">
-              Cryptographically verified operational stream of administrative, student intake, and printing actions
+              Live operational record of administrative, student intake, and data-send actions
             </p>
           </div>
 

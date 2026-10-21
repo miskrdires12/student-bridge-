@@ -48,7 +48,7 @@ export const ReceiverStudentsPage: React.FC = () => {
   const [gradeFilter, setGradeFilter] = useState('ALL');
   const [sectionFilter, setSectionFilter] = useState('ALL');
   const [branchFilter, setBranchFilter] = useState('ALL');
-  const [schoolFilter, setSchoolFilter] = useState('ALL');
+  const [schoolFilter, setSchoolFilter] = useState('Warka');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [senderFilter, setSenderFilter] = useState('ALL');
   const [selectedDate, setSelectedDate] = useState('');
@@ -416,7 +416,7 @@ export const ReceiverStudentsPage: React.FC = () => {
       const matchSection = matchesSectionFilter(s, sectionFilter);
       const sBranch = getStudentBranch(s);
       const matchBranch = branchFilter === 'ALL' || sBranch === branchFilter;
-      const matchSchool = schoolFilter === 'ALL' || s.school === schoolFilter;
+      const matchSchool = schoolFilter === 'ALL' || (s.school || '').toLowerCase().includes(schoolFilter.toLowerCase());
       const matchSender = senderFilter === 'ALL' || (s.senderName || s.senderId) === senderFilter;
       const studentDate = (s.createdAt || (s as any).registrationDate || s.recordHistory?.[0]?.date || '').substring(0, 10);
       const matchDate = !selectedDate || (studentDate === selectedDate);

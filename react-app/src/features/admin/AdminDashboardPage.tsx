@@ -189,26 +189,6 @@ export const AdminDashboardPage: React.FC = () => {
     };
   }, [allStudentsList, totalStudents]);
 
-  // Grade Breakdown
-  const gradeBreakdown = useMemo(() => {
-    const counts: Record<string, number> = {};
-    allStudentsList.forEach(s => {
-      let g = (s.grade || 'General').trim();
-      g = g.replace(/^(Grade|Gr)\s*/i, '');
-      counts[g] = (counts[g] || 0) + 1;
-    });
-
-    const list = Object.entries(counts).map(([grade, count]) => ({
-      grade,
-      count,
-      percent: totalStudents > 0 ? Math.round((count / totalStudents) * 100) : 0,
-      a4Sheets: Math.ceil(count / 8)
-    }));
-
-    list.sort((a, b) => a.grade.localeCompare(b.grade, undefined, { numeric: true }));
-    return list;
-  }, [allStudentsList, totalStudents]);
-
   // Timeframe stats: A Day, A Week, A Month, A Year - Anchored to Calendar Boundaries
   const gatheredTimeframeStats = useMemo(() => {
     const dNow = new Date();
@@ -787,7 +767,7 @@ export const AdminDashboardPage: React.FC = () => {
       </div>
 
       {/* Row 1: Primary KPI Cards Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
         <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-4 shadow-sm">
           <div className="flex items-center justify-between text-xs text-[#6b7771] dark:text-[#8a9e93] font-bold font-mono">
             <span>TOTAL STUDENTS</span>
@@ -811,19 +791,6 @@ export const AdminDashboardPage: React.FC = () => {
           </div>
           <div className="text-[10px] text-[#6b7771] dark:text-[#8a9e93] font-mono font-semibold mt-1">
             {totalStudents > 0 ? Math.round((photosCount / totalStudents) * 100) : 0}% VERIFIED
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-4 shadow-sm">
-          <div className="flex items-center justify-between text-xs text-[#6b7771] dark:text-[#8a9e93] font-bold font-mono">
-            <span>A4 PRINT SHEETS (8-UP)</span>
-            <Printer className="h-4 w-4 text-[#8fe617]" />
-          </div>
-          <div className="text-2xl font-black font-mono text-[#080808] dark:text-[#f2f7f4] mt-1.5">
-            {Math.ceil(readyForPrintCount / 8).toLocaleString()}
-          </div>
-          <div className="text-[10px] text-[#6b7771] dark:text-[#8a9e93] font-mono font-semibold mt-1">
-            {readyForPrintCount} CARDS • 8/SHEET
           </div>
         </div>
 
@@ -866,17 +833,17 @@ export const AdminDashboardPage: React.FC = () => {
             <GraduationCap className="h-5 w-5 text-[#8fe617]" />
             <div>
               <h2 className="text-sm sm:text-base font-bold font-mono uppercase tracking-wider text-[#080808] dark:text-[#f2f7f4]">
-                Detailed Cohort & Production Matrix Analysis
+                Detailed Cohort & Demographic Analysis
               </h2>
               <p className="text-xs text-[#6b7771] dark:text-[#8a9e93] font-mono mt-0.5">
-                School-bound and demographic breakdown, print distribution matrix, and data ingestion telemetry
+                School-bound and demographic breakdown with data ingestion telemetry
               </p>
             </div>
           </div>
         </div>
 
-        {/* 3 Metric Cards: Demographics, 8-Up Batch Plan, Pipeline Data Quality */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* 2 Metric Cards: Demographics, Pipeline Data Quality */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Demographics & Gender Ratios */}
           <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#070908] p-4 space-y-3">
             <div className="flex items-center justify-between">
@@ -917,40 +884,6 @@ export const AdminDashboardPage: React.FC = () => {
             </p>
           </div>
 
-          {/* 8-Up Batch Production Plan */}
-          <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#070908] p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-mono font-bold uppercase text-[#6b7771] dark:text-[#8a9e93]">
-                8-Up Print Batch Plan
-              </span>
-              <Printer className="h-4 w-4 text-[#8fe617]" />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 text-xs font-mono">
-              <div className="p-2.5 rounded-xl bg-white dark:bg-[#111613] border border-[#dce7e1] dark:border-[#223126]">
-                <div className="text-[10px] text-[#6b7771] dark:text-[#8a9e93]">A4 Sheets Needed</div>
-                <div className="text-xl font-black text-[#8fe617] mt-0.5">
-                  {Math.ceil(readyForPrintCount / 8)}
-                </div>
-              </div>
-              <div className="p-2.5 rounded-xl bg-white dark:bg-[#111613] border border-[#dce7e1] dark:border-[#223126]">
-                <div className="text-[10px] text-[#6b7771] dark:text-[#8a9e93]">Card Density</div>
-                <div className="text-xl font-black text-[#080808] dark:text-[#f2f7f4] mt-0.5">
-                  8 / sheet
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between text-xs font-mono pt-1 text-[#6b7771] dark:text-[#8a9e93]">
-              <span>Sheet Yield Efficiency:</span>
-              <span className="font-bold text-[#8fe617]">
-                {readyForPrintCount > 0
-                  ? Math.round((readyForPrintCount / (Math.ceil(readyForPrintCount / 8) * 8)) * 100)
-                  : 100}%
-              </span>
-            </div>
-          </div>
-
           {/* Data Integrity & Photo Pipeline Health */}
           <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#070908] p-4 space-y-3">
             <div className="flex items-center justify-between">
@@ -983,51 +916,15 @@ export const AdminDashboardPage: React.FC = () => {
             </div>
           </div>
         </div>
-
-        {/* Grade-by-Grade Distribution Matrix */}
-        {gradeBreakdown.length > 0 && (
-          <div className="space-y-2 pt-2 border-t border-[#eef5f1] dark:border-[#1c261e]">
-            <div className="flex items-center justify-between text-xs font-mono">
-              <span className="font-bold uppercase tracking-wider text-[#080808] dark:text-[#f2f7f4] flex items-center gap-1.5">
-                <GraduationCap className="h-4 w-4 text-[#8fe617]" />
-                Grade Cohort Distribution & A4 8-Up Allocation
-              </span>
-              <span className="text-[#6b7771] dark:text-[#8a9e93]">
-                Sorted by Cohort Level
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 pt-1">
-              {gradeBreakdown.map((g) => (
-                <div
-                  key={g.grade}
-                  className="p-3 rounded-xl border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#070908] font-mono text-xs hover:border-[#8fe617]/50 transition-colors"
-                >
-                  <div className="flex items-center justify-between text-[#6b7771] dark:text-[#8a9e93] text-[10px]">
-                    <span className="font-bold text-[#080808] dark:text-[#f2f7f4]">GRADE {g.grade}</span>
-                    <span className="font-bold text-[#8fe617]">{g.percent}%</span>
-                  </div>
-                  <div className="text-base font-black text-[#080808] dark:text-[#f2f7f4] mt-1">
-                    {g.count.toLocaleString()} <span className="text-[10px] font-normal text-[#6b7771] dark:text-[#8a9e93]">students</span>
-                  </div>
-                  <div className="text-[10px] text-[#6b7771] dark:text-[#8a9e93] mt-1 pt-1 border-t border-[#eef5f1] dark:border-[#1c261e] flex items-center justify-between">
-                    <span>A4 Sheets:</span>
-                    <span className="font-bold text-[#8fe617]">{g.a4Sheets} sh</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* Live Ingested Student Stream (Newest First) - Full Width */}
+      {/* Live Ingested Student Feed (Newest First) - Full Width */}
       <div className="w-full rounded-3xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-5 sm:p-6 shadow-sm space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-[#eef5f1] dark:border-[#1c261e] pb-4">
           <div className="flex items-center gap-2">
             <Users className="h-4 w-4 text-[#8fe617]" />
             <h2 className="text-sm font-bold uppercase tracking-wider text-[#080808] dark:text-[#f2f7f4] font-mono">
-              Live Ingested Stream ({filteredStudents.length})
+              Live Ingested Records ({filteredStudents.length})
             </h2>
           </div>
 
@@ -1312,13 +1209,6 @@ export const AdminDashboardPage: React.FC = () => {
               >
                 Close Audit
               </button>
-              <Link
-                to="/receiver/id-production"
-                onClick={() => setAuditModalOpen(false)}
-                className="px-4 py-2 text-xs font-mono font-extrabold rounded-xl bg-[#8fe617] text-[#062404] hover:bg-[#7ed112] transition-all cursor-pointer shadow-sm"
-              >
-                Proceed to ID Studio ({auditResults.verifiedCount} Ready) →
-              </Link>
             </div>
           </div>
         </div>
