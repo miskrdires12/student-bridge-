@@ -6,7 +6,8 @@ import { Task } from '@/types';
 export const SenderTasksPage: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [filter, setFilter] = useState<'ALL' | 'Pending' | 'In Progress' | 'Completed'>('ALL');
-  const user = getCurrentUser();
+  // A fresh object every render would re-trigger the effects keyed on it; see StudentRegistrationPage.
+  const [user] = useState(getCurrentUser);
 
   const loadSenderTasks = () => {
     const all = getTasks();

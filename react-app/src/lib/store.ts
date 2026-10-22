@@ -2317,6 +2317,17 @@ export function getFleetTelemetrySnapshot(): FleetTelemetryPayload | null {
 }
 
 export async function refreshFleetTelemetry(): Promise<FleetTelemetryPayload | null> {
+  // Single-flighted: the rollup is a server-side scan, and every panel that wants it asking at
+  // once (or one panel asking from a render loop) was enough to queue hundreds of scans and
+  // starve the student send of a connection. One request at a time, everyone shares the answer.
+  if (fleetTelemetryInFlight) return fleetTelemetryInFlight;
+  fleetTelemetryInFlight = runFleetTelemetryFetch().finally(() => { fleetTelemetryInFlight = null; });
+  return fleetTelemetryInFlight;
+}
+
+let fleetTelemetryInFlight: Promise<FleetTelemetryPayload | null> | null = null;
+
+async function runFleetTelemetryFetch(): Promise<FleetTelemetryPayload | null> {
   try {
     const res = await fetch('/api/telemetry/senders', { headers: getAuthHeaders(), cache: 'no-store' });
     if (!res.ok) return fleetTelemetrySnapshot;

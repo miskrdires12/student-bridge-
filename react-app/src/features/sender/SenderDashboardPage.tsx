@@ -11,7 +11,8 @@ export const SenderDashboardPage: React.FC = () => {
   const [students, setStudents] = useState<Student[]>([]);
   const [correctionNotices, setCorrectionNotices] = useState<CorrectionLog[]>([]);
   const [metrics, setMetrics] = useState<SenderMetrics | null>(null);
-  const user = getCurrentUser();
+  // A fresh object every render would re-trigger the effects keyed on it; see StudentRegistrationPage.
+  const [user] = useState(getCurrentUser);
 
   useEffect(() => {
     const refreshData = () => {

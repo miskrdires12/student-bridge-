@@ -51,7 +51,11 @@ function readRegistrationDraft(key: string): RegistrationDraft {
 
 export const StudentRegistrationPage: React.FC = () => {
   const navigate = useNavigate();
-  const user = getCurrentUser();
+  // getCurrentUser() parses storage and returns a brand new object on every render, so nothing
+  // reactive may be keyed on it: an effect that was re-fired itself (setState of a fresh object)
+  // re-ran on every render and issued a /api/telemetry/senders request each time, which is how
+  // this page saturated the browser's connections and starved the student send.
+  const [user] = useState(getCurrentUser);
 
   // Helper for generating an ID
   const generateNewId = () => {
