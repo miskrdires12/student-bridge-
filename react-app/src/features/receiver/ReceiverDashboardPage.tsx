@@ -154,9 +154,15 @@ export const ReceiverDashboardPage: React.FC = () => {
 
 
   const totalStudents = allStudentsList.length;
-  const photosCount = allStudentsList.filter(s => Boolean(s.photoPath && s.photoPath.trim().length > 0)).length;
-  const readyForPrintCount = photosCount;
-  const pendingVerification = Math.max(0, totalStudents - readyForPrintCount);
+  // One definition per label, everywhere: "verified" means the record carries the
+  // PHOTO_VERIFIED integrity stamp, which is exactly what /api/stats counts, so this
+  // header cannot disagree with the Student Directory or Storage screens. "Ready to
+  // print" additionally requires the photo file reference to be present.
+  const photosCount = allStudentsList.filter(s => s.photoIntegrityStatus === 'PHOTO_VERIFIED').length;
+  const readyForPrintCount = allStudentsList.filter(s =>
+    s.photoIntegrityStatus === 'PHOTO_VERIFIED' && Boolean(s.photoPath && s.photoPath.trim().length > 0)
+  ).length;
+  const pendingVerification = Math.max(0, totalStudents - photosCount);
   const missingPhotos = allStudentsList.filter(s => !s.photoPath || s.photoPath.trim().length === 0);
 
   // Demographics
@@ -689,7 +695,9 @@ export const ReceiverDashboardPage: React.FC = () => {
             {readyForPrintCount.toLocaleString()}
           </div>
           <div className="text-[10px] text-[#062404] bg-[#8fe617] px-2 py-0.5 rounded-full inline-block font-mono font-bold mt-1 shadow-xs">
-            100% VERIFIED READY
+            {photosCount > 0 && readyForPrintCount < photosCount
+              ? `${(photosCount - readyForPrintCount).toLocaleString()} VERIFIED, NO FILE`
+              : "ALL VERIFIED HAVE FILES"}
           </div>
         </div>
 

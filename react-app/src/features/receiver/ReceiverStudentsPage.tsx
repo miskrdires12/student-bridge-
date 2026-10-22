@@ -110,18 +110,24 @@ export const ReceiverStudentsPage: React.FC = () => {
     totalStudents: number;
     totalPhotos: number;
     todayRecords: number;
+    weeklyRecords: number;
+    monthlyRecords: number;
     queryLatencyMs: number;
     acceptanceRate: string;
     r2Bucket: string;
     lastPing: number;
+    available: boolean;
   }>({
-    totalStudents: 5261,
-    totalPhotos: 5220,
+    totalStudents: 0,
+    totalPhotos: 0,
     todayRecords: 0,
-    queryLatencyMs: 18,
-    acceptanceRate: '99.2%',
-    r2Bucket: 'siliconlabs',
-    lastPing: Date.now()
+    weeklyRecords: 0,
+    monthlyRecords: 0,
+    queryLatencyMs: 0,
+    acceptanceRate: '',
+    r2Bucket: '',
+    lastPing: 0,
+    available: false
   });
 
   // Active Student Detail Drawer (Clean 3-tab layout without fake placeholder fields)
@@ -442,6 +448,10 @@ export const ReceiverStudentsPage: React.FC = () => {
     return Array.from(set).sort();
   }, [students]);
 
+  // Records the receiver desk hid are still part of the registry total but are excluded
+  // from the default table view; the count is displayed so the two numbers reconcile.
+  const hiddenCount = useMemo(() => students.filter(s => s && s.receiverHidden).length, [students]);
+
   // Calendar dates with student count for everyday viewer
   const calendarDateCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -467,16 +477,22 @@ export const ReceiverStudentsPage: React.FC = () => {
       if (res.ok) {
         const data = await res.json();
         setLiveServerStats({
-          totalStudents: data.totalStudents || 5261,
-          totalPhotos: data.totalPhotos || 5220,
-          todayRecords: data.todayRecords || 0,
-          queryLatencyMs: latency || 18,
-          acceptanceRate: data.acceptanceRate || '99.2%',
-          r2Bucket: data.r2Bucket || 'siliconlabs',
-          lastPing: Date.now()
+          totalStudents: Number(data.totalStudents) || 0,
+          totalPhotos: Number(data.totalPhotos) || 0,
+          todayRecords: Number(data.todayRecords) || 0,
+          weeklyRecords: Number(data.weeklyRecords) || 0,
+          monthlyRecords: Number(data.monthlyRecords) || 0,
+          queryLatencyMs: latency,
+          acceptanceRate: data.acceptanceRate || '',
+          r2Bucket: data.r2Bucket || '',
+          lastPing: Date.now(),
+          available: true
         });
+      } else {
+        setLiveServerStats(prev => ({ ...prev, available: false }));
       }
     } catch (e) {
+      setLiveServerStats(prev => ({ ...prev, available: false }));
     } finally {
       setIsRefreshingTelemetry(false);
     }
@@ -502,6 +518,7 @@ export const ReceiverStudentsPage: React.FC = () => {
     let weekCount = 0;
     let monthCount = 0;
     let withPhotoCount = 0;
+    let verifiedPhotoCount = 0;
     let latestTransmitted: Student | null = null;
 
     activeStudents.forEach(s => {
@@ -517,23 +534,32 @@ export const ReceiverStudentsPage: React.FC = () => {
         (s.photoPath && !s.photoPath.includes('avatar') && !s.photoPath.includes('placeholder')) ||
         (s.previewPath && !s.previewPath.includes('avatar'));
       if (hasPhoto) withPhotoCount++;
+      if (s.photoIntegrityStatus === 'PHOTO_VERIFIED') verifiedPhotoCount++;
 
       if (!latestTransmitted || (rawDate && rawDate > (latestTransmitted.createdAt || ''))) {
         latestTransmitted = s;
       }
     });
 
-    const authoritativeTotal = Math.max(activeStudents.length, liveServerStats.totalStudents);
-    const authoritativePhotos = Math.max(withPhotoCount, liveServerStats.totalPhotos);
+    // Header KPIs read the server totals, which are deduplicated by studentId and bucketed
+    // on school-local calendar days; using them here keeps this page identical to the Live
+    // Dashboard, Fleet and Telemetry Velocity instead of drifting by a browser-local rolling
+    // window. The loop above only serves degraded mode when /api/stats is unreachable.
+    // Sticky Math.max() blending was removed deliberately: a maximum can never go down, so
+    // deleted or unverified records stayed on screen permanently.
+    const server = liveServerStats.available ? liveServerStats : null;
+    const shownTotal = server ? server.totalStudents : activeStudents.length;
+    const shownPhotos = server ? server.totalPhotos : verifiedPhotoCount;
 
     return {
-      total: authoritativeTotal,
-      today: todayCount > 0 ? todayCount : liveServerStats.todayRecords,
-      week: weekCount,
-      month: monthCount,
-      withPhoto: authoritativePhotos,
-      pendingPhoto: Math.max(0, authoritativeTotal - authoritativePhotos),
-      activeSenders: Math.max(distinctSenders.length, 1),
+      total: shownTotal,
+      today: server ? server.todayRecords : todayCount,
+      week: server ? server.weeklyRecords : weekCount,
+      month: server ? server.monthlyRecords : monthCount,
+      withPhoto: shownPhotos,
+      photoFilesCatalogued: withPhotoCount,
+      pendingPhoto: Math.max(0, shownTotal - shownPhotos),
+      activeSenders: distinctSenders.length,
       latestTransmitted
     };
   }, [students, distinctSenders, liveServerStats]);
@@ -1743,7 +1769,9 @@ export const ReceiverStudentsPage: React.FC = () => {
             <div className="mt-1 text-xl sm:text-2xl font-black font-heading text-white">
               {telemetryAmounts.total.toLocaleString()}
             </div>
-            <div className="text-[10px] text-slate-400 mt-0.5">Authoritative database registry</div>
+            <div className="text-[10px] text-slate-400 mt-0.5">
+              {sortedFiltered.length.toLocaleString()} shown &bull; {hiddenCount.toLocaleString()} receiver-hidden
+            </div>
           </div>
 
           <div className="bg-white/5 border border-white/10 rounded-xl p-3">
@@ -1783,7 +1811,11 @@ export const ReceiverStudentsPage: React.FC = () => {
             </div>
             <div className="mt-1 text-xl sm:text-2xl font-black font-heading text-white flex items-baseline gap-1.5">
               <span>{telemetryAmounts.activeSenders} Stations</span>
-              <span className="text-xs text-[#85E510] font-mono font-bold">1.43 rec/m</span>
+              <span className="text-xs text-[#85E510] font-mono font-bold">
+                {telemetryAmounts.activeSenders > 0
+                  ? `${(telemetryAmounts.today / telemetryAmounts.activeSenders).toFixed(1)} rec/sender today`
+                  : 'no registered senders'}
+              </span>
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">Field operator fleet streaming</div>
           </div>
