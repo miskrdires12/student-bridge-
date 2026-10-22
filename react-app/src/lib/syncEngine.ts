@@ -138,33 +138,55 @@ if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
   }
 }
 
-// ntfy.sh caps a message body, and the station's Telegram-protocol thumbnail is only a few
-// KB, so the small preview is worth carrying while the full-resolution capture is not.
-const BUS_PREVIEW_LIMIT = 96 * 1024;
+// ntfy.sh turns any body above 4,096 bytes into a file attachment and replaces the message
+// text with "You received a file: ...", which is not JSON. A publisher that overflows the
+// limit therefore looks healthy while every remote station throws the event away, so the
+// cloud copy is budgeted to stay inline and the subscriber can still read an attachment.
+const BUS_INLINE_LIMIT = 4096;
+const BUS_BODY_BUDGET = BUS_INLINE_LIMIT - 96;
 
-function keepBusPreview(value: any): string {
-  const s = typeof value === 'string' ? value.trim() : '';
-  if (s.startsWith('data:') && s.length > BUS_PREVIEW_LIMIT) return '';
-  return s;
+function fitsInline(cloudPayload: SyncPayload): boolean {
+  return JSON.stringify(cloudPayload).length <= BUS_BODY_BUDGET;
 }
 
-export function cleanStudentForSync(student?: Student): Student | undefined {
+export function cleanStudentForSync(student?: Student, payloadForSizing?: SyncPayload): Student | undefined {
   if (!student) return undefined;
   const clean = { ...student } as any;
   delete clean.capturedPhoto;
   delete clean.photoBase64;
+
   // Keep the transmitted thumbnail instead of replacing it with the storage path: a path
   // alone renders as a gray avatar for any portrait whose object has not reached the bucket,
-  // which is exactly the window between a send and its background HD upload. Oversized
-  // captures still fall back to the storage path so ntfy never rejects the message.
-  clean.previewPath = keepBusPreview(clean.previewPath) || clean.photoPath || '';
-  clean.thumbnailPath = keepBusPreview(clean.thumbnailPath) || clean.photoPath || '';
+  // which is exactly the window between a send and its background HD upload.
+  const thumbnail = [clean.previewPath, clean.thumbnailPath]
+    .map(v => (typeof v === 'string' ? v.trim() : ''))
+    .find(v => v.startsWith('data:')) || '';
+
+  // One copy of the bytes only. The station stores the same thumbnail in two fields, and
+  // carrying both doubled the payload and pushed every send into attachment mode.
+  clean.previewPath = thumbnail || clean.photoPath || '';
+  clean.thumbnailPath = clean.photoPath || '';
+
+  const sizeWith = () => fitsInline({ ...(payloadForSizing || ({} as SyncPayload)), student: clean as Student });
+
+  if (!sizeWith()) {
+    for (const key of Object.keys(clean)) {
+      if (clean[key] === '' || clean[key] === null || clean[key] === undefined) delete clean[key];
+    }
+  }
+  if (!sizeWith() && Array.isArray(clean.recordHistory)) clean.recordHistory = clean.recordHistory.slice(-1);
+  if (!sizeWith()) delete clean.recordHistory;
+  // Last resort: ship the storage path so the record still arrives even without its preview.
+  if (!sizeWith() && thumbnail) clean.previewPath = clean.photoPath || '';
+
   return clean as Student;
 }
 
 /**
  * Publishes an upsert or deletion event to both local cross-tab bus and global cloud sync bus.
  */
+let lastCloudPublish: { key: string; at: number } = { key: '', at: 0 };
+
 export async function publishStudentSync(
   action: 'UPSERT' | 'DELETE',
   studentOrId: Student | string
@@ -198,13 +220,19 @@ export async function publishStudentSync(
 
     // 2. Lightweight payload for Long-Range (Global Cloud SSE via ntfy.sh)
     // Strips large base64 strings so ntfy.sh does not reject payload exceeding header/body limits
-    const cloudStudent = cleanStudentForSync(rawStudent);
-    const cloudPayload: SyncPayload = {
-      action,
-      student: cloudStudent,
-      studentId,
-      timestamp: Date.now()
-    };
+    const cloudEnvelope: SyncPayload = { action, studentId, timestamp: Date.now() };
+    const cloudStudent = cleanStudentForSync(rawStudent, cloudEnvelope);
+    const cloudPayload: SyncPayload = { ...cloudEnvelope, student: cloudStudent };
+    const cloudBody = JSON.stringify(cloudPayload);
+
+    // A station writes a record several times per send (stage 1 result, then the photo
+    // update). Re-posting an identical body inside the same second only floods remote
+    // stations, which are the ones that have to parse it.
+    const publishKey = `${action}:${studentId}:${(cloudStudent as any)?.updatedAt || cloudBody.length}`;
+    if (publishKey === lastCloudPublish.key && Date.now() - lastCloudPublish.at < 1500) {
+      return true;
+    }
+    lastCloudPublish = { key: publishKey, at: Date.now() };
 
     fetch(SYNC_BASE_URL, {
       method: 'POST',
@@ -213,11 +241,18 @@ export async function publishStudentSync(
         Priority: 'urgent',
         Tags: 'student,sync,encoded'
       },
-      body: JSON.stringify(cloudPayload),
+      body: cloudBody,
       cache: 'no-store'
-    }).catch(err => {
-      console.warn('Cloud sync publish notice:', err);
-    });
+    })
+      .then(res => res.json().catch(() => null))
+      .then(ack => {
+        if (ack?.attachment) {
+          console.warn(`Cloud sync published as a ${cloudBody.length}-byte attachment; remote stations read it from ${ack.attachment.url}`);
+        }
+      })
+      .catch(err => {
+        console.warn('Cloud sync publish notice:', err);
+      });
 
     return true;
   } catch (err) {
@@ -279,21 +314,38 @@ export function subscribeToStudentSync(
   let eventSource: EventSource | null = null;
   try {
     eventSource = new EventSource(`${SYNC_BASE_URL}/sse`);
+
+    const applyPayload = (payload: SyncPayload) => {
+      if (payload.action === 'UPSERT' && payload.student) {
+        onUpsert(payload.student);
+      } else if ((payload.action === 'DELETE' || payload.action === 'DELETE_PERMANENT') && payload.studentId && onDelete) {
+        onDelete(payload.studentId);
+      } else if ((payload.action === 'TEMPORARY_DELETE' || payload.action === 'RESTORE') && payload.studentId) {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('studentbridge_softdelete', { detail: payload.studentId }));
+        }
+      }
+    };
+
     eventSource.onmessage = (event) => {
       if (!isSubscribed) return;
       try {
         const raw = JSON.parse(event.data);
         // ntfy message envelope wraps user body inside .message
-        const payload: SyncPayload = typeof raw.message === 'string' ? JSON.parse(raw.message) : raw;
-        if (payload.action === 'UPSERT' && payload.student) {
-          onUpsert(payload.student);
-        } else if ((payload.action === 'DELETE' || payload.action === 'DELETE_PERMANENT') && payload.studentId && onDelete) {
-          onDelete(payload.studentId);
-        } else if ((payload.action === 'TEMPORARY_DELETE' || payload.action === 'RESTORE') && payload.studentId) {
-          if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('studentbridge_softdelete', { detail: payload.studentId }));
-          }
+        if (typeof raw.message === 'string' && raw.attachment?.url) {
+          // The body was too large for a message, so ntfy stored it as a file and put a
+          // placeholder in its place. Fetching the file is the only way to recover the record.
+          fetch(raw.attachment.url, { cache: 'no-store' })
+            .then(res => (res.ok ? res.text() : ''))
+            .then(text => {
+              if (!text) return;
+              const payload: SyncPayload = JSON.parse(text);
+              if (isSubscribed) applyPayload(payload);
+            })
+            .catch(() => {});
+          return;
         }
+        applyPayload(typeof raw.message === 'string' ? JSON.parse(raw.message) : raw);
       } catch (parseErr) {
         // Ping or non-JSON message, safely ignore
       }

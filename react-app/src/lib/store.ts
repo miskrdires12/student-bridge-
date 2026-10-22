@@ -291,17 +291,24 @@ export function getStudentQrFileName(student: Partial<Student>): string {
   return `${student.studentId || 'STUDENT'}_qr.png`;
 }
 
-// Sanitizes student record to prevent heavy base64 strings from exhausting 5MB localStorage quota
+// Sanitizes student record to prevent heavy base64 strings from exhausting 5MB localStorage quota.
+// The few-kilobyte thumbnail a station received over the sync bus is kept, because that preview is
+// the only renderable portrait for a record whose HD photo has not reached the bucket yet — dropping
+// it leaves the directory with a path that resolves to nothing. Full-resolution captures still go.
+const STORAGE_PREVIEW_LIMIT = 16 * 1024;
+
+function keepStoredPreview(value: any, photoPath: any): string {
+  const s = typeof value === 'string' ? value.trim() : '';
+  if (s.startsWith('data:') && s.length > STORAGE_PREVIEW_LIMIT) return photoPath || '';
+  return s || photoPath || '';
+}
+
 export function sanitizeStudentForStorage(student: Partial<Student>): Student {
   const clean = { ...student } as any;
   delete clean.capturedPhoto;
   delete clean.photoBase64;
-  if (typeof clean.previewPath === 'string' && clean.previewPath.startsWith('data:')) {
-    clean.previewPath = clean.photoPath || '';
-  }
-  if (typeof clean.thumbnailPath === 'string' && clean.thumbnailPath.startsWith('data:')) {
-    clean.thumbnailPath = clean.photoPath || '';
-  }
+  clean.previewPath = keepStoredPreview(clean.previewPath, clean.photoPath);
+  clean.thumbnailPath = keepStoredPreview(clean.thumbnailPath, clean.photoPath);
   return clean as Student;
 }
 
