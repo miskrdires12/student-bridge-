@@ -1385,6 +1385,15 @@ async function buildSenderFleetTelemetry() {
     const name = String(r.senderName || r.senderId || "").trim();
     if (!name) {
       unattributedRecords++;
+      // Global period buckets measure ingest volume, so sender-less records are
+      // counted there as well. Per-sender totals below stay strictly attributed,
+      // which keeps sum(sender totals) + unattributed == totalRecords while the
+      // global today/week/month numbers stay identical to /api/stats.
+      const anonTs = r.createdAt ? Date.parse(r.createdAt) : NaN;
+      if (Number.isFinite(anonTs)) {
+        const anonKey = fleetDayKey(anonTs);
+        if (dayKeySet.has(anonKey)) globalDaily[anonKey] = (globalDaily[anonKey] || 0) + 1;
+      }
       continue;
     }
 
