@@ -20,8 +20,10 @@ export interface SyncPayload {
 
 /**
  * Universal photo URL resolver.
- * Routes all R2 photos through the same-origin Edge Worker API `/api/photos/${key}`.
- * This guarantees zero-egress, SSL-trusted, globally CDN cached image delivery from any range (even 200,000+ km).
+ * Resolves every stored photo reference straight to the public R2 CDN. The bucket is
+ * already world-readable and most records carry its absolute URL, so going direct keeps
+ * images loading even when the edge API is unavailable, and removes one Worker hop per
+ * thumbnail from the directory.
  */
 export function getPhotoUrl(pathOrUrl?: any | null): string | null {
   if (!pathOrUrl) return null;
@@ -39,14 +41,12 @@ export function getPhotoUrl(pathOrUrl?: any | null): string | null {
   }
 
   let cleanKey = trimmed;
-  // If already pointing to /api/photos/
+  // Stored as the edge-API proxy path: use the bucket object it points at instead.
   if (cleanKey.startsWith('/api/photos/')) {
+    cleanKey = cleanKey.slice('/api/photos/'.length);
+  } else if (cleanKey.includes('r2.dev/')) {
+    // Already a public CDN URL.
     return cleanKey;
-  }
-
-  // Strip R2 public CDN base URL or r2.dev domain
-  if (cleanKey.includes('r2.dev/')) {
-    cleanKey = cleanKey.split('r2.dev/')[1] || cleanKey;
   } else if (cleanKey.includes('/api/photos/')) {
     cleanKey = cleanKey.split('/api/photos/')[1] || cleanKey;
   } else if (cleanKey.startsWith('http://') || cleanKey.startsWith('https://')) {
@@ -68,8 +68,7 @@ export function getPhotoUrl(pathOrUrl?: any | null): string | null {
   cleanKey = cleanKey.replace(/^\/+/, '');
   if (!cleanKey) return null;
 
-  // Return same-origin proxy URL
-  return `/api/photos/${encodeURI(cleanKey)}`;
+  return `${R2_PUBLIC_BASE_URL}/${encodeURI(cleanKey)}`;
 }
 
 /**

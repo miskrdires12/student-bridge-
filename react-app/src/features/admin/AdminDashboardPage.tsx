@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import JSZip from "jszip";
 import { getStudents, updateStudent, deleteStudent, getCurrentUser, getAllSendersMetrics, SenderMetrics } from "@/lib/store";
+import { getPhotoUrl } from "@/lib/syncEngine";
 import { Student } from "@/types";
 import { getGradeDisplay, getCleanSection, getStudentBranch } from "@/lib/gradeUtils";
 
@@ -922,7 +923,7 @@ export const AdminDashboardPage: React.FC = () => {
 
             <div className="rounded-2xl overflow-hidden bg-neutral-900 border border-neutral-800 flex items-center justify-center max-h-[60vh] p-2">
               <img
-                src={inspectingPhotoStudent.photoPath}
+                src={getPhotoUrl(inspectingPhotoStudent.photoPath) || inspectingPhotoStudent.photoPath}
                 alt={inspectingPhotoStudent.fullName}
                 className="max-h-[55vh] w-auto object-contain rounded-xl"
               />

@@ -1266,29 +1266,82 @@ async function ensureLocalFallbackLoaded(env, originUrl) {
   }
 }
 
+// Exact row count for a whole table, asked separately from the paginated scan. Used as an
+// independent cross-check because PostgREST has been observed reporting a smaller total
+// inside a range request than the table actually holds (a 6,087-row table answering 2,000),
+// which is what makes a truncated feed look authoritative to its consumers.
+async function countSupabaseTable(table) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=id&limit=1`, {
+        headers: {
+          "apikey": SUPABASE_KEY,
+          "Authorization": `Bearer ${SUPABASE_KEY}`,
+          "Accept-Profile": "cloudflare",
+          "Prefer": "count=exact"
+        }
+      });
+      const cr = res.headers.get("content-range");
+      if (res.ok && cr && cr.includes("/")) {
+        const parsed = parseInt(cr.split("/")[1], 10);
+        if (Number.isFinite(parsed) && parsed > 0) return parsed;
+      }
+    } catch (e) {}
+    if (attempt < 2) await new Promise(r => setTimeout(r, 100 * (attempt + 1)));
+  }
+  return 0;
+}
+
 // PostgREST caps each response at db-max-rows (1000), so paginate with Range headers
 // to guarantee the full table is loaded (orphan scans / dataset merges depend on it).
-async function fetchSupabaseAllRows(table, params) {
+// `complete` tells the caller whether every page actually arrived: a single failed page
+// used to break the loop silently, so a 6,087-row table could be served as 3,000 rows.
+// Callers that prune client-side copies must only trust a complete answer.
+// `declaredTotal` is the independently counted table size, when the caller has one.
+async function fetchSupabaseAllRows(table, params, declaredTotal = 0) {
   const rows = [];
   const seen = new Set();
-  let total = 0;
-  for (let from = 0; from < 100000; from += 1000) {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
-      headers: {
-        "apikey": SUPABASE_KEY,
-        "Authorization": `Bearer ${SUPABASE_KEY}`,
-        "Accept-Profile": "cloudflare",
-        "Range-Unit": "items",
-        "Range": `${from}-${from + 999}`,
-        "Prefer": "count=exact"
-      }
-    });
-    if (!res.ok) break;
-    const cr = res.headers.get("content-range");
-    if (cr && cr.includes("/")) total = parseInt(cr.split("/")[1], 10) || 0;
-    const chunk = await res.json();
-    if (!Array.isArray(chunk) || chunk.length === 0) break;
-    let added = 0;
+  let total = declaredTotal > 0 ? declaredTotal : 0;
+  let complete = false;
+  const PAGE = 1000;
+  for (let from = 0; from < 100000; from += PAGE) {
+    let chunk = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
+          headers: {
+            "apikey": SUPABASE_KEY,
+            "Authorization": `Bearer ${SUPABASE_KEY}`,
+            "Accept-Profile": "cloudflare",
+            "Range-Unit": "items",
+            "Range": `${from}-${from + PAGE - 1}`,
+            "Prefer": "count=exact"
+          }
+        });
+        if (res.ok) {
+          const cr = res.headers.get("content-range");
+          if (cr && cr.includes("/")) {
+            const parsedTotal = parseInt(cr.split("/")[1], 10) || 0;
+            // Keep the largest reported table size: a retried page can report a smaller
+            // range than an earlier one, and under-reporting the total is what makes a
+            // truncated feed look complete to whoever is reconciling against it.
+            if (parsedTotal > total) total = parsedTotal;
+          }
+          const body = await res.json();
+          if (Array.isArray(body)) { chunk = body; break; }
+        }
+      } catch (e) {}
+      if (attempt < 3) await new Promise(r => setTimeout(r, 120 * (attempt + 1)));
+    }
+    if (chunk === null) break;
+    // An empty or short page is only a clean end when the rows collected actually reach the
+    // table size the database reported. PostgREST has been observed returning `[]` (and a
+    // matching total) for a page in the middle of a table, so trusting the page alone turned
+    // a 6,087-row registry into a 2,000-row feed labelled complete.
+    if (chunk.length === 0) {
+      complete = total === 0 ? rows.length === 0 : rows.length >= total;
+      break;
+    }
     for (const row of chunk) {
       const k = row && (row.id || row.studentId);
       if (k) {
@@ -1296,11 +1349,15 @@ async function fetchSupabaseAllRows(table, params) {
         seen.add(k);
       }
       rows.push(row);
-      added++;
     }
-    if (chunk.length < 1000 || rows.length >= total || added === 0) break;
+    if (chunk.length < PAGE) {
+      complete = total === 0 || rows.length >= total;
+      break;
+    }
+    if (rows.length >= total && total > 0) { complete = true; break; }
   }
-  return { rows, total };
+  if (!complete && total > 0 && rows.length >= total) complete = true;
+  return { rows, total, complete };
 }
 
 // -----------------------------------------------------------------------------
@@ -1315,6 +1372,11 @@ const FLEET_SESSION_GAP_MS = 30 * 60 * 1000;
 const FLEET_WINDOW_DAYS = 62;
 const FLEET_TZ = "Africa/Addis_Ababa";
 let fleetTelemetryCache = null;
+
+// Last complete /api/stats snapshot per scope. When a count query fails after its retries
+// the previous figure is re-served and named in statsMissing, so a screen can show the
+// number as stale instead of receiving a substituted (wrong) one.
+const statsLastGood = new Map();
 
 // All day/week/month buckets use school-local (Addis Ababa, UTC+3, no DST)
 // calendar days so the Live Dashboard, Fleet and Velocity agree on every period.
@@ -1532,13 +1594,18 @@ async function getAllStudentsDataset(env, originUrl) {
 
   // 1. Try authoritative Supabase PostgreSQL dataset first (fastest, pre-indexed)
   try {
-    const { rows } = await fetchSupabaseAllRows("students", "select=*&order=createdAt.desc,id.desc");
-    if (rows.length > 0) {
+    const dbCount = await countSupabaseTable("students");
+    const { rows, complete } = await fetchSupabaseAllRows("students", "select=*&order=createdAt.desc,id.desc", dbCount);
+    // Cache only a scan that reached the independently counted table size. A short scan must
+    // fall through to the static + R2 merge, otherwise a truncated snapshot becomes the
+    // authoritative dataset - and the daily backup would persist it as the whole registry.
+    if (rows.length > 0 && complete) {
       rows.forEach(normalizeStudentPhoneFields);
       cachedAllStudents = rows;
       lastAllFetchTime = Date.now();
       return cachedAllStudents;
     }
+    console.warn(`getAllStudentsDataset: Supabase scan incomplete (${rows.length} of ${dbCount || 'unknown'} rows), using merged fallback`);
   } catch (sbErr) {
     console.warn("getAllStudentsDataset Supabase fetch notice:", sbErr);
   }
@@ -2083,10 +2150,19 @@ export default {
 
         let sbRes;
         if (isAllRequested) {
-          const { rows, total } = await fetchSupabaseAllRows("students", sbQuery.split("?")[1]);
+          // Only an unfiltered "all" request can be cross-checked against the whole table;
+          // a filtered feed has no independent row budget to compare against.
+          const unfiltered = !search && school === "ALL" && grade === "ALL" && !hiddenParam;
+          const dbCount = unfiltered ? await countSupabaseTable("students") : 0;
+          const { rows, total, complete } = await fetchSupabaseAllRows("students", sbQuery.split("?")[1], dbCount);
+          const expectedRows = Math.max(total, dbCount);
           sbRes = {
-            ok: rows.length > 0,
-            headers: { get: (h) => h === "content-range" ? `0-${Math.max(0, rows.length - 1)}/${total}` : null },
+            // A truncated page set must never be presented as the whole table: stations
+            // reconcile and prune their local copies against this answer, so a short feed can
+            // make a full registry look like a few dozen students. When pages were lost, fall
+            // through to the resilient cached dataset instead.
+            ok: rows.length > 0 && complete && (expectedRows === 0 || rows.length >= expectedRows),
+            headers: { get: (h) => h === "content-range" ? `0-${Math.max(0, rows.length - 1)}/${Math.max(expectedRows, rows.length)}` : null },
             json: async () => rows
           };
         } else {
@@ -4108,10 +4184,6 @@ export default {
       const schoolParam = (url.searchParams.get("school") || "ALL").trim();
       const schoolQ = schoolParam && schoolParam !== "ALL" ? `&school=ilike.*${encodeURIComponent(schoolParam)}*` : "";
 
-      let totalStudents = (cachedStudents || []).length;
-      let todayRecords = 0;
-      let totalPhotos = 0;
-
       // Period boundaries use the same school-local calendar days (Addis Ababa,
       // UTC+3, no DST) as /api/telemetry/senders, so dashboards cannot disagree.
       const statsDayKeys = fleetDayWindow(Date.now(), 30);
@@ -4125,18 +4197,27 @@ export default {
       const monthStartIso = zonedDayStartUtc(statsDayKeys[0]);
 
       const countStudentsQuery = async (extraFilters) => {
-        try {
-          const r = await fetch(`${SUPABASE_URL}/rest/v1/students?select=id&limit=1${extraFilters}`, {
-            headers: {
-              "apikey": SUPABASE_KEY,
-              "Authorization": `Bearer ${SUPABASE_KEY}`,
-              "Accept-Profile": "cloudflare",
-              "Prefer": "count=exact"
+        // Retry before giving up: one dropped query used to make this handler fall back to
+        // the unfiltered numbers, so a school-scoped request could report the whole registry
+        // and "this month" could silently equal "every record ever".
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const r = await fetch(`${SUPABASE_URL}/rest/v1/students?select=id&limit=1${extraFilters}`, {
+              headers: {
+                "apikey": SUPABASE_KEY,
+                "Authorization": `Bearer ${SUPABASE_KEY}`,
+                "Accept-Profile": "cloudflare",
+                "Prefer": "count=exact"
+              }
+            });
+            const range = r.headers.get("content-range");
+            if (r.ok && range && range.includes("/")) {
+              const parsed = parseInt(range.split("/")[1], 10);
+              if (Number.isFinite(parsed)) return parsed;
             }
-          });
-          const range = r.headers.get("content-range");
-          if (range && range.includes("/")) return parseInt(range.split("/")[1], 10) || 0;
-        } catch (e) {}
+          } catch (e) {}
+          if (attempt < 2) await new Promise(res => setTimeout(res, 100 * (attempt + 1)));
+        }
         return null;
       };
 
@@ -4148,28 +4229,77 @@ export default {
         countStudentsQuery(`&createdAt=gte.${monthStartIso}${schoolQ}`)
       ]);
 
-      if (totalCount !== null) totalStudents = totalCount;
-      if (todayCount !== null) todayRecords = todayCount;
+      // A field the database would not answer is served from the last complete snapshot for
+      // the same scope and named in statsMissing; if there is no snapshot the field is null.
+      // Reusing a timestamped figure the client can flag beats inventing a plausible one.
+      const previousStats = statsLastGood.get(schoolParam);
+      const statsMissing = [];
+      const pick = (fieldName, value, lastResort = null) => {
+        if (value !== null) return value;
+        statsMissing.push(fieldName);
+        const prev = previousStats ? previousStats.values[fieldName] : undefined;
+        if (typeof prev === "number") return prev;
+        return lastResort;
+      };
+
+      // For the unfiltered scope the warm in-memory dataset is a legitimate last resort;
+      // for a school-scoped request it would report the whole registry as that school's
+      // total, so null is returned and the client shows the figure as unavailable.
+      const totalStudentsOut = pick("totalStudents", totalCount, schoolParam === "ALL" ? (cachedStudents || []).length : null);
+      const todayRecordsOut = pick("todayRecords", todayCount);
+      const weeklyRecordsOut = pick("weeklyRecords", weekCount);
+      const monthlyRecordsOut = pick("monthlyRecords", monthCount);
+
+      let photosOut = null;
       if (photoVerifiedCount !== null) {
-        totalPhotos = Math.min(photoVerifiedCount, totalStudents);
+        photosOut = totalStudentsOut === null ? photoVerifiedCount : Math.min(photoVerifiedCount, totalStudentsOut);
       } else {
         const fallbackPhotos = await countStudentsQuery(`&photoPath=not.is.null${schoolQ}`);
-        if (fallbackPhotos !== null) totalPhotos = Math.min(fallbackPhotos, totalStudents);
+        if (fallbackPhotos !== null) {
+          photosOut = totalStudentsOut === null ? fallbackPhotos : Math.min(fallbackPhotos, totalStudentsOut);
+          statsMissing.push("totalPhotos:integrity_unavailable");
+        } else {
+          statsMissing.push("totalPhotos");
+          const prev = previousStats ? previousStats.values.totalPhotos : undefined;
+          photosOut = typeof prev === "number" ? prev : null;
+        }
+      }
+
+      if (statsMissing.length === 0) {
+        statsLastGood.set(schoolParam, {
+          at: Date.now(),
+          values: {
+            totalStudents: totalStudentsOut,
+            totalPhotos: photosOut,
+            todayRecords: todayRecordsOut,
+            weeklyRecords: weeklyRecordsOut,
+            monthlyRecords: monthlyRecordsOut
+          }
+        });
       }
 
       const scan = await scanCachedWithBgRefresh(ctx);
-      const missingPhotos = Math.max(0, totalStudents - totalPhotos);
+      const missingPhotos = (totalStudentsOut === null || photosOut === null)
+        ? null
+        : Math.max(0, totalStudentsOut - photosOut);
+
+      const statsAgeMs = previousStats ? Date.now() - previousStats.at : null;
 
       return new Response(JSON.stringify({
         school: schoolParam,
-        totalStudents,
-        totalPhotos,
+        totalStudents: totalStudentsOut,
+        totalPhotos: photosOut,
         missingPhotos,
-        todayRecords,
-        weeklyRecords: weekCount !== null ? weekCount : todayRecords,
-        monthlyRecords: monthCount !== null ? monthCount : totalStudents,
+        todayRecords: todayRecordsOut,
+        weeklyRecords: weeklyRecordsOut,
+        monthlyRecords: monthlyRecordsOut,
+        statsComplete: statsMissing.length === 0,
+        statsMissing,
+        statsSnapshotAgeMs: statsAgeMs,
         pendingReview: missingPhotos,
-        acceptanceRate: totalStudents > 0 ? ((totalPhotos / totalStudents) * 100).toFixed(1) + "%" : "100%",
+        acceptanceRate: (totalStudentsOut && photosOut !== null && totalStudentsOut > 0)
+          ? ((photosOut / totalStudentsOut) * 100).toFixed(1) + "%"
+          : null,
         storageUsedBytes: scan.totalBytes,
         storageUsedMB: Number((scan.totalBytes / (1024 * 1024)).toFixed(2)),
         storageUsedGB: Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(3)),

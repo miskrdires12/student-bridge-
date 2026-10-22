@@ -368,6 +368,15 @@ export function safeSetItem(key: string, value: string): void {
   }
 }
 
+// True only when the edge API answered with parsable JSON. A Pages deployment can serve
+// the SPA for /api/* (Worker not running) and still return HTTP 200, so screens need this
+// to say out loud that the registry on screen came from the bundled snapshot, not the live
+// table — otherwise a short snapshot reads as "the database shrank".
+let serverApiOnline = false;
+export function isServerApiOnline(): boolean {
+  return serverApiOnline;
+}
+
 let memoryStudents: Student[] = (() => {
   if (typeof localStorage !== 'undefined') {
     try {
@@ -588,12 +597,14 @@ export async function initStore(): Promise<void> {
     if (timeoutId) clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
+      serverApiOnline = true;
       if (data && Array.isArray(data.students) && data.students.length > 0) {
         liveServerStudents = data.students;
         serverTotal = Number(data.total) || data.students.length;
       }
     }
   } catch (apiErr) {
+    serverApiOnline = false;
     console.warn('Full live dataset fetch warning:', apiErr);
   }
 

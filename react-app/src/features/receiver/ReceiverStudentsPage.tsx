@@ -20,7 +20,8 @@ import {
   DEFAULT_BRANCHES, BRANCH_SCHOOL_MAP,
   generateStudentQrToken, getStudentPhotoFileName, getStudentQrFileName,
   addCorrectionLog, getAllSendersMetrics, SenderMetrics, getAuthHeaders,
-  initStore, buildExportPhotoPath, buildExportQrPath, refreshPlatformSettings
+  initStore, buildExportPhotoPath, buildExportQrPath, refreshPlatformSettings,
+  isServerApiOnline
 } from '@/lib/store';
 import { Student } from '@/types';
 import { PhoneCropModal } from '@/components/PhoneCropModal';
@@ -117,6 +118,8 @@ export const ReceiverStudentsPage: React.FC = () => {
     r2Bucket: string;
     lastPing: number;
     available: boolean;
+    statsComplete: boolean;
+    statsMissing: string[];
   }>({
     totalStudents: 0,
     totalPhotos: 0,
@@ -127,8 +130,11 @@ export const ReceiverStudentsPage: React.FC = () => {
     acceptanceRate: '',
     r2Bucket: '',
     lastPing: 0,
-    available: false
+    available: false,
+    statsComplete: true,
+    statsMissing: []
   });
+  const [feedRetrying, setFeedRetrying] = useState(false);
 
   // Active Student Detail Drawer (Clean 3-tab layout without fake placeholder fields)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false);
@@ -486,6 +492,8 @@ export const ReceiverStudentsPage: React.FC = () => {
           acceptanceRate: data.acceptanceRate || '',
           r2Bucket: data.r2Bucket || '',
           lastPing: Date.now(),
+          statsComplete: data.statsComplete !== false,
+          statsMissing: Array.isArray(data.statsMissing) ? data.statsMissing : [],
           available: true
         });
       } else {
@@ -503,6 +511,21 @@ export const ReceiverStudentsPage: React.FC = () => {
     const interval = setInterval(fetchLiveTelemetry, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  // Reload the whole registry into this station's dataset. Used when the loaded list is
+  // smaller than the server total, which means a sync feed returned an incomplete page set.
+  const retryDatasetLoad = async () => {
+    setFeedRetrying(true);
+    try {
+      await initStore();
+      setStudents(getStudents());
+      window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
+    } catch (e) {
+      console.warn('Full registry reload notice:', e);
+    } finally {
+      setFeedRetrying(false);
+    }
+  };
 
   // Real-Time Transmission & Amounts Telemetry
   const telemetryAmounts = useMemo(() => {
@@ -1770,7 +1793,7 @@ export const ReceiverStudentsPage: React.FC = () => {
               {telemetryAmounts.total.toLocaleString()}
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              {sortedFiltered.length.toLocaleString()} shown &bull; {hiddenCount.toLocaleString()} receiver-hidden
+              {pagedStudents.length.toLocaleString()} on this page &bull; {sortedFiltered.length.toLocaleString()} in view &bull; {hiddenCount.toLocaleString()} hidden
             </div>
           </div>
 
@@ -1821,6 +1844,51 @@ export const ReceiverStudentsPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {!isServerApiOnline() && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-rose-300 bg-rose-50 dark:bg-[#1b0d10] dark:border-rose-800 px-4 py-3">
+          <div className="text-xs text-rose-900 dark:text-rose-200 font-semibold leading-relaxed">
+            The live sync API is not answering, so this list is the registry snapshot shipped with
+            the build &mdash; {students.length.toLocaleString()} records, newest transmitted{' '}
+            {students.reduce((max, s) => ((s.createdAt || '') > max ? s.createdAt || '' : max), '') || 'n/a'}.
+            Records sent after that are safe in the database but cannot be listed until the API
+            returns; photos still load directly from storage.
+          </div>
+          <button
+            type="button"
+            onClick={retryDatasetLoad}
+            disabled={feedRetrying}
+            className="shrink-0 px-3 py-1.5 rounded-xl bg-rose-600 text-white text-xs font-black disabled:opacity-50"
+          >
+            {feedRetrying ? 'Retrying…' : 'Retry connection'}
+          </button>
+        </div>
+      )}
+
+      {liveServerStats.available && liveServerStats.totalStudents > students.length && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 dark:bg-[#1a1608] dark:border-amber-700 px-4 py-3">
+          <div className="text-xs text-amber-900 dark:text-amber-200 font-semibold leading-relaxed">
+            This station has {students.length.toLocaleString()} of{' '}
+            {liveServerStats.totalStudents.toLocaleString()} registry records loaded. The sync
+            feed returned an incomplete page set &mdash; no records were deleted, reload to fetch the rest.
+          </div>
+          <button
+            type="button"
+            onClick={retryDatasetLoad}
+            disabled={feedRetrying}
+            className="shrink-0 px-3 py-1.5 rounded-xl bg-amber-600 text-white text-xs font-black disabled:opacity-50"
+          >
+            {feedRetrying ? 'Reloading…' : 'Reload full registry'}
+          </button>
+        </div>
+      )}
+
+      {liveServerStats.available && !liveServerStats.statsComplete && (
+        <div className="rounded-2xl border border-sky-300 bg-sky-50 dark:bg-[#0b1620] dark:border-sky-800 px-4 py-2.5 text-[11px] text-sky-900 dark:text-sky-200 font-semibold">
+          Server counts incomplete{liveServerStats.statsMissing.length > 0 ? ` (${liveServerStats.statsMissing.join(', ')})` : ''}
+          &mdash; those figures are reused from the last complete snapshot, not measured now.
+        </div>
+      )}
 
       {/* View Switcher: Master Table vs School Directory Folders */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3 rounded-2xl border border-[#E2E8F0] shadow-xs">
@@ -2555,7 +2623,8 @@ export const ReceiverStudentsPage: React.FC = () => {
           <div className="text-slate-600 font-medium">
             Showing <span className="font-bold text-[#0B1118]">{pagedStudents.length > 0 ? (page - 1) * pageSize + 1 : 0}</span> to{' '}
             <span className="font-bold text-[#0B1118]">{Math.min(filtered.length, page * pageSize)}</span> of{' '}
-            <span className="font-bold text-[#0B1118]">{filtered.length.toLocaleString()}</span> entries
+            <span className="font-bold text-[#0B1118]">{filtered.length.toLocaleString()}</span> entries{' '}
+            <span className="text-slate-500">({pageSize} per page)</span>
           </div>
 
           <div className="flex items-center gap-1.5">
