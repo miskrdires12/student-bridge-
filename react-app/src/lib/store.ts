@@ -588,7 +588,10 @@ export function removeDeletedStudentId(studentId: string): void {
 
 const FEED_PAGE_SIZE = 500;
 const FEED_PAGE_CONCURRENCY = 4;
-const FEED_PAGE_TIMEOUT_MS = 25000;
+// A 500-row read has been measured answering in 1.5 s and in 89 s on the same minute of the
+// same deployment, so the window has to cover Postgres' long tail or the station gives up on a
+// backend that is merely slow and falls back to the stale bundled snapshot.
+const FEED_PAGE_TIMEOUT_MS = 45000;
 
 function fetchFeedWithTimeout(url: string): Promise<Response> {
   if (typeof AbortController === 'undefined') return fetch(url);
@@ -614,15 +617,34 @@ async function fetchFeedPage(page: number, sinceIso?: string): Promise<FeedPage>
   return { students, total, totalPages };
 }
 
+// A single page has been observed timing out while the backend kept working, so one retry
+// happens before the page is declared lost. Returning null is what marks the whole feed
+// incomplete, and an incomplete feed can never be used to prune a station's local copy.
+async function fetchFeedPageWithRetry(page: number, sinceIso?: string): Promise<FeedPage | null> {
+  try {
+    return await fetchFeedPage(page, sinceIso);
+  } catch (firstErr) {
+    console.warn(`Feed page ${page} failed, retrying once:`, firstErr);
+    try {
+      return await fetchFeedPage(page, sinceIso);
+    } catch (retryErr) {
+      console.warn(`Feed page ${page} lost, feed is not complete:`, retryErr);
+      return null;
+    }
+  }
+}
+
 // Pull the registry one indexed page at a time instead of asking for the whole table in a single
-// response. Measured on production: `/api/students?all=true` is 21.7 MB and takes 120 s, while
-// `?page=1&limit=500` answers in 0.6 s. No station can finish the monolithic request inside its
-// own abort window, so it fell through to the stale bundled snapshot — which is exactly why a
-// freshly sent student stayed invisible on the receiver and the totals disagreed.
+// response. Measured on production: `/api/students?all=true` is 8.2 MB and takes 139 s on a cold
+// isolate, while `?page=1&limit=500` answers 640 KB in 1.5-8 s. No station can finish the
+// monolithic request inside its own abort window, so it fell through to the stale bundled
+// snapshot — which is exactly why a freshly sent student stayed invisible on the receiver and
+// the totals disagreed.
 // `complete` is only true when every page arrived and the rows assembled reach the total the
 // database reported; callers may prune their local copy against a complete feed and nothing else.
 export async function fetchLiveDataset(sinceIso?: string): Promise<{ students: Student[]; total: number; complete: boolean }> {
-  const first = await fetchFeedPage(1, sinceIso);
+  const first = await fetchFeedPageWithRetry(1, sinceIso);
+  if (!first) throw new Error('Feed page 1 unavailable');
   const byId = new Map<string, Student>();
   const collect = (list: Student[]) => {
     list.forEach(s => { if (s && s.studentId) byId.set(s.studentId, s); });
@@ -635,17 +657,14 @@ export async function fetchLiveDataset(sinceIso?: string): Promise<{ students: S
 
   for (let i = 0; i < remaining.length; i += FEED_PAGE_CONCURRENCY) {
     const batch = remaining.slice(i, i + FEED_PAGE_CONCURRENCY);
-    const pages = await Promise.all(
-      batch.map(p => fetchFeedPage(p, sinceIso).catch(pageErr => {
-        console.warn(`Feed page ${p} lost, feed is not complete:`, pageErr);
-        return null;
-      }))
-    );
+    const pages = await Promise.all(batch.map(p => fetchFeedPageWithRetry(p, sinceIso)));
     pages.forEach(pg => { if (pg) collect(pg.students); else lostPage = true; });
   }
 
   const students = Array.from(byId.values());
-  const total = Math.max(first.total, students.length);
+  // `total` stays exactly the number the database reported. Blending it with the rows this pass
+  // happened to assemble is what let a short feed be labelled complete.
+  const total = first.total;
   return { students, total, complete: !lostPage && students.length >= total };
 }
 

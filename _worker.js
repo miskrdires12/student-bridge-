@@ -1338,11 +1338,18 @@ async function countSupabaseTable(table) {
   return 0;
 }
 
-// A complete `all=true` scan of the registry is slow (thousands of rows through a throttled
-// free-tier Postgres), so an isolate serves the rows it already assembled for this long before
-// paying for another scan. Stations reconcile against the delta feed in between, so the window
-// only has to cover a page load, not a send.
-const FULL_FEED_CACHE_MS = 90 * 1000;
+// Rebuild the full registry snapshot off the request path, single-flighted so a room full of
+// stations polling `all=true` costs one Supabase scan instead of one per request.
+let fullFeedRefresh = null;
+
+function refreshAllStudentsDataset(env, originUrl, ctx) {
+  if (fullFeedRefresh) return fullFeedRefresh;
+  fullFeedRefresh = getAllStudentsDataset(env, originUrl, true)
+    .catch(err => { console.warn("Background full-feed refresh failed:", err); })
+    .finally(() => { fullFeedRefresh = null; });
+  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(fullFeedRefresh);
+  return fullFeedRefresh;
+}
 
 // Delta feeds are answered with `updatedSince`, and PostgREST needs a bare ISO instant:
 // fractional seconds and offsets are trimmed so `gt.` compares against a real timestamp.
@@ -1667,8 +1674,8 @@ async function buildSenderFleetTelemetry() {
   return payload;
 }
 
-async function getAllStudentsDataset(env, originUrl) {
-  if (cachedAllStudents && cachedAllStudents.length > 0) {
+async function getAllStudentsDataset(env, originUrl, forceRefresh = false) {
+  if (!forceRefresh && cachedAllStudents && cachedAllStudents.length > 0) {
     return cachedAllStudents;
   }
 
@@ -2239,31 +2246,35 @@ export default {
           // Only an unfiltered "all" request can be cross-checked against the whole table;
           // a filtered feed has no independent row budget to compare against.
           const unfiltered = !search && school === "ALL" && grade === "ALL" && !hiddenParam;
-          const cacheAge = Date.now() - lastAllFetchTime;
-          if (unfiltered && cachedAllStudents && cachedAllStudents.length > 0 && cacheAge < FULL_FEED_CACHE_MS) {
-            const cachedFeed = cachedAllStudents.slice();
-            servedFromEdgeCache = true;
-            sbRes = {
-              ok: true,
-              headers: { get: (h) => h === "content-range" ? `0-${Math.max(0, cachedFeed.length - 1)}/${cachedFeed.length}` : null },
-              json: async () => cachedFeed
-            };
-          } else {
-            const dbCount = unfiltered ? await countSupabaseTable("students") : 0;
-            const { rows, total, complete } = await fetchSupabaseAllRows("students", sbQuery.split("?")[1], dbCount);
-            const expectedRows = Math.max(total, dbCount);
-            // A truncated page set must never be presented as the whole table: stations
-            // reconcile and prune their local copies against this answer, so a short feed can
-            // make a full registry look like a few dozen students. When pages were lost, fall
-            // through to the resilient cached dataset instead.
-            const fullScanArrived = rows.length > 0 && complete && (expectedRows === 0 || rows.length >= expectedRows);
-            if (fullScanArrived && unfiltered) {
-              cachedAllStudents = rows;
-              lastAllFetchTime = Date.now();
+          if (unfiltered) {
+            // The registry is renewed *behind* the response, never in front of it. Assembling the
+            // whole table on the request path was measured at 233 s cold, which is longer than any
+            // station waits, so the legacy `all=true` answer is served from the last complete
+            // snapshot and only a genuinely empty isolate pays for a scan.
+            const hasSnapshot = Array.isArray(cachedAllStudents) && cachedAllStudents.length > 0;
+            if (hasSnapshot) {
+              refreshAllStudentsDataset(env, request.url, ctx);
+              const cachedFeed = cachedAllStudents.slice();
+              servedFromEdgeCache = true;
+              sbRes = {
+                ok: true,
+                headers: { get: (h) => h === "content-range" ? `0-${Math.max(0, cachedFeed.length - 1)}/${cachedFeed.length}` : null },
+                json: async () => cachedFeed
+              };
+            } else {
+              const assembled = await getAllStudentsDataset(env, request.url, true);
+              const rows = Array.isArray(assembled) ? assembled : [];
+              sbRes = {
+                ok: rows.length > 0,
+                headers: { get: (h) => h === "content-range" ? `0-${Math.max(0, rows.length - 1)}/${rows.length}` : null },
+                json: async () => rows.slice()
+              };
             }
+          } else {
+            const { rows, total, complete } = await fetchSupabaseAllRows("students", sbQuery.split("?")[1], 0);
             sbRes = {
-              ok: fullScanArrived,
-              headers: { get: (h) => h === "content-range" ? `0-${Math.max(0, rows.length - 1)}/${Math.max(expectedRows, rows.length)}` : null },
+              ok: rows.length > 0 && complete,
+              headers: { get: (h) => h === "content-range" ? `0-${Math.max(0, rows.length - 1)}/${Math.max(total, rows.length)}` : null },
               json: async () => rows
             };
           }
