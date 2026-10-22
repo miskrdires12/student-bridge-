@@ -110,6 +110,43 @@ export async function removePendingOperation(id: string): Promise<void> {
 }
 
 /**
+ * Update an operation's retry bookkeeping after a failed synchronization attempt
+ */
+async function markOperationFailure(op: PendingOperation, errorMsg: string): Promise<void> {
+  try {
+    const db = await openDB();
+    const nextRetry = (op.retryCount || 0) + 1;
+    const updated: PendingOperation = {
+      ...op,
+      retryCount: nextRetry,
+      status: nextRetry >= 3 ? 'FAILED' : 'PENDING',
+      error: errorMsg
+    };
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).put(updated);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('studentbridge_offline_queue_changed'));
+    }
+  } catch (e) {}
+}
+
+/**
+ * Queue health: pending (waiting/syncing), failed (retryCount >= 3), and the
+ * timestamp of the last successful synchronization flush.
+ */
+export async function getQueueSummary(): Promise<{ pending: number; failed: number; total: number; lastSyncAt: string | null }> {
+  const ops = await getPendingOperations();
+  const failed = ops.filter(o => o.status === 'FAILED').length;
+  let lastSyncAt: string | null = null;
+  try { lastSyncAt = localStorage.getItem('sb_offline_last_sync_ok'); } catch (e) {}
+  return { pending: ops.length - failed, failed, total: ops.length, lastSyncAt };
+}
+
+/**
  * Synchronize all pending offline registrations with the server
  */
 export async function syncOfflineQueue(): Promise<{ synced: number; failed: number }> {
@@ -137,6 +174,7 @@ export async function syncOfflineQueue(): Promise<{ synced: number; failed: numb
           synced++;
         } else {
           failed++;
+          await markOperationFailure(op, `HTTP ${res.status}`);
         }
       } else if (op.type === 'UPDATE_STUDENT') {
         const res = await fetch('/api/students', {
@@ -149,6 +187,7 @@ export async function syncOfflineQueue(): Promise<{ synced: number; failed: numb
           synced++;
         } else {
           failed++;
+          await markOperationFailure(op, `HTTP ${res.status}`);
         }
       } else if (op.type === 'DELETE_STUDENT') {
         const permanent = op.payload?.permanent ? '&permanent=true' : '';
@@ -161,6 +200,7 @@ export async function syncOfflineQueue(): Promise<{ synced: number; failed: numb
           synced++;
         } else {
           failed++;
+          await markOperationFailure(op, `HTTP ${res.status}`);
         }
       } else if (op.type === 'UPLOAD_PHOTO') {
         const res = await fetch('/api/upload', {
@@ -173,11 +213,17 @@ export async function syncOfflineQueue(): Promise<{ synced: number; failed: numb
           synced++;
         } else {
           failed++;
+          await markOperationFailure(op, `HTTP ${res.status}`);
         }
       }
     } catch (err) {
       failed++;
+      await markOperationFailure(op, String(err));
     }
+  }
+
+  if (synced > 0) {
+    try { localStorage.setItem('sb_offline_last_sync_ok', new Date().toISOString()); } catch (e) {}
   }
 
   if (synced > 0 && typeof window !== 'undefined') {

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { getAuthHeaders } from '@/lib/store';
 import {
   HardDrive,
   Database,
@@ -167,7 +168,7 @@ export const SuperAdminStoragePage: React.FC = () => {
     try {
       const res = await fetch(
         `/api/admin/supabase-status${force ? '?refresh=true' : ''}`,
-        { cache: 'no-store' }
+        { cache: 'no-store', headers: getAuthHeaders() }
       );
       if (!res.ok) {
         throw new Error(`Live scan endpoint returned HTTP ${res.status}`);

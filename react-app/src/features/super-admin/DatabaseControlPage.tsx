@@ -7,7 +7,7 @@
 // ============================================================================
 
 import React, { useState, useEffect, useCallback, useTransition } from "react";
-import { getStudents, getUsers, getAuditLogs, deleteStudent } from "@/lib/store";
+import { getStudents, getUsers, getAuditLogs, deleteStudent, getAuthHeaders } from "@/lib/store";
 import { Student, User as UserType } from "@/types";
 import { SuperAdminStoragePage } from "./SuperAdminStoragePage";
 
@@ -151,7 +151,7 @@ export function DatabaseClient({
     setSyncModalOpen(true);
     setSyncLoading(true);
     try {
-      const res = await fetch("/api/admin/supabase-status/sync");
+      const res = await fetch("/api/admin/supabase-status/sync", { headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         setSyncAnalysis(data);
@@ -171,7 +171,7 @@ export function DatabaseClient({
     try {
       const res = await fetch("/api/admin/supabase-status/sync", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({ mode: "PURGE_ALL_ORPHANS" }),
       });
       if (res.ok) {
@@ -202,7 +202,7 @@ export function DatabaseClient({
     try {
       if (force) setStatusLoading(true);
       const startMs = Date.now();
-      const res = await fetch(`/api/admin/supabase-status${force ? "?refresh=true" : ""}`);
+      const res = await fetch(`/api/admin/supabase-status${force ? "?refresh=true" : ""}`, { headers: getAuthHeaders() });
       const latency = Date.now() - startMs;
       if (res.ok) {
         const data = await res.json();
@@ -284,7 +284,7 @@ export function DatabaseClient({
   const handleKeepAlivePing = async () => {
     setPinging(true);
     try {
-      const res = await fetch("/api/admin/supabase-status", { method: "POST" });
+      const res = await fetch("/api/admin/supabase-status", { method: "POST", headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         setFeedback({

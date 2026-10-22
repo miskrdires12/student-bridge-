@@ -642,7 +642,16 @@ async function ensureR2Scan(force = false) {
 // -----------------------------------------------------------------------------
 // PLATFORM SETTINGS (persisted in R2: settings/platform.json)
 // -----------------------------------------------------------------------------
-const DEFAULT_PLATFORM_SETTINGS = { photoPathTemplate: "{grade}/{name}.jpg", syncSchool: "Warka", updatedAt: null };
+const DEFAULT_PLATFORM_SETTINGS = {
+  photoPathTemplate: "{grade}/{name}.jpg",
+  syncSchool: "Warka",
+  exportPhotoTemplate: "{name}.jpg",
+  exportQrTemplate: "{id}_qr.png",
+  exportBaseFolderPhoto: "C:\\Users\\Administrator\\Desktop\\yekaelementry",
+  exportBaseFolderQr: "C:\\Users\\Administrator\\Desktop\\yekaelementry",
+  senderDailyTarget: 50,
+  updatedAt: null
+};
 let platformSettingsCache = null;
 
 async function getPlatformSettings() {
@@ -1294,6 +1303,208 @@ async function fetchSupabaseAllRows(table, params) {
   return { rows, total };
 }
 
+// -----------------------------------------------------------------------------
+// SENDER FLEET TELEMETRY — server-authoritative rollups computed from the
+// durable Supabase dataset (never from browser state). Counts are deduplicated
+// by unique studentId so retries / replays / re-reads cannot inflate totals.
+// A "session" is a deterministic activity window per sender: consecutive
+// registrations no more than 30 minutes apart; a gap > 30 min closes the
+// session and the next record starts a fresh one at 1.
+// -----------------------------------------------------------------------------
+const FLEET_SESSION_GAP_MS = 30 * 60 * 1000;
+const FLEET_WINDOW_DAYS = 62;
+const FLEET_TZ = "Africa/Addis_Ababa";
+let fleetTelemetryCache = null;
+
+// All day/week/month buckets use school-local (Addis Ababa, UTC+3, no DST)
+// calendar days so the Live Dashboard, Fleet and Velocity agree on every period.
+let fleetDayFormatter = null;
+function fleetDayKey(ts) {
+  if (!fleetDayFormatter) {
+    try {
+      fleetDayFormatter = new Intl.DateTimeFormat("en-CA", {
+        timeZone: FLEET_TZ, year: "numeric", month: "2-digit", day: "2-digit"
+      });
+    } catch {
+      fleetDayFormatter = "fallback";
+    }
+  }
+  if (fleetDayFormatter === "fallback") return new Date(ts).toISOString().slice(0, 10);
+  try {
+    return fleetDayFormatter.format(new Date(ts));
+  } catch {
+    return new Date(ts).toISOString().slice(0, 10);
+  }
+}
+
+function fleetDayWindow(now, days) {
+  const keys = [];
+  const DAY = 86400000;
+  for (let i = days - 1; i >= 0; i--) keys.push(fleetDayKey(now - i * DAY));
+  return keys;
+}
+
+function sumDailyKeys(dailyMap, dayKeys) {
+  let sum = 0;
+  for (const k of dayKeys) sum += dailyMap[k] || 0;
+  return sum;
+}
+
+async function buildSenderFleetTelemetry() {
+  if (fleetTelemetryCache && Date.now() - fleetTelemetryCache.at < 60000) {
+    return fleetTelemetryCache.payload;
+  }
+
+  const [studentRes, usersRes] = await Promise.all([
+    fetchSupabaseAllRows("students", "select=id,studentId,senderName,senderId,createdAt,school,branch&order=createdAt.desc,id.desc"),
+    fetchSupabaseAllRows("users", "select=*")
+  ]);
+  const settings = await getPlatformSettings();
+
+  const now = Date.now();
+  const dayKeys = fleetDayWindow(now, FLEET_WINDOW_DAYS);
+  const dayKeySet = new Set(dayKeys);
+  const todayKey = dayKeys[dayKeys.length - 1];
+  const weekKeys = dayKeys.slice(-7);
+  const monthKeys = dayKeys.slice(-30);
+
+  const bySender = new Map();
+  const seenStudentIds = new Set();
+  const globalDaily = {};
+  let totalVerified = 0;
+
+  for (const r of studentRes.rows) {
+    const sid = String(r.studentId || r.id || "").trim().toLowerCase();
+    if (!sid || seenStudentIds.has(sid)) continue;
+    seenStudentIds.add(sid);
+
+    const name = String(r.senderName || r.senderId || "").trim();
+    if (!name) continue;
+
+    const ts = r.createdAt ? Date.parse(r.createdAt) : NaN;
+    const validTs = Number.isFinite(ts) ? ts : 0;
+    if (validTs) totalVerified++;
+
+    const key = name.toLowerCase();
+    let e = bySender.get(key);
+    if (!e) {
+      e = { rawName: name, total: 0, today: 0, week: 0, month: 0, daily: {}, stamps: [], lastTs: 0, branch: "", school: "" };
+      bySender.set(key, e);
+    }
+    e.total++;
+    if (!validTs) continue;
+    e.stamps.push(validTs);
+    if (validTs > e.lastTs) e.lastTs = validTs;
+    const dkey = fleetDayKey(validTs);
+    if (dayKeySet.has(dkey)) {
+      e.daily[dkey] = (e.daily[dkey] || 0) + 1;
+      globalDaily[dkey] = (globalDaily[dkey] || 0) + 1;
+    }
+    if (!e.branch && r.branch) e.branch = String(r.branch);
+    if (!e.school && r.school) e.school = String(r.school);
+  }
+
+  for (const e of bySender.values()) {
+    e.today = sumDailyKeys(e.daily, [todayKey]);
+    e.week = sumDailyKeys(e.daily, weekKeys);
+    e.month = sumDailyKeys(e.daily, monthKeys);
+  }
+
+  const userIndex = new Map();
+  for (const u of usersRes.rows) {
+    if (u.username) userIndex.set(String(u.username).toLowerCase(), u);
+    if (u.email) userIndex.set(String(u.email).toLowerCase(), u);
+    if (u.id) userIndex.set(String(u.id).toLowerCase(), u);
+  }
+
+  const buildEntry = (key, agg, user) => {
+    const stamps = (agg.stamps || []).slice().sort((a, b) => a - b);
+    let sessionCount = 0;
+    let sessionStart = 0;
+    for (let i = stamps.length - 1; i >= 0; i--) {
+      if (i === stamps.length - 1) {
+        sessionCount = 1;
+        sessionStart = stamps[i];
+        continue;
+      }
+      if (stamps[i + 1] - stamps[i] <= FLEET_SESSION_GAP_MS) {
+        sessionCount++;
+        sessionStart = stamps[i];
+      } else {
+        break;
+      }
+    }
+    const lastActivity = stamps.length ? stamps[stamps.length - 1] : 0;
+    const lastHour = stamps.filter(t => now - t <= 60 * 60000).length;
+    const statusU = String((user && user.status) || "").toUpperCase();
+    let terminalStatus = "DISCONNECTED";
+    if (lastActivity && now - lastActivity <= 15 * 60000) terminalStatus = "ACTIVE";
+    else if (lastActivity && now - lastActivity <= 24 * 60 * 60000) terminalStatus = "IDLE";
+    if (statusU === "LOCKED" || statusU === "SUSPENDED" || statusU === "DISABLED" || statusU === "INACTIVE") {
+      terminalStatus = "LOCKED";
+    }
+    return {
+      key,
+      username: (user && user.username) || agg.rawName || key,
+      fullName: (user && user.fullName) || agg.rawName || key,
+      email: (user && user.email) || null,
+      userId: (user && user.id) || null,
+      role: (user && user.role) || "SENDER",
+      branch: (user && user.branch) || agg.branch || agg.school || "",
+      userStatus: (user && user.status) || null,
+      registered: !!user,
+      total: agg.total || 0,
+      today: agg.today || 0,
+      week: agg.week || 0,
+      month: agg.month || 0,
+      daily: agg.daily || {},
+      sessionCount,
+      sessionStart: sessionStart || null,
+      lastActivity: lastActivity || null,
+      rateLastHourPerMin: Number((lastHour / 60).toFixed(2)),
+      terminalStatus
+    };
+  };
+
+  const senders = [];
+  const covered = new Set();
+  for (const [key, agg] of bySender) {
+    senders.push(buildEntry(key, agg, userIndex.get(key)));
+    covered.add(key);
+  }
+  // Registered SENDER accounts with zero records still appear in the fleet
+  for (const u of usersRes.rows) {
+    if (String(u.role || "").toUpperCase() !== "SENDER") continue;
+    const uname = String(u.username || "").toLowerCase();
+    if (!uname || covered.has(uname)) continue;
+    senders.push(buildEntry(uname, { total: 0, today: 0, week: 0, month: 0, daily: {}, stamps: [] }, u));
+    covered.add(uname);
+  }
+  senders.sort((a, b) => b.total - a.total);
+
+  const activeSenders = senders.filter(s => s.terminalStatus === "ACTIVE").length;
+  const recentlyActive = senders.filter(s => s.terminalStatus === "ACTIVE" || s.terminalStatus === "IDLE").length;
+  const payload = {
+    updatedAt: new Date().toISOString(),
+    timezone: FLEET_TZ,
+    windowDays: FLEET_WINDOW_DAYS,
+    todayKey,
+    totals: {
+      totalVerified,
+      activeSenders,
+      recentlyActiveSenders: recentlyActive,
+      todayTotal: globalDaily[todayKey] || 0,
+      weekTotal: sumDailyKeys(globalDaily, weekKeys),
+      monthTotal: sumDailyKeys(globalDaily, monthKeys),
+      daily: dayKeys.map(d => ({ date: d, count: globalDaily[d] || 0 }))
+    },
+    senderDailyTarget: Number(settings.senderDailyTarget) || 50,
+    senders
+  };
+  fleetTelemetryCache = { at: Date.now(), payload };
+  return payload;
+}
+
 async function getAllStudentsDataset(env, originUrl) {
   if (cachedAllStudents && cachedAllStudents.length > 0) {
     return cachedAllStudents;
@@ -1579,7 +1790,41 @@ export default {
     // -------------------------------------------------------------------------
     // 1C. SUPABASE CLOUD TELEMETRY & KEEP-ALIVE PING
     // -------------------------------------------------------------------------
+    if (url.pathname === "/api/telemetry/senders" && request.method === "GET") {
+      const teleUser = await authenticateRequest(request);
+      const teleAuthErr = requireAuthorization(teleUser, ["SENDER", "RECEIVER", "ADMIN", "SUPER_ADMIN"]);
+      if (teleAuthErr) return teleAuthErr;
+      try {
+        const payload = await buildSenderFleetTelemetry();
+        let senders = payload.senders;
+        if (String(teleUser.role || "").toUpperCase() === "SENDER") {
+          const me = String(teleUser.username || "").toLowerCase();
+          const myId = String(teleUser.id || "").toLowerCase();
+          senders = senders.filter(s =>
+            (me && String(s.username).toLowerCase() === me) ||
+            (myId && s.userId && String(s.userId).toLowerCase() === myId));
+        }
+        return new Response(JSON.stringify({
+          success: true,
+          updatedAt: payload.updatedAt,
+          totals: payload.totals,
+          senderDailyTarget: payload.senderDailyTarget,
+          scope: String(teleUser.role || "").toUpperCase() === "SENDER" ? "SELF" : "ALL",
+          senders
+        }), {
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ success: false, error: e.message }), {
+          status: 500, headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      }
+    }
+
     if (url.pathname === "/api/admin/supabase-status" || url.pathname === "/api/admin/cloud-status") {
+      const statusUser = await authenticateRequest(request);
+      const statusAuthErr = requireAuthorization(statusUser, ["SENDER", "RECEIVER", "ADMIN", "SUPER_ADMIN"]);
+      if (statusAuthErr) return statusAuthErr;
       // Once-daily full DB snapshot into R2, triggered by dashboard admin polling
       if (request.method === "GET" && ctx && ctx.waitUntil) {
         ctx.waitUntil(maybeDailyBackup(request.url));
@@ -1695,6 +1940,9 @@ export default {
     // 1D. STORAGE SYNCHRONIZATION ANALYSIS & ORPHAN PURGE (R2 vs Database)
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/admin/supabase-status/sync") {
+      const syncUser = await authenticateRequest(request);
+      const syncAuthErr = requireAuthorization(syncUser, ["ADMIN", "SUPER_ADMIN"]);
+      if (syncAuthErr) return syncAuthErr;
       const scan = await ensureR2Scan(true);
       const allData = await getAllStudentsDataset(env, request.url);
 
@@ -4552,6 +4800,9 @@ export default {
     // 12A. DATABASE BACKUP & RESTORE (R2 snapshots: backups/<date>/*.json)
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/admin/backups" && request.method === "GET") {
+      const bkUser = await authenticateRequest(request);
+      const bkAuthErr = requireAuthorization(bkUser, ["ADMIN", "SUPER_ADMIN"]);
+      if (bkAuthErr) return bkAuthErr;
       try {
         let latest = null, index = {};
         const obj = await getFromR2Bucket("backups/latest.json");
@@ -4643,6 +4894,50 @@ export default {
           patch.photoPathTemplate = t;
         }
         if (typeof body.syncSchool === "string" && body.syncSchool.trim()) patch.syncSchool = body.syncSchool.trim();
+
+        const EXPORT_TEMPLATE_RE = /^[A-Za-z0-9_.\-/{} ]+$/;
+        const validateExportTemplate = (value, field) => {
+          const t = String(value).trim();
+          if (!/\{(?:grade|name|id)\}/i.test(t)) {
+            return `${field} must contain at least one of {grade}, {name}, {id}`;
+          }
+          if (!EXPORT_TEMPLATE_RE.test(t)) {
+            return `${field} contains forbidden characters (allowed: letters, digits, . _ - / {{ }} space)`;
+          }
+          return null;
+        };
+        for (const field of ["exportPhotoTemplate", "exportQrTemplate"]) {
+          if (typeof body[field] === "string" && body[field].trim()) {
+            const err = validateExportTemplate(body[field], field);
+            if (err) {
+              return new Response(JSON.stringify({ error: err }), {
+                status: 400, headers: { "Content-Type": "application/json", ...corsHeaders }
+              });
+            }
+            patch[field] = body[field].trim();
+          }
+        }
+        for (const field of ["exportBaseFolderPhoto", "exportBaseFolderQr"]) {
+          if (typeof body[field] === "string") {
+            const v = body[field].trim();
+            if (v.length > 200 || /[<>"|\n\r]/.test(v)) {
+              return new Response(JSON.stringify({ error: `${field} must be under 200 characters without quotes or angle brackets` }), {
+                status: 400, headers: { "Content-Type": "application/json", ...corsHeaders }
+              });
+            }
+            patch[field] = v;
+          }
+        }
+        if (body.senderDailyTarget !== undefined && body.senderDailyTarget !== null && body.senderDailyTarget !== "") {
+          const n = Number(body.senderDailyTarget);
+          if (!Number.isInteger(n) || n < 1 || n > 5000) {
+            return new Response(JSON.stringify({ error: "senderDailyTarget must be an integer between 1 and 5000" }), {
+              status: 400, headers: { "Content-Type": "application/json", ...corsHeaders }
+            });
+          }
+          patch.senderDailyTarget = n;
+        }
+
         const saved = await savePlatformSettings(patch);
         await writeAuditLog({
           action: "SETTINGS_UPDATED",

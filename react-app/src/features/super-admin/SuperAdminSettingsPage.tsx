@@ -2,12 +2,16 @@ import React, { useState, useEffect } from 'react';
 import {
   Settings, Save, CheckCircle2, Shield, HardDrive, Key,
   Globe, Database, Sliders, RotateCcw, Download, Upload,
-  Building2, Phone, Camera, Check, AlertTriangle, RefreshCw
+  Building2, Phone, Camera, Check, AlertTriangle, RefreshCw,
+  FolderOpen, QrCode, Target
 } from 'lucide-react';
 import { getAppSettings, updateAppSettings, resetAppSettings, exportSettingsJson, importSettingsJson, AppSettings } from '@/lib/settingsStore';
-import { DEFAULT_BRANCHES, getAuthHeaders } from '@/lib/store';
+import { DEFAULT_BRANCHES, getAuthHeaders, refreshPlatformSettings } from '@/lib/store';
 
 const DEFAULT_PHOTO_PATH_TEMPLATE = '{grade}/{name}.jpg';
+const DEFAULT_EXPORT_PHOTO_TEMPLATE = '{name}.jpg';
+const DEFAULT_EXPORT_QR_TEMPLATE = '{id}_qr.png';
+const DEFAULT_EXPORT_BASE_FOLDER = 'C:\\Users\\Administrator\\Desktop\\yekaelementry';
 const PATH_TOKEN_RE = /\{(?:grade|name|id)\}/i;
 const PATH_ALLOWED_RE = /^[A-Za-z0-9_.\-/{}]+$/;
 const SAMPLE_PATH_VALUES: Record<string, string> = { grade: '9A', name: 'Sila-Bekeri', id: 'SB-1024' };
@@ -16,9 +20,21 @@ function photoPathPreview(template: string): string {
   return template.replace(/\{(grade|name|id)\}/gi, (_match, token: string) => SAMPLE_PATH_VALUES[token.toLowerCase()] ?? '');
 }
 
+function exportPathPreview(baseFolder: string, template: string, ext: 'jpg' | 'png'): string {
+  const rel = photoPathPreview(template || `{name}.${ext}`);
+  const folder = (baseFolder || '').trim();
+  if (!folder) return rel;
+  return `${folder}${/[\\/]+$/.test(folder) ? '' : '\\'}${rel}`;
+}
+
 interface PlatformSettings {
   photoPathTemplate?: string;
   syncSchool?: string;
+  exportPhotoTemplate?: string;
+  exportQrTemplate?: string;
+  exportBaseFolderPhoto?: string;
+  exportBaseFolderQr?: string;
+  senderDailyTarget?: number;
   updatedAt?: string | null;
   error?: string;
 }
@@ -37,11 +53,33 @@ export const SuperAdminSettingsPage: React.FC = () => {
   const [isSavingPlatform, setIsSavingPlatform] = useState(false);
   const [platformError, setPlatformError] = useState<string | null>(null);
 
+  // Export Paths — folder references written into @photo / @qr of CSV & Excel downloads
+  const [exportPhotoTemplate, setExportPhotoTemplate] = useState(DEFAULT_EXPORT_PHOTO_TEMPLATE);
+  const [exportQrTemplate, setExportQrTemplate] = useState(DEFAULT_EXPORT_QR_TEMPLATE);
+  const [exportBaseFolderPhoto, setExportBaseFolderPhoto] = useState(DEFAULT_EXPORT_BASE_FOLDER);
+  const [exportBaseFolderQr, setExportBaseFolderQr] = useState(DEFAULT_EXPORT_BASE_FOLDER);
+  const [senderDailyTarget, setSenderDailyTarget] = useState(50);
+
   const pathTemplateError = !PATH_ALLOWED_RE.test(photoPathTemplate)
     ? 'Invalid characters — only letters, digits and _ - . / { } are allowed.'
     : !PATH_TOKEN_RE.test(photoPathTemplate)
       ? 'Template must contain at least one token: {grade}, {name} or {id}.'
       : null;
+
+  const exportTemplateError =
+    [exportPhotoTemplate, exportQrTemplate].some(t => !PATH_TOKEN_RE.test(t))
+      ? 'Export templates must contain at least one token: {grade}, {name} or {id}.'
+      : [exportPhotoTemplate, exportQrTemplate].some(t => !PATH_ALLOWED_RE.test(t))
+        ? 'Export templates allow only letters, digits and _ - . / { }.'
+        : [exportBaseFolderPhoto, exportBaseFolderQr].some(f => f.length > 200 || /[<>"|\n\r]/.test(f))
+          ? 'Base folders must stay under 200 characters without quotes or angle brackets.'
+          : null;
+
+  const targetError = (!Number.isInteger(senderDailyTarget) || senderDailyTarget < 1 || senderDailyTarget > 5000)
+    ? 'Daily target must be an integer between 1 and 5000.'
+    : null;
+
+  const platformSaveBlocked = !!pathTemplateError || !!exportTemplateError || !!targetError;
 
   useEffect(() => {
     const handleUpdate = () => setSettings(getAppSettings());
@@ -59,6 +97,11 @@ export const SuperAdminSettingsPage: React.FC = () => {
         if (cancelled) return;
         if (typeof data.photoPathTemplate === 'string' && data.photoPathTemplate) setPhotoPathTemplate(data.photoPathTemplate);
         if (typeof data.syncSchool === 'string' && data.syncSchool) setSyncSchool(data.syncSchool);
+        if (typeof data.exportPhotoTemplate === 'string' && data.exportPhotoTemplate) setExportPhotoTemplate(data.exportPhotoTemplate);
+        if (typeof data.exportQrTemplate === 'string' && data.exportQrTemplate) setExportQrTemplate(data.exportQrTemplate);
+        if (typeof data.exportBaseFolderPhoto === 'string') setExportBaseFolderPhoto(data.exportBaseFolderPhoto);
+        if (typeof data.exportBaseFolderQr === 'string') setExportBaseFolderQr(data.exportBaseFolderQr);
+        if (typeof data.senderDailyTarget === 'number' && data.senderDailyTarget > 0) setSenderDailyTarget(data.senderDailyTarget);
         setPlatformUpdatedAt(data.updatedAt ?? null);
         setEdgeOffline(false);
       } catch {
@@ -94,13 +137,25 @@ export const SuperAdminSettingsPage: React.FC = () => {
       setPlatformError(pathTemplateError);
       return;
     }
+    if (exportTemplateError || targetError) {
+      setPlatformError(exportTemplateError || targetError);
+      return;
+    }
     setIsSavingPlatform(true);
     setPlatformError(null);
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ photoPathTemplate: photoPathTemplate.trim(), syncSchool: syncSchool.trim() })
+        body: JSON.stringify({
+          photoPathTemplate: photoPathTemplate.trim(),
+          syncSchool: syncSchool.trim(),
+          exportPhotoTemplate: exportPhotoTemplate.trim(),
+          exportQrTemplate: exportQrTemplate.trim(),
+          exportBaseFolderPhoto: exportBaseFolderPhoto.trim(),
+          exportBaseFolderQr: exportBaseFolderQr.trim(),
+          senderDailyTarget: senderDailyTarget
+        })
       });
       const data: PlatformSettings = await res.json().catch(() => ({ error: 'Malformed edge response.' } as PlatformSettings));
       if (!res.ok) {
@@ -108,9 +163,15 @@ export const SuperAdminSettingsPage: React.FC = () => {
       }
       if (typeof data.photoPathTemplate === 'string') setPhotoPathTemplate(data.photoPathTemplate);
       if (typeof data.syncSchool === 'string') setSyncSchool(data.syncSchool);
+      if (typeof data.exportPhotoTemplate === 'string') setExportPhotoTemplate(data.exportPhotoTemplate);
+      if (typeof data.exportQrTemplate === 'string') setExportQrTemplate(data.exportQrTemplate);
+      if (typeof data.exportBaseFolderPhoto === 'string') setExportBaseFolderPhoto(data.exportBaseFolderPhoto);
+      if (typeof data.exportBaseFolderQr === 'string') setExportBaseFolderQr(data.exportBaseFolderQr);
+      if (typeof data.senderDailyTarget === 'number') setSenderDailyTarget(data.senderDailyTarget);
       setPlatformUpdatedAt(data.updatedAt ?? null);
       setEdgeOffline(false);
-      showToast('Cloud photo storage path saved to R2 platform settings.');
+      await refreshPlatformSettings().catch(() => {});
+      showToast('Photo path & export paths saved to R2 platform settings.');
     } catch (err) {
       setPlatformError(err instanceof Error ? err.message : 'Failed to save platform settings.');
     } finally {
@@ -253,6 +314,101 @@ export const SuperAdminSettingsPage: React.FC = () => {
           </div>
         </div>
 
+        {/* ── EXPORT PATHS: @photo / @qr folder references in CSV & Excel ── */}
+        <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-blue-500/15 text-blue-600 flex items-center justify-center">
+              <FolderOpen className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-wider">Export Paths</h4>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                Folder references written into the <span className="font-bold">@photo</span> and <span className="font-bold">@qr</span> columns of downloaded CSV &amp; Excel files.
+                These are reference paths for the receiving computer's local folders — not server filesystem paths or URLs.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
+              <label htmlFor="export-photo-template" className="block text-slate-400 uppercase font-bold text-[10px]">Student Photo Path (@photo)</label>
+              <input
+                id="export-photo-template"
+                type="text"
+                value={exportPhotoTemplate}
+                onChange={(e) => { setExportPhotoTemplate(e.target.value); setPlatformError(null); }}
+                className={`w-full bg-white dark:bg-[#111613] border rounded-xl px-3 py-2 font-mono font-bold text-slate-900 dark:text-white ${
+                  !PATH_TOKEN_RE.test(exportPhotoTemplate) || !PATH_ALLOWED_RE.test(exportPhotoTemplate) ? 'border-rose-400 dark:border-rose-700' : 'border-slate-200 dark:border-slate-800'
+                }`}
+                placeholder={DEFAULT_EXPORT_PHOTO_TEMPLATE}
+              />
+              <input
+                type="text"
+                aria-label="Photo base folder"
+                value={exportBaseFolderPhoto}
+                onChange={(e) => { setExportBaseFolderPhoto(e.target.value); setPlatformError(null); }}
+                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 font-mono text-slate-900 dark:text-white"
+                placeholder={DEFAULT_EXPORT_BASE_FOLDER}
+              />
+              <div className="text-[10px] text-slate-500">
+                Result preview:{' '}
+                <span className="font-mono font-bold text-slate-800 dark:text-slate-200 break-all">{exportPathPreview(exportBaseFolderPhoto, PATH_TOKEN_RE.test(exportPhotoTemplate) && PATH_ALLOWED_RE.test(exportPhotoTemplate) ? exportPhotoTemplate : DEFAULT_EXPORT_PHOTO_TEMPLATE, 'jpg')}</span>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
+              <label htmlFor="export-qr-template" className="block text-slate-400 uppercase font-bold text-[10px] flex items-center gap-1.5">
+                <QrCode className="w-3.5 h-3.5" /> Student QR-Code Path (@qr)
+              </label>
+              <input
+                id="export-qr-template"
+                type="text"
+                value={exportQrTemplate}
+                onChange={(e) => { setExportQrTemplate(e.target.value); setPlatformError(null); }}
+                className={`w-full bg-white dark:bg-[#111613] border rounded-xl px-3 py-2 font-mono font-bold text-slate-900 dark:text-white ${
+                  !PATH_TOKEN_RE.test(exportQrTemplate) || !PATH_ALLOWED_RE.test(exportQrTemplate) ? 'border-rose-400 dark:border-rose-700' : 'border-slate-200 dark:border-slate-800'
+                }`}
+                placeholder={DEFAULT_EXPORT_QR_TEMPLATE}
+              />
+              <input
+                type="text"
+                aria-label="QR base folder"
+                value={exportBaseFolderQr}
+                onChange={(e) => { setExportBaseFolderQr(e.target.value); setPlatformError(null); }}
+                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 font-mono text-slate-900 dark:text-white"
+                placeholder={DEFAULT_EXPORT_BASE_FOLDER}
+              />
+              <div className="text-[10px] text-slate-500">
+                Result preview:{' '}
+                <span className="font-mono font-bold text-slate-800 dark:text-slate-200 break-all">{exportPathPreview(exportBaseFolderQr, PATH_TOKEN_RE.test(exportQrTemplate) && PATH_ALLOWED_RE.test(exportQrTemplate) ? exportQrTemplate : DEFAULT_EXPORT_QR_TEMPLATE, 'png')}</span>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
+              <label htmlFor="sender-daily-target" className="block text-slate-400 uppercase font-bold text-[10px] flex items-center gap-1.5">
+                <Target className="w-3.5 h-3.5" /> Daily Registration Target / Sender
+              </label>
+              <input
+                id="sender-daily-target"
+                type="number"
+                min={1}
+                max={5000}
+                value={senderDailyTarget}
+                onChange={(e) => { setSenderDailyTarget(parseInt(e.target.value, 10)); setPlatformError(null); }}
+                className={`w-full bg-white dark:bg-[#111613] border rounded-xl px-3 py-2 font-mono font-bold text-slate-900 dark:text-white ${targetError ? 'border-rose-400 dark:border-rose-700' : 'border-slate-200 dark:border-slate-800'}`}
+              />
+              <p className="text-[10px] text-slate-500">Drives the target-progress bars in Telemetric Velocity &amp; Fleet and the dashboard.</p>
+              {targetError && <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{targetError}</p>}
+            </div>
+
+            <div className="p-4 rounded-2xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/40 text-[10px] text-slate-600 dark:text-slate-300 space-y-1.5">
+              <p className="font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wider">Folder layout</p>
+              <p>Templates support <span className="font-bold text-[#256002] dark:text-[#8fe617]">{'{grade}'} {'{name}'} {'{id}'}</span> — e.g. <span className="font-mono">Photos/{'{grade}'}/{'{id}'}.jpg</span> or <span className="font-mono">QR/{'{grade}'}/{'{id}'}.png</span> for grade-based folders, or a flat layout like <span className="font-mono">{'{id}'}.jpg</span>.</p>
+              <p>The receiving computer must contain the base folder with this exact structure for the spreadsheet references to resolve. An empty base folder writes relative paths only.</p>
+            </div>
+          </div>
+        </div>
+
         {platformError && (
           <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-400 text-xs font-bold flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -264,11 +420,11 @@ export const SuperAdminSettingsPage: React.FC = () => {
           <button
             type="button"
             onClick={handleSavePlatformSettings}
-            disabled={isSavingPlatform || !!pathTemplateError}
+            disabled={isSavingPlatform || platformSaveBlocked}
             className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#85E510] text-[#062404] text-xs font-black hover:brightness-105 transition-all shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Save className="w-4 h-4" />
-            <span>{isSavingPlatform ? 'Saving to Edge...' : 'Save Photo Path Settings'}</span>
+            <span>{isSavingPlatform ? 'Saving to Edge...' : 'Save Photo Path & Export Settings'}</span>
           </button>
         </div>
       </div>

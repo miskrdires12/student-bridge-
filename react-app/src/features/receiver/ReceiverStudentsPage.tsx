@@ -20,7 +20,7 @@ import {
   DEFAULT_BRANCHES, BRANCH_SCHOOL_MAP,
   generateStudentQrToken, getStudentPhotoFileName, getStudentQrFileName,
   addCorrectionLog, getAllSendersMetrics, SenderMetrics, getAuthHeaders,
-  initStore
+  initStore, buildExportPhotoPath, buildExportQrPath, refreshPlatformSettings
 } from '@/lib/store';
 import { Student } from '@/types';
 import { PhoneCropModal } from '@/components/PhoneCropModal';
@@ -1298,6 +1298,7 @@ export const ReceiverStudentsPage: React.FC = () => {
       alert('No student records available for Excel export.');
       return;
     }
+    await refreshPlatformSettings().catch(() => {});
     markStudentsAsBulked(targets.map(t => t.studentId));
 
     setProgressModal({
@@ -1310,9 +1311,6 @@ export const ReceiverStudentsPage: React.FC = () => {
 
     try {
       const rows = targets.map((s, idx) => {
-        const photoName = getStudentPhotoFileName(s);
-        const qrName = getStudentQrFileName(s);
-        const photoLocalPath = `C:\\Users\\Administrator\\Desktop\\yekaelementry\\${photoName}`;
         return {
           '#': idx + 1,
           'Name': s.fullName,
@@ -1322,8 +1320,8 @@ export const ReceiverStudentsPage: React.FC = () => {
           'Section': getCleanSection(s),
           'BloodType': s.bloodType || 'Unknown',
           'Phone': s.phone || '',
-          '@photo': photoLocalPath,
-          '@qr': qrName,
+          '@photo': buildExportPhotoPath(s),
+          '@qr': buildExportQrPath(s),
           'Branch': getStudentBranch(s),
           'School': s.school || '',
           'Status': s.status || 'Accepted'
@@ -1356,6 +1354,7 @@ export const ReceiverStudentsPage: React.FC = () => {
       alert('No student records available for CSV export.');
       return;
     }
+    await refreshPlatformSettings().catch(() => {});
     markStudentsAsBulked(targets.map(t => t.studentId));
 
     setProgressModal({
@@ -1372,10 +1371,8 @@ export const ReceiverStudentsPage: React.FC = () => {
       const csvRows = [headers.join(',')];
 
       targets.forEach(s => {
-        const photoName = getStudentPhotoFileName(s);
-        const qrName = getStudentQrFileName(s);
-        const photoLocalPath = `C:\\Users\\Administrator\\Desktop\\yekaelementry\\${photoName}`;
-        const qrLocalPath = `C:\\Users\\Administrator\\Desktop\\yekaelementry\\${qrName}`;
+        const photoLocalPath = buildExportPhotoPath(s);
+        const qrLocalPath = buildExportQrPath(s);
 
         const row = [
           `"${(s.fullName || '').replace(/"/g, '""')}"`,

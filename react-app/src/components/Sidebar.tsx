@@ -135,7 +135,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       <aside
-        className={`fixed lg:sticky top-0 left-0 z-40 h-screen bg-white dark:bg-[#141A22] border-r border-[#E2E8F0] dark:border-[#243041] flex flex-col transition-all duration-300 select-none ${
+        className={`fixed top-0 left-0 z-40 h-screen bg-white dark:bg-[#141A22] border-r border-[#E2E8F0] dark:border-[#243041] flex flex-col transition-all duration-300 select-none ${
           desktopOpen ? 'lg:translate-x-0 lg:w-64' : 'lg:-translate-x-full lg:w-0 lg:overflow-hidden'
         } ${mobileOpen ? 'translate-x-0 w-64 shadow-2xl' : '-translate-x-full w-64'}`}
       >

@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Download, FileSpreadsheet, Archive, CheckCircle2, AlertCircle, Loader2, X, RefreshCw, FileText, Check } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
 import {
   getStudents, getPhotoUrl, getPhotoEncodeClass,
-  generateStudentQrToken, getStudentPhotoFileName, getStudentQrFileName
+  generateStudentQrToken, getStudentPhotoFileName, getStudentQrFileName,
+  buildExportPhotoPath, buildExportQrPath, refreshPlatformSettings
 } from '@/lib/store';
 
 export const ReceiverExportsPage: React.FC = () => {
@@ -17,6 +18,11 @@ export const ReceiverExportsPage: React.FC = () => {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const students = getStudents();
+
+  // Keep export path templates fresh from platform settings
+  useEffect(() => {
+    refreshPlatformSettings().catch(() => {});
+  }, []);
 
   // Derived from real authoritative student records
   const sampleFiles = (students.length > 0 ? students.slice(0, 5) : []).map(s => {
@@ -62,9 +68,8 @@ export const ReceiverExportsPage: React.FC = () => {
       // Exact required header format: Name StudentId Sex Grade BloodType Phone @photo @qr
       const headers = ['Name', 'StudentId', 'Sex', 'Grade', 'BloodType', 'Phone', '@photo', '@qr'];
       const rows = students.map(s => {
-        const photoName = getStudentPhotoFileName(s);
-        const qrName = getStudentQrFileName(s);
-        const photoLocalPath = `C:\\Users\\Administrator\\Desktop\\yekaelementry\\${photoName}`;
+        const photoLocalPath = buildExportPhotoPath(s);
+        const qrLocalPath = buildExportQrPath(s);
         return [
           `"${(s.fullName || '').replace(/"/g, '""')}"`,
           `"${s.studentId}"`,
@@ -73,7 +78,7 @@ export const ReceiverExportsPage: React.FC = () => {
           `"${s.bloodType || 'O+'}"`,
           `"${s.phone || ''}"`,
           `"${photoLocalPath.replace(/"/g, '""')}"`,
-          `"${qrName}"`
+          `"${qrLocalPath.replace(/"/g, '""')}"`
         ];
       });
 
@@ -95,9 +100,6 @@ export const ReceiverExportsPage: React.FC = () => {
   const exportRealExcel = () => {
     try {
       const exportData = students.map(s => {
-        const photoName = getStudentPhotoFileName(s);
-        const qrName = getStudentQrFileName(s);
-        const photoLocalPath = `C:\\Users\\Administrator\\Desktop\\yekaelementry\\${photoName}`;
         return {
           'Name': s.fullName,
           'StudentId': s.studentId,
@@ -105,8 +107,8 @@ export const ReceiverExportsPage: React.FC = () => {
           'Grade': s.grade || '',
           'BloodType': s.bloodType || 'O+',
           'Phone': s.phone || '',
-          '@photo': photoLocalPath,
-          '@qr': qrName,
+          '@photo': buildExportPhotoPath(s),
+          '@qr': buildExportQrPath(s),
           'Branch': s.location || 'Addis Ababa',
           'School': s.school || '',
           'Status': s.status || 'Accepted'

@@ -37,6 +37,8 @@ import { getStudents, updateStudent, deleteStudent, getCurrentUser, getAllSender
 import { Student } from "@/types";
 import { getGradeDisplay, getCleanGrade, getCleanSection, getStudentBranch } from "@/lib/gradeUtils";
 
+import { DashboardAnalytics } from '@/components/DashboardAnalytics';
+
 export const ReceiverDashboardPage: React.FC = () => {
   const [allStudentsList, setAllStudentsList] = useState<Student[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -55,14 +57,6 @@ export const ReceiverDashboardPage: React.FC = () => {
   const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
   const chartSvgRef = useRef<SVGSVGElement | null>(null);
 
-  // Student Selection
-  const [selectedStudentIds, setSelectedStudentIds] = useState<Set<string>>(new Set());
-
-  // Classifiers & Search
-  const [gradeClassifier, setGradeClassifier] = useState<string>("ALL");
-  const [sectionClassifier, setSectionClassifier] = useState<string>("ALL");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [activeFilter, setActiveFilter] = useState<"all" | "ready" | "missing_photo">("all");
 
   // Lightbox Modal
   const [inspectingPhotoStudent, setInspectingPhotoStudent] = useState<Student | null>(null);
@@ -158,14 +152,6 @@ export const ReceiverDashboardPage: React.FC = () => {
     }
   };
 
-  const handleToggleSelectStudent = useCallback((id: string) => {
-    setSelectedStudentIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
 
   const totalStudents = allStudentsList.length;
   const photosCount = allStudentsList.filter(s => Boolean(s.photoPath && s.photoPath.trim().length > 0)).length;
@@ -419,52 +405,6 @@ export const ReceiverDashboardPage: React.FC = () => {
     setHoveredPointIndex(null);
   };
 
-  // Classifiers for roster
-  const uniqueGrades = useMemo(() => {
-    const grades = new Set<string>();
-    allStudentsList.forEach(s => {
-      if (s.grade && s.grade.trim()) grades.add(s.grade.trim());
-    });
-    return Array.from(grades).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  }, [allStudentsList]);
-
-  const uniqueSections = useMemo(() => {
-    const sections = new Set<string>();
-    allStudentsList.forEach(s => {
-      const sec = s.department || (s as any).section;
-      if (sec && sec.trim()) sections.add(sec.trim());
-    });
-    return Array.from(sections).sort();
-  }, [allStudentsList]);
-
-  // Filtered roster stream
-  const filteredStudents = useMemo(() => {
-    return allStudentsList.filter((s) => {
-      if (activeFilter === "ready" && (!s.photoPath || !s.photoPath.trim())) return false;
-      if (activeFilter === "missing_photo" && s.photoPath && s.photoPath.trim().length > 0) return false;
-
-      if (gradeClassifier !== "ALL") {
-        const studentGrade = (s.grade || "").trim().toLowerCase();
-        if (studentGrade !== gradeClassifier.toLowerCase()) return false;
-      }
-
-      if (sectionClassifier !== "ALL") {
-        const studentSec = (s.department || (s as any).section || "").trim().toLowerCase();
-        if (studentSec !== sectionClassifier.toLowerCase()) return false;
-      }
-
-      if (searchQuery.trim().length > 0) {
-        const q = searchQuery.toLowerCase();
-        const idMatch = (s.studentId || "").toLowerCase().includes(q);
-        const nameMatch = (s.fullName || "").toLowerCase().includes(q);
-        const phoneMatch = (s.phone || "").toLowerCase().includes(q);
-        if (!idMatch && !nameMatch && !phoneMatch) return false;
-      }
-
-      return true;
-    });
-  }, [allStudentsList, activeFilter, gradeClassifier, sectionClassifier, searchQuery]);
-
   // Pre-flight audit
   const runPreflightAudit = useCallback(() => {
     setIsAuditing(true);
@@ -583,62 +523,8 @@ export const ReceiverDashboardPage: React.FC = () => {
     setExportNotice(`Exported 1 student CSV for ${student.fullName}`);
   }, []);
 
-  const handleDownloadSelectedPhotos = useCallback(async () => {
-    const list = allStudentsList.filter((s) => selectedStudentIds.has(s.studentId || s.id));
-    if (list.length === 0) {
-      alert("Please select at least 1 student with a checkbox to download photos.");
-      return;
-    }
-    const withPhoto = list.filter((s) => Boolean(s.photoPath));
-    if (withPhoto.length === 0) {
-      alert("None of the selected students have an attached photo.");
-      return;
-    }
-
-    try {
-      setExportNotice(`Packaging ${withPhoto.length} selected photos into ZIP...`);
-      const zip = new JSZip();
-
-      for (const student of withPhoto) {
-        try {
-          const cleanGrade = (student.grade || "General").replace(/[/\\]/g, "_");
-          const cleanId = (student.studentId || "STU").replace(/[/\\]/g, "_");
-          const cleanName = (student.fullName || "Student").replace(/[/\\]/g, "_");
-          const filename = `${cleanId}_${cleanName}.jpg`;
-
-          const res = await fetch(student.photoPath);
-          if (res.ok) {
-            const blob = await res.blob();
-            zip.folder(cleanGrade)?.file(filename, blob);
-          }
-        } catch {}
-      }
-
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(zipBlob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `selected_${withPhoto.length}_photos_${new Date().toISOString().split("T")[0]}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        try {
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        } catch {}
-      }, 500);
-
-      setExportNotice(`ZIP bundle with ${withPhoto.length} selected photos downloaded.`);
-      setTimeout(() => setExportNotice(null), 4000);
-    } catch (err: any) {
-      alert("Failed creating photo ZIP: " + err?.message);
-    }
-  }, [allStudentsList, selectedStudentIds]);
-
   const handleExportManifest = useCallback(() => {
-    let list = selectedStudentIds.size > 0
-      ? allStudentsList.filter((s) => selectedStudentIds.has(s.studentId || s.id))
-      : allStudentsList;
+    const list = allStudentsList;
 
     if (list.length === 0) {
       alert("No students selected or found to export.");
@@ -680,7 +566,7 @@ export const ReceiverDashboardPage: React.FC = () => {
 
     setExportNotice(`Exported ${list.length} student records to ${filename}`);
     setTimeout(() => setExportNotice(null), 4000);
-  }, [allStudentsList, selectedStudentIds]);
+  }, [allStudentsList]);
 
   return (
     <div
@@ -918,241 +804,39 @@ export const ReceiverDashboardPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Live Ingested Student Feed (Newest First) - Full Width */}
-      <div className="w-full rounded-3xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-5 sm:p-6 shadow-sm space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-[#eef5f1] dark:border-[#1c261e] pb-4">
-          <div className="flex items-center gap-2">
-            <Users className="h-4 w-4 text-[#8fe617]" />
-            <h2 className="text-sm font-bold uppercase tracking-wider text-[#080808] dark:text-[#f2f7f4] font-mono">
-              Live Ingested Records ({filteredStudents.length})
-            </h2>
+      {/* Operational Analytics — replaces the raw ingested-record stream */}
+      <DashboardAnalytics
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={runPreflightAudit}
+              disabled={isAuditing}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-[#8fe617] text-[#062404] px-3 py-1.5 text-xs font-mono font-bold hover:bg-[#7ed112] transition-all shadow-xs cursor-pointer active:scale-95 disabled:opacity-50"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-[#062404]" />
+              <span>Verify Readiness</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportManifest}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] px-3 py-1.5 text-xs font-mono font-bold text-[#080808] dark:text-[#f2f7f4] hover:bg-[#eef5f1] dark:hover:bg-[#1c261e] transition-colors cursor-pointer"
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+              <span>Export CSV Manifest ({totalStudents})</span>
+            </button>
+
+            <Link
+              to="/receiver/students"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] px-3 py-1.5 text-xs font-mono font-bold text-[#080808] dark:text-[#f2f7f4] hover:text-[#8fe617] hover:border-[#8fe617] transition-colors"
+            >
+              <span>Student Directory</span>
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </Link>
           </div>
-
-          {/* Table Actions & Classifiers */}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={runPreflightAudit}
-                disabled={isAuditing}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-[#8fe617] text-[#062404] px-3 py-1.5 text-xs font-mono font-bold hover:bg-[#7ed112] transition-all shadow-xs cursor-pointer active:scale-95 disabled:opacity-50"
-              >
-                <Sparkles className="h-3.5 w-3.5 text-[#062404]" />
-                <span>Verify Readiness</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleExportManifest}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] px-3 py-1.5 text-xs font-mono font-bold text-[#080808] dark:text-[#f2f7f4] hover:bg-[#eef5f1] dark:hover:bg-[#1c261e] transition-colors cursor-pointer"
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
-                <span>Export CSV ({selectedStudentIds.size > 0 ? selectedStudentIds.size : "All"})</span>
-              </button>
-
-              {selectedStudentIds.size > 0 && (
-                <button
-                  type="button"
-                  onClick={handleDownloadSelectedPhotos}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#8fe617]/50 bg-[#8fe617]/15 hover:bg-[#8fe617]/25 text-[#080808] dark:text-[#8fe617] px-3 py-1.5 text-xs font-mono font-bold transition-all shadow-xs cursor-pointer"
-                >
-                  <Download className="h-3.5 w-3.5 text-[#8fe617]" />
-                  <span>Download {selectedStudentIds.size} Photos (ZIP)</span>
-                </button>
-              )}
-            </div>
-
-            {/* Classifiers & Search */}
-            <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
-              <select
-                value={gradeClassifier}
-                onChange={(e) => setGradeClassifier(e.target.value)}
-                className="rounded-xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] px-2.5 py-1 text-xs text-[#080808] dark:text-[#f2f7f4] outline-none"
-              >
-                <option value="ALL">All Grades</option>
-                {uniqueGrades.map((g) => (
-                  <option key={g} value={g}>
-                    Grade {g}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={sectionClassifier}
-                onChange={(e) => setSectionClassifier(e.target.value)}
-                className="rounded-xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] px-2.5 py-1 text-xs text-[#080808] dark:text-[#f2f7f4] outline-none"
-              >
-                <option value="ALL">All Sections</option>
-                {uniqueSections.map((sec) => (
-                  <option key={sec} value={sec}>
-                    Section {sec}
-                  </option>
-                ))}
-              </select>
-
-              <div className="relative">
-                <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-[#6b7771] dark:text-[#8a9e93]" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search students..."
-                  className="rounded-xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] pl-8 pr-3 py-1 text-xs text-[#080808] dark:text-[#f2f7f4] outline-none focus:border-[#8fe617] w-36 sm:w-48"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Student Ingested Rows */}
-        {filteredStudents.length === 0 ? (
-          <div className="p-10 text-center text-xs font-mono text-[#6b7771] dark:text-[#8a9e93] border border-dashed border-[#dce7e1] dark:border-[#223126] rounded-2xl">
-            No students found matching your filters.
-          </div>
-        ) : (
-          <div className="divide-y divide-[#eef5f1] dark:divide-[#1c261e] border border-[#dce7e1] dark:border-[#223126] rounded-2xl overflow-hidden bg-white dark:bg-[#111613]">
-            {filteredStudents.slice(0, 20).map((s) => {
-              const isSelected = selectedStudentIds.has(s.studentId || s.id);
-              const hasPhoto = Boolean(s.photoPath && s.photoPath.trim().length > 0);
-              const isReady = hasPhoto;
-
-              return (
-                <div
-                  key={s.id || s.studentId}
-                  className={`p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
-                    isSelected
-                      ? "bg-[#8fe617]/10 dark:bg-[#8fe617]/15"
-                      : "hover:bg-[#f7faf9] dark:hover:bg-[#161d19]"
-                  }`}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <button
-                      type="button"
-                      onClick={() => handleToggleSelectStudent(s.studentId || s.id)}
-                      className="p-1 text-[#6b7771] dark:text-[#8a9e93] hover:text-[#8fe617] transition-colors cursor-pointer shrink-0"
-                    >
-                      {isSelected ? (
-                        <CheckSquare className="h-4 w-4 text-[#8fe617]" />
-                      ) : (
-                        <Square className="h-4 w-4" />
-                      )}
-                    </button>
-
-                    <div
-                      onClick={() => {
-                        if (s.photoPath) setInspectingPhotoStudent(s);
-                      }}
-                      className={`h-10 w-10 shrink-0 ${s.photoPath ? "cursor-pointer group hover:ring-2 hover:ring-[#8fe617] rounded-xl transition-all" : ""}`}
-                    >
-                      {s.photoPath ? (
-                        <img
-                          src={s.photoPath}
-                          alt={s.fullName}
-                          className="h-10 w-10 object-cover rounded-xl border border-neutral-700 bg-neutral-900"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div className="h-10 w-10 rounded-xl bg-neutral-800 flex items-center justify-center text-xs font-bold text-neutral-400">
-                          {s.fullName?.charAt(0) || "S"}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="truncate">
-                      <div className="font-bold text-xs text-[#080808] dark:text-[#f2f7f4] truncate flex items-center gap-2">
-                        <span>{s.fullName}</span>
-                      </div>
-                      <div className="text-[11px] text-[#6b7771] dark:text-[#8a9e93] font-mono">
-                        {s.studentId} • {s.school || 'YMS'} ({getStudentBranch(s)}) • {s.phone || "No phone"}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                    <span
-                      className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
-                        hasPhoto
-                          ? "border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300"
-                          : "border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300"
-                      }`}
-                    >
-                      {hasPhoto ? "PHOTO ✓" : "NO PHOTO"}
-                    </span>
-
-                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border border-[#8fe617]/40 bg-[#8fe617]/10 text-[#080808] dark:text-[#8fe617]">
-                      GRADE {getGradeDisplay(s)}
-                    </span>
-
-                    {getCleanSection(s) && (
-                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border border-sky-400/40 bg-sky-400/10 text-sky-700 dark:text-sky-300">
-                        SEC {getCleanSection(s)}
-                      </span>
-                    )}
-
-                    <span
-                      className={`text-[10px] font-mono font-black px-2 py-0.5 rounded-full ${
-                        isReady
-                          ? "bg-[#8fe617] text-[#062404]"
-                          : "bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400"
-                      }`}
-                    >
-                      {isReady ? "READY" : "PENDING"}
-                    </span>
-
-                    {hasPhoto && (
-                      <button
-                        type="button"
-                        onClick={() => handleDownloadSingleStudentPhoto(s)}
-                        className="p-1.5 rounded-lg border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#161d19] text-[#080808] dark:text-[#f2f7f4] hover:text-[#8fe617] hover:border-[#8fe617] transition-all cursor-pointer"
-                        title={`Download photo for ${s.fullName}`}
-                      >
-                        <Camera className="h-3.5 w-3.5 text-[#8fe617]" />
-                      </button>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadSingleStudentCSV(s)}
-                      className="p-1.5 rounded-lg border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#161d19] text-[#080808] dark:text-[#f2f7f4] hover:text-[#8fe617] hover:border-[#8fe617] transition-all cursor-pointer"
-                      title={`Download single CSV for ${s.fullName}`}
-                    >
-                      <FileSpreadsheet className="h-3.5 w-3.5" />
-                    </button>
-
-                    <Link
-                      to={`/receiver/students`}
-                      className="p-1.5 rounded-lg border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] text-[#080808] dark:text-[#f2f7f4] hover:text-[#8fe617] hover:border-[#8fe617] transition-colors"
-                      title="Inspect in directory"
-                    >
-                      <ArrowRight className="h-3.5 w-3.5" />
-                    </Link>
-
-                    <button
-                      type="button"
-                      onClick={() => setDeleteModalStudent(s)}
-                      className="p-1.5 rounded-lg border border-red-500/30 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white transition-all cursor-pointer"
-                      title={`Delete ${s.fullName || s.studentId}`}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        <div className="flex items-center justify-between text-xs font-mono text-[#6b7771] dark:text-[#8a9e93] pt-1">
-          <span>Showing latest {Math.min(20, filteredStudents.length)} of {filteredStudents.length} records</span>
-          <Link
-            to="/receiver/students"
-            className="text-[#8fe617] font-bold hover:underline flex items-center gap-1"
-          >
-            <span>View All in Directory ({totalStudents})</span>
-            <ArrowUpRight className="h-3.5 w-3.5" />
-          </Link>
-        </div>
-      </div>
+        }
+      />
 
       {/* Pre-Flight Verification Audit Modal */}
       {auditModalOpen && auditResults && (

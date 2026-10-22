@@ -19,6 +19,36 @@ import { CameraCaptureModal } from '@/components/CameraCaptureModal';
 import { R2_PUBLIC_BASE_URL } from '@/lib/syncEngine';
 import { parseGradeAndSection } from '@/lib/gradeUtils';
 
+// Unfinished registration draft, persisted per operator so a page refresh keeps
+// the completion state (and therefore the remaining-item counts) intact.
+type RegistrationDraft = {
+  studentId?: string;
+  fullName?: string;
+  sex?: string;
+  grade?: string;
+  phone?: string;
+  bloodType?: string;
+  location?: string;
+  school?: string;
+  schoolBusUsage?: string;
+  dateOfBirth?: string;
+  address?: string;
+  guardianName?: string;
+  emergencyContact?: string;
+  nationality?: string;
+};
+
+function readRegistrationDraft(key: string): RegistrationDraft {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed as RegistrationDraft : {};
+  } catch {
+    return {};
+  }
+}
+
 export const StudentRegistrationPage: React.FC = () => {
   const navigate = useNavigate();
   const user = getCurrentUser();
@@ -29,26 +59,36 @@ export const StudentRegistrationPage: React.FC = () => {
     return `SB-2026-${randomNum}`;
   };
 
+  const draftKey = `sb_reg_draft_${((user?.username || user?.email || 'field-operator') as string).toLowerCase().trim()}`;
+  const [initialDraft] = useState<RegistrationDraft>(() => readRegistrationDraft(draftKey));
+
   // Form States (Phone default is strictly blank per user specification)
-  const [studentId, setStudentId] = useState(generateNewId);
+  const [studentId, setStudentId] = useState(() => (initialDraft.studentId || '').trim() || generateNewId());
   const [isIdTaken, setIsIdTaken] = useState(false);
-  const [fullName, setFullName] = useState('');
-  const [sex, setSex] = useState<'Female' | 'Male'>('Female');
-  const [grade, setGrade] = useState('');
-  const [phone, setPhone] = useState('');
-  const [bloodType, setBloodType] = useState('');
-  const [location, setLocation] = useState('Addis Ababa');
-  const [school, setSchool] = useState('YMS');
-  const [schoolBusUsage, setSchoolBusUsage] = useState<'Yes' | 'No' | ''>('');
+  const [fullName, setFullName] = useState(() => initialDraft.fullName || '');
+  const [sex, setSex] = useState<'Female' | 'Male'>(() => (initialDraft.sex === 'Male' ? 'Male' : 'Female'));
+  const [grade, setGrade] = useState(() => initialDraft.grade || '');
+  const [phone, setPhone] = useState(() => initialDraft.phone || '');
+  const [bloodType, setBloodType] = useState(() => initialDraft.bloodType || '');
+  const [location, setLocation] = useState(() => initialDraft.location || 'Addis Ababa');
+  const [school, setSchool] = useState(() => {
+    const forDraftBranch = BRANCH_SCHOOL_MAP[initialDraft.location || 'Addis Ababa'] || [];
+    const restored = (initialDraft.school || '').trim();
+    if (restored && (forDraftBranch.length === 0 || forDraftBranch.includes(restored))) return restored;
+    return forDraftBranch[0] || 'YMS';
+  });
+  const [schoolBusUsage, setSchoolBusUsage] = useState<'Yes' | 'No' | ''>(
+    () => (initialDraft.schoolBusUsage === 'Yes' || initialDraft.schoolBusUsage === 'No' ? initialDraft.schoolBusUsage as 'Yes' | 'No' : '')
+  );
   const [correctionNotices, setCorrectionNotices] = useState<CorrectionLog[]>([]);
 
   // Extra Details (Expandable)
   const [showExtraDetails, setShowExtraDetails] = useState(false);
-  const [dateOfBirth, setDateOfBirth] = useState('');
-  const [address, setAddress] = useState('Addis Ababa');
-  const [guardianName, setGuardianName] = useState('');
-  const [emergencyContact, setEmergencyContact] = useState('');
-  const [nationality, setNationality] = useState('Ethiopian');
+  const [dateOfBirth, setDateOfBirth] = useState(() => initialDraft.dateOfBirth || '');
+  const [address, setAddress] = useState(() => initialDraft.address || 'Addis Ababa');
+  const [guardianName, setGuardianName] = useState(() => initialDraft.guardianName || '');
+  const [emergencyContact, setEmergencyContact] = useState(() => initialDraft.emergencyContact || '');
+  const [nationality, setNationality] = useState(() => initialDraft.nationality || 'Ethiopian');
 
   // Camera & Photo States
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -117,6 +157,64 @@ export const StudentRegistrationPage: React.FC = () => {
     const taken = all.some(s => s.studentId.trim().toUpperCase() === studentId.trim().toUpperCase());
     setIsIdTaken(taken);
   }, [studentId]);
+
+  // Persist the in-progress draft so a refresh restores the same completion state.
+  // The biometric photo is excluded — it must be captured in the live session.
+  useEffect(() => {
+    if (submittedStudent) {
+      // Delivered record: drop the draft so a reload never restores a sent student.
+      try {
+        localStorage.removeItem(draftKey);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    try {
+      localStorage.setItem(draftKey, JSON.stringify({
+        studentId, fullName, sex, grade, phone, bloodType, location, school, schoolBusUsage,
+        dateOfBirth, address, guardianName, emergencyContact, nationality
+      } satisfies RegistrationDraft));
+    } catch {
+      // Storage full or unavailable: counts still derive from live form state.
+    }
+  }, [draftKey, submittedStudent, studentId, fullName, sex, grade, phone, bloodType, location, school,
+      schoolBusUsage, dateOfBirth, address, guardianName, emergencyContact, nationality]);
+
+  // Remaining-item counters, derived from the fields the form actually marks
+  // required (the red * items). Blood group, bus usage and Extra Details are
+  // optional and are never counted.
+  const informationItems = [
+    { label: 'Student ID', done: studentId.trim().length > 0 && !isIdTaken },
+    { label: 'Full Name', done: fullName.trim().length > 0 },
+    { label: 'Sex Identification', done: sex === 'Male' || sex === 'Female' },
+    { label: 'Branch Location', done: location.trim().length > 0 },
+    { label: 'Assigned School', done: school.trim().length > 0 },
+    { label: 'Grade / Class', done: grade.trim().length > 0 },
+    { label: 'Phone Number', done: phone.trim().length > 0 }
+  ];
+  const informationRemaining = informationItems.filter(item => !item.done).length;
+  const photoRemaining = capturedPhoto ? 0 : 1;
+  const totalRemaining = informationRemaining + photoRemaining;
+  const outstandingLabels = [
+    ...informationItems.filter(item => !item.done).map(item => item.label),
+    ...(photoRemaining ? ['Student Photograph'] : [])
+  ];
+
+  const remainingChip = (count: number, scopeLabel: string) => (
+    <span
+      className={`text-[11px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-md border transition-colors ${
+        count > 0
+          ? 'text-amber-700 bg-amber-50 border-amber-200'
+          : 'text-[#4D8A07] bg-[#85E510]/20 border-[#85E510]/40'
+      }`}
+      title={count > 0
+        ? `${count} required ${scopeLabel} item${count === 1 ? '' : 's'} still unfilled`
+        : `All required ${scopeLabel} items are complete`}
+    >
+      {count > 0 ? `${count} remaining` : '0 remaining'}
+    </span>
+  );
 
   // Name Auto-Capitalizer (First Name, Father's Name, Grandfather's Name)
   const handleNameChange = (val: string) => {
@@ -410,6 +508,11 @@ export const StudentRegistrationPage: React.FC = () => {
   };
 
   const resetFormForNext = () => {
+    try {
+      localStorage.removeItem(draftKey);
+    } catch {
+      // ignore storage failures — state below is what the UI counts from
+    }
     setStudentId(generateNewId());
     setFullName('');
     setPhone('');
@@ -706,15 +809,14 @@ export const StudentRegistrationPage: React.FC = () => {
                 <Camera className="w-4 h-4 text-[#4D8A07]" />
                 <span>Student Photograph</span>
               </h2>
-              {capturedPhoto ? (
-                <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#85E510]/20 text-[#366804] border border-[#85E510]/40 flex items-center gap-1">
-                  <Check className="w-3 h-3" /> Captured &bull; R2 Ready
-                </span>
-              ) : (
-                <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
-                  Required
-                </span>
-              )}
+              <div className="flex items-center gap-2">
+                {capturedPhoto && (
+                  <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#85E510]/20 text-[#366804] border border-[#85E510]/40 flex items-center gap-1">
+                    <Check className="w-3 h-3" /> Captured &bull; R2 Ready
+                  </span>
+                )}
+                {remainingChip(photoRemaining, 'photograph')}
+              </div>
             </div>
 
             {/* Photo Preview Container */}
@@ -846,10 +948,9 @@ export const StudentRegistrationPage: React.FC = () => {
             <div className="flex items-center justify-between mb-4 pb-2 border-b border-[#F1F5F9]">
               <h2 className="text-sm font-black text-[#0B1118] uppercase tracking-wider flex items-center gap-2">
                 <span>STUDENT INFORMATION</span>
+                <span className="text-[10px] font-bold text-slate-400 normal-case tracking-normal">7 required</span>
               </h2>
-              <span className="text-[11px] font-black uppercase tracking-wider text-[#4D8A07] bg-[#85E510]/20 px-2.5 py-0.5 rounded-md border border-[#85E510]/40">
-                REQUIRED
-              </span>
+              {remainingChip(informationRemaining, 'information')}
             </div>
 
             <div className="space-y-4">
@@ -1078,7 +1179,12 @@ export const StudentRegistrationPage: React.FC = () => {
                   className="w-full flex items-center justify-between text-xs font-bold text-slate-600 hover:text-slate-900 py-1.5 transition-all cursor-pointer"
                 >
                   <span>{showExtraDetails ? 'Hide Extra Details' : 'Show Extra Details (Parent, Birth, Address)'}</span>
-                  <ChevronDown className={`w-4 h-4 text-[#85E510] transition-transform duration-200 ${showExtraDetails ? 'rotate-180' : ''}`} />
+                  <span className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-slate-400" title="Optional fields are excluded from the remaining-item counters">
+                      Optional &mdash; not counted
+                    </span>
+                    <ChevronDown className={`w-4 h-4 text-[#85E510] transition-transform duration-200 ${showExtraDetails ? 'rotate-180' : ''}`} />
+                  </span>
                 </button>
 
                 {showExtraDetails && (
@@ -1133,6 +1239,24 @@ export const StudentRegistrationPage: React.FC = () => {
                 )}
               </div>
             </div>
+          </div>
+
+          {/* Section Completion Legend + Overall Remaining Indicator */}
+          <div className="pt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                className="text-[10px] font-black uppercase tracking-wider text-slate-500 cursor-help"
+                title="Counting rule: each section counts only its own required items (the red * fields plus the biometric photo). Optional fields — blood group, school bus usage and Extra Details — are never counted. 'N remaining' means N required items are still unfilled; '0 remaining' means the section is complete."
+              >
+                Form completion
+              </span>
+              {remainingChip(totalRemaining, 'form')}
+            </div>
+            {totalRemaining > 0 ? (
+              <span className="text-[11px] font-bold text-slate-500">Still needed: {outstandingLabels.join(', ')}</span>
+            ) : (
+              <span className="text-[11px] font-bold text-[#4D8A07]">All required items complete — ready to transmit</span>
+            )}
           </div>
 
           {/* Action Buttons: Clear Form + Submit */}

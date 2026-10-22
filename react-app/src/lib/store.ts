@@ -2008,6 +2008,11 @@ export interface SenderMetrics {
   month: number;
   total: number;
   lastActive: string;
+  // Server-derived fleet telemetry (populated after /api/telemetry/senders loads):
+  serverSessionCount?: number;
+  serverSessionStart?: number | null;
+  serverLastActivity?: number | null;
+  terminalStatus?: 'ACTIVE' | 'IDLE' | 'DISCONNECTED' | 'LOCKED';
   // Per-sender per-minute & timing telemetry:
   sessionStartTimestamp: number;
   lastCaptureTimestamp: number | null;
@@ -2138,6 +2143,160 @@ export function resetSenderLiveCaptures(senderIdentifier?: string): void {
   }
 }
 
+export interface FleetSenderRow {
+  key: string;
+  username: string;
+  fullName: string;
+  email: string | null;
+  userId: string | null;
+  role: string;
+  branch: string;
+  userStatus: string | null;
+  registered: boolean;
+  total: number;
+  today: number;
+  week: number;
+  month: number;
+  daily: Record<string, number>;
+  sessionCount: number;
+  sessionStart: number | null;
+  lastActivity: number | null;
+  rateLastHourPerMin: number;
+  terminalStatus: 'ACTIVE' | 'IDLE' | 'DISCONNECTED' | 'LOCKED';
+}
+
+export interface FleetTelemetryPayload {
+  success: boolean;
+  updatedAt: string;
+  scope: string;
+  timezone?: string;
+  windowDays?: number;
+  todayKey?: string;
+  senderDailyTarget: number;
+  totals: {
+    totalVerified: number;
+    activeSenders: number;
+    recentlyActiveSenders: number;
+    todayTotal: number;
+    weekTotal: number;
+    monthTotal: number;
+    daily: { date: string; count: number }[];
+  };
+  senders: FleetSenderRow[];
+}
+
+let fleetTelemetrySnapshot: FleetTelemetryPayload | null = null;
+
+export function getFleetTelemetrySnapshot(): FleetTelemetryPayload | null {
+  return fleetTelemetrySnapshot;
+}
+
+export async function refreshFleetTelemetry(): Promise<FleetTelemetryPayload | null> {
+  try {
+    const res = await fetch('/api/telemetry/senders', { headers: getAuthHeaders(), cache: 'no-store' });
+    if (!res.ok) return fleetTelemetrySnapshot;
+    const data = await res.json();
+    if (data && data.success && Array.isArray(data.senders)) {
+      fleetTelemetrySnapshot = data;
+    }
+  } catch (e) {}
+  return fleetTelemetrySnapshot;
+}
+
+function findFleetSender(norm: string): FleetSenderRow | null {
+  if (!fleetTelemetrySnapshot || !norm) return null;
+  return fleetTelemetrySnapshot.senders.find(s =>
+    s.key === norm ||
+    String(s.username || '').toLowerCase() === norm ||
+    (s.email ? String(s.email).toLowerCase() === norm : false)
+  ) || null;
+}
+
+// ---------------------------------------------------------------------------
+// PLATFORM SETTINGS + EXPORT PATH TEMPLATES (@photo / @qr in CSV/Excel)
+// ---------------------------------------------------------------------------
+export interface PlatformSettings {
+  photoPathTemplate: string;
+  syncSchool: string;
+  exportPhotoTemplate: string;
+  exportQrTemplate: string;
+  exportBaseFolderPhoto: string;
+  exportBaseFolderQr: string;
+  senderDailyTarget: number;
+  updatedAt?: string | null;
+}
+
+export const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
+  photoPathTemplate: '{grade}/{name}.jpg',
+  syncSchool: 'Warka',
+  exportPhotoTemplate: '{name}.jpg',
+  exportQrTemplate: '{id}_qr.png',
+  exportBaseFolderPhoto: 'C:\\Users\\Administrator\\Desktop\\yekaelementry',
+  exportBaseFolderQr: 'C:\\Users\\Administrator\\Desktop\\yekaelementry',
+  senderDailyTarget: 50
+};
+
+let platformSettingsCache: PlatformSettings = { ...DEFAULT_PLATFORM_SETTINGS };
+try {
+  const raw = localStorage.getItem('sb_platform_settings_cache');
+  if (raw) platformSettingsCache = { ...DEFAULT_PLATFORM_SETTINGS, ...JSON.parse(raw) };
+} catch (e) {}
+
+export function getPlatformSettingsCached(): PlatformSettings {
+  return platformSettingsCache;
+}
+
+export async function refreshPlatformSettings(): Promise<PlatformSettings> {
+  try {
+    const res = await fetch('/api/settings', { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      platformSettingsCache = { ...DEFAULT_PLATFORM_SETTINGS, ...data };
+      try { localStorage.setItem('sb_platform_settings_cache', JSON.stringify(platformSettingsCache)); } catch (e) {}
+    }
+  } catch (e) {}
+  return platformSettingsCache;
+}
+
+export function applyExportPathTemplate(
+  template: string,
+  vars: { grade?: string; fullName?: string; studentId?: string },
+  defaultExt: string
+): string {
+  const clean = (v: string | undefined, fallback: string) =>
+    String(v || fallback || '').trim().replace(/[\/\\:*?"<>|\s]+/g, '_');
+  let out = String(template || `{name}.${defaultExt}`)
+    .replace(/\{grade\}/gi, clean(vars.grade, 'General'))
+    .replace(/\{name\}/gi, clean(vars.fullName, 'Student'))
+    .replace(/\{id\}/gi, clean(vars.studentId, 'Student'));
+  out = out.replace(/[^a-zA-Z0-9_\-.\/{}]/g, '');
+  if (!/\.(jpg|jpeg|png|webp|gif)$/i.test(out)) out += `.${defaultExt}`;
+  return out.replace(/^\/+/, '');
+}
+
+function joinExportPath(baseFolder: string, relPath: string): string {
+  const folder = String(baseFolder || '').trim().replace(/[<>"|\n\r]+/g, '');
+  if (!folder) return relPath;
+  const sep = /[\\/]+$/.test(folder) ? '' : '\\';
+  return `${folder}${sep}${relPath}`;
+}
+
+export function buildExportPhotoPath(s: Student): string {
+  const settings = getPlatformSettingsCached();
+  const rel = applyExportPathTemplate(settings.exportPhotoTemplate, {
+    grade: s.grade, fullName: s.fullName, studentId: s.studentId
+  }, 'jpg');
+  return joinExportPath(settings.exportBaseFolderPhoto, rel);
+}
+
+export function buildExportQrPath(s: Student): string {
+  const settings = getPlatformSettingsCached();
+  const rel = applyExportPathTemplate(settings.exportQrTemplate, {
+    grade: s.grade, fullName: s.fullName, studentId: s.studentId
+  }, 'png');
+  return joinExportPath(settings.exportBaseFolderQr, rel);
+}
+
 export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
   const norm = (senderIdentifier || '').toLowerCase().trim();
   const curUser = getCurrentUser();
@@ -2211,25 +2370,48 @@ export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
     }
   });
 
-  const today = Math.max(realToday, live.today);
-  const week = Math.max(realWeek, live.week, today);
-  const month = Math.max(realMonth, live.month, week);
-  const total = Math.max(realTotal, live.total, user?.recordsSentSingle || 0, month);
+  const fleetRow = findFleetSender(norm);
+  let today: number;
+  let week: number;
+  let month: number;
+  let total: number;
 
-  // Sync back into live telemetry for persistence across refresh
-  live.today = today;
-  live.week = week;
-  live.month = month;
-  live.total = total;
-  live.todayDateStr = todayStr;
-  saveStoredSenderTelemetry(norm, live);
+  if (fleetRow) {
+    // Server-authoritative historical totals: computed from the durable Supabase
+    // dataset, deduplicated by unique studentId. Immune to page refreshes,
+    // re-renders, retries and browser-local counter drift.
+    today = fleetRow.today;
+    week = Math.max(fleetRow.week, today);
+    month = Math.max(fleetRow.month, week);
+    total = Math.max(fleetRow.total, month);
+    live.today = today;
+    live.week = week;
+    live.month = month;
+    live.total = total;
+    live.todayDateStr = todayStr;
+    saveStoredSenderTelemetry(norm, live);
+  } else {
+    // Degraded (no fleet snapshot): fall back to record-derived local counts.
+    today = Math.max(realToday, live.today);
+    week = Math.max(realWeek, live.week, today);
+    month = Math.max(realMonth, live.month, week);
+    total = Math.max(realTotal, live.total, user?.recordsSentSingle || 0, month);
+    live.today = today;
+    live.week = week;
+    live.month = month;
+    live.total = total;
+    live.todayDateStr = todayStr;
+    saveStoredSenderTelemetry(norm, live);
+  }
 
   const mistakesCount = 0;
   const efficiency = 100;
 
-  const status: 'Active' | 'Idle' | 'Locked' = user?.boundDeviceId
-    ? (today > 0 ? 'Active' : 'Idle')
-    : 'Active';
+  const status: 'Active' | 'Idle' | 'Locked' = fleetRow
+    ? (fleetRow.terminalStatus === 'ACTIVE' ? 'Active' : fleetRow.terminalStatus === 'LOCKED' ? 'Locked' : 'Idle')
+    : user?.boundDeviceId
+      ? (today > 0 ? 'Active' : 'Idle')
+      : 'Active';
 
   // Compute timing and per-minute velocity:
   const recentIntervals = live.recentIntervalsSecs;
@@ -2269,7 +2451,13 @@ export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
     week,
     month,
     total,
-    lastActive: live.lastCapture ? new Date(live.lastCapture).toISOString() : ((user as any)?.lastActiveAt || (user as any)?.lastLoginAt || new Date().toISOString()),
+    lastActive: fleetRow?.lastActivity
+      ? new Date(fleetRow.lastActivity).toISOString()
+      : (live.lastCapture ? new Date(live.lastCapture).toISOString() : ((user as any)?.lastActiveAt || (user as any)?.lastLoginAt || new Date().toISOString())),
+    serverSessionCount: fleetRow?.sessionCount,
+    serverSessionStart: fleetRow?.sessionStart ?? null,
+    serverLastActivity: fleetRow?.lastActivity ?? null,
+    terminalStatus: fleetRow?.terminalStatus,
     sessionStartTimestamp: live.sessionStart,
     lastCaptureTimestamp: live.lastCapture,
     activeDurationMinutes,
@@ -2281,7 +2469,19 @@ export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
 
 export function getAllSendersMetrics(): SenderMetrics[] {
   const senders = memoryUsers.filter(u => u.role === 'SENDER');
-  return senders.map(u => getSenderMetrics(u.username));
+  const metrics = senders.map(u => getSenderMetrics(u.username));
+  const snapshot = fleetTelemetrySnapshot;
+  if (snapshot) {
+    const covered = new Set(senders.map(u => u.username.toLowerCase().trim()));
+    snapshot.senders.forEach(s => {
+      const k = String(s.username || '').toLowerCase().trim();
+      if (k && !covered.has(k) && !covered.has(s.key)) {
+        metrics.push(getSenderMetrics(s.username));
+        covered.add(k);
+      }
+    });
+  }
+  return metrics;
 }
 
 

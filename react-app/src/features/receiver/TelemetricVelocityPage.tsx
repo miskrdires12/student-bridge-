@@ -45,8 +45,13 @@ import {
   getStudents,
   BRANCH_SCHOOL_MAP,
   DEFAULT_SCHOOLS,
-  getStudentBranch
+  getStudentBranch,
+  getAuthHeaders,
+  refreshFleetTelemetry,
+  getFleetTelemetrySnapshot,
+  FleetTelemetryPayload
 } from '@/lib/store';
+import { getQueueSummary } from '@/lib/offlineQueue';
 import { Student } from '@/types';
 import { SupabaseStatusData } from '@/features/super-admin/DatabaseControlPage';
 
@@ -103,6 +108,19 @@ const windowRatePerMinute = (
   const added = getter(last) - getter(first);
   if (added <= 0) return 0;
   return Number((added / elapsedMinutes).toFixed(2));
+};
+
+// Human-readable relative time from epoch ms (server fleet timestamps)
+const formatAgo = (ms: number | null | undefined): string => {
+  if (!ms) return '—';
+  const diff = Date.now() - ms;
+  if (diff < 0) return '—';
+  if (diff < 60000) return 'just now';
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
 };
 
 // Builds a Supabase/R2 status snapshot strictly from authoritative /api/stats totals and
@@ -176,6 +194,12 @@ export const TelemetricVelocityPage: React.FC = () => {
   const [lastRefreshed, setLastRefreshed] = useState<string>('');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Server-authoritative fleet telemetry (Supabase-derived, duplicate-safe)
+  const [fleet, setFleet] = useState<FleetTelemetryPayload | null>(null);
+  const [reportPeriod, setReportPeriod] = useState<'DAY' | 'WEEK' | 'MONTH'>('DAY');
+  const [queueSummary, setQueueSummary] = useState<{ pending: number; failed: number; total: number; lastSyncAt: string | null } | null>(null);
+  const fleetNextFetchRef = useRef(0);
+
   // Authoritative edge stats captured from /api/stats (server-measured totals).
   const [edgeStats, setEdgeStats] = useState<EdgeStatsSnapshot | null>(null);
 
@@ -203,6 +227,19 @@ export const TelemetricVelocityPage: React.FC = () => {
     setStudents(stuList);
     setLastRefreshed(new Date().toLocaleTimeString());
 
+    const snapshot = getFleetTelemetrySnapshot();
+    if (snapshot) setFleet(snapshot);
+    if (Date.now() >= fleetNextFetchRef.current) {
+      fleetNextFetchRef.current = Date.now() + 20000;
+      refreshFleetTelemetry().then(pl => {
+        if (pl) {
+          setFleet(pl);
+          setSendersList(getAllSendersMetrics());
+        }
+      }).catch(() => {});
+    }
+    getQueueSummary().then(setQueueSummary).catch(() => {});
+
     // Record a rolling-window sample derived purely from the fetched dataset totals.
     const byBranch: Record<string, number> = {};
     for (const s of stuList) {
@@ -229,7 +266,7 @@ export const TelemetricVelocityPage: React.FC = () => {
 
     try {
       const [statusRes, statsRes] = await Promise.allSettled([
-        fetch(`/api/admin/supabase-status${force ? '?refresh=true' : ''}`),
+        fetch(`/api/admin/supabase-status${force ? '?refresh=true' : ''}`, { headers: getAuthHeaders() }),
         fetch(`/api/stats?t=${Date.now()}`, { cache: 'no-store' })
       ]);
 
@@ -276,7 +313,7 @@ export const TelemetricVelocityPage: React.FC = () => {
   const handleKeepAlivePing = async () => {
     setPinging(true);
     try {
-      const res = await fetch('/api/admin/supabase-status', { method: 'POST' });
+      const res = await fetch('/api/admin/supabase-status', { method: 'POST', headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         setPingFeedback(data.message || `Supabase keep-alive touch registered (${data.latencyMs}ms)`);
@@ -474,6 +511,19 @@ export const TelemetricVelocityPage: React.FC = () => {
     return averageCaptureCadence(sendersList);
   }, [sendersList]);
 
+  // Server-authoritative daily target per sender (platform setting; fleet payload wins).
+  const senderDailyTarget = fleet?.senderDailyTarget ?? 50;
+
+  const periodInfo = useMemo(() => {
+    if (reportPeriod === 'DAY') {
+      return { label: 'Today', verified: fleet ? fleet.totals.todayTotal : datasetFacts.todayCount };
+    }
+    if (reportPeriod === 'WEEK') {
+      return { label: 'Last 7 days', verified: fleet ? fleet.totals.weekTotal : sendersList.reduce((a, s) => a + (s.week || 0), 0) };
+    }
+    return { label: 'Last 30 days', verified: fleet ? fleet.totals.monthTotal : sendersList.reduce((a, s) => a + (s.month || 0), 0) };
+  }, [reportPeriod, fleet, datasetFacts.todayCount, sendersList]);
+
   // Fleet Transmission Velocity = records added per minute over the rolling poll window.
   const avgFleetPacePerMinute = useMemo(() => {
     return windowRatePerMinute(samples, s => s.total);
@@ -503,7 +553,7 @@ export const TelemetricVelocityPage: React.FC = () => {
   }, [sendersList, searchQuery, statusFilter, selectedBranchFilter]);
 
   const exportVelocityReportCsv = () => {
-    const headers = 'Operator,Branch,Campus,Transmission Speed (rec/min),Time Spent / Student (sec),Velocity Level,Today (0-Start),Week,Month,Total,1-Device Lock,Status';
+    const headers = 'Operator,Branch,Campus,Transmission Speed (rec/min),Time Spent / Student (sec),Velocity Level,Current Session,Today (0-Start),Week,Month,Total,Daily Target,Last Server Activity,1-Device Lock,Status';
     const rows = filteredSenders.map(s => {
       const isOnline = s.status === 'Active' || s.today > 0;
       const timeTaken = s.avgTimeTakenSecondsPerRecord > 0 ? s.avgTimeTakenSecondsPerRecord : null;
@@ -511,7 +561,8 @@ export const TelemetricVelocityPage: React.FC = () => {
         ? s.recordsPerMinute
         : (timeTaken !== null ? Number((60 / timeTaken).toFixed(2)) : null);
       const level = timeTaken === null ? 'IDLE' : timeTaken <= 45 ? 'HIGH' : timeTaken <= 75 ? 'MEDIUM' : 'LOW';
-      return `"${s.username}","${s.branch || 'Addis Ababa'}","${s.school || 'YMS 1'}",${perMin ?? NEUTRAL},${timeTaken ?? NEUTRAL},"${level}",${s.today},${s.week},${s.month},${s.total},"${s.boundDeviceId ? 'Locked' : 'Unlocked'}","${isOnline ? 'Active' : 'Standby'}"`;
+      const lastAct = s.serverLastActivity ? new Date(s.serverLastActivity).toISOString() : '';
+      return `"${s.username}","${s.branch || 'Addis Ababa'}","${s.school || 'YMS 1'}",${perMin ?? NEUTRAL},${timeTaken ?? NEUTRAL},"${level}",${s.serverSessionCount ?? 0},${s.today},${s.week},${s.month},${s.total},${senderDailyTarget},"${lastAct}","${s.boundDeviceId ? 'Locked' : 'Unlocked'}","${isOnline ? 'Active' : 'Standby'}"`;
     });
     const csvContent = [headers, ...rows].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -1205,6 +1256,54 @@ export const TelemetricVelocityPage: React.FC = () => {
       {/* ─────────────────────────────────────────────────────────────────── */}
       {(activeSectionTab === 'ALL' || activeSectionTab === 'LEDGER') && (
         <>
+          {/* Reporting Controls: period selector + server-verified totals + queue health */}
+          <div className="flex flex-wrap items-center gap-3 p-4 rounded-2xl bg-white dark:bg-[#111713] border border-slate-200 dark:border-[#223126] shadow-xs text-xs">
+            <div className="flex items-center bg-slate-100 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-800">
+              {([['DAY', 'Daily'], ['WEEK', 'Weekly'], ['MONTH', 'Monthly']] as const).map(([val, label]) => (
+                <button
+                  key={val}
+                  type="button"
+                  onClick={() => setReportPeriod(val)}
+                  className={`px-3.5 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                    reportPeriod === val
+                      ? 'bg-[#85E510] text-[#062404] shadow-xs font-black'
+                      : 'text-slate-500 hover:text-black dark:hover:text-white'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span className="font-mono text-slate-900 dark:text-white font-black">
+              {periodInfo.verified.toLocaleString()} verified registrations
+            </span>
+            <span className="text-slate-400 font-mono text-[10px]">({periodInfo.label} &bull; Supabase rollup)</span>
+            <div className="ml-auto flex flex-wrap items-center gap-2 font-mono text-[11px]">
+              <span className="px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/50" title="Senders with a registration in the last 15 minutes">
+                {fleet ? fleet.totals.activeSenders : sendersList.filter(s => s.status === 'Active').length} active
+              </span>
+              <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700" title="Senders active within the last 24 hours">
+                {fleet ? fleet.totals.recentlyActiveSenders : sendersList.length} recently active
+              </span>
+              <span className="px-2.5 py-1 rounded-lg bg-[#85E510]/10 text-[#256002] dark:text-[#8fe617] border border-[#85E510]/30" title="Server-configured daily registration target per sender">
+                Target: {senderDailyTarget}/sender/day
+              </span>
+              {queueSummary && (
+                <>
+                  <span className="px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/50" title="Operations queued on this terminal awaiting synchronization">
+                    Pending sync: {queueSummary.pending}
+                  </span>
+                  <span className={`px-2.5 py-1 rounded-lg border ${queueSummary.failed > 0 ? 'bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-900/50' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-200 dark:border-slate-700'}`} title="Operations that failed after 3 or more synchronization attempts">
+                    Failed: {queueSummary.failed}
+                  </span>
+                  <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-500 border border-slate-200 dark:border-slate-700" title="Last successful synchronization from this terminal's offline queue">
+                    Last sync: {queueSummary.lastSyncAt ? formatAgo(Date.parse(queueSummary.lastSyncAt)) : '—'}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Card 1: Live Today Submissions (Starts from 0) */}
             <div className="p-5 rounded-2xl bg-white dark:bg-[#111713] border border-slate-200 dark:border-[#223126] shadow-xs hover:border-[#85E510]/50 transition-all group">
@@ -1278,6 +1377,51 @@ export const TelemetricVelocityPage: React.FC = () => {
             </div>
           </div>
 
+          {/* Daily / Weekly / Monthly ingestion trend (server rollup) */}
+          {fleet && (
+            <div className="p-5 rounded-2xl bg-white dark:bg-[#111713] border border-slate-200 dark:border-[#223126] shadow-xs">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-black uppercase tracking-wider font-mono text-slate-700 dark:text-slate-300">
+                  Ingestion Trend &mdash; {periodInfo.label}
+                </h3>
+                <span className="text-[10px] text-slate-400 font-mono">Supabase daily rollup &bull; no simulation</span>
+              </div>
+              {(() => {
+                const days = fleet.totals.daily || [];
+                const sliceCount = reportPeriod === 'MONTH' ? 30 : reportPeriod === 'WEEK' ? 7 : 14;
+                const groups = days.slice(-sliceCount).map(d => ({ label: d.date.slice(8), count: d.count, sub: d.date }));
+                const max = Math.max(1, ...groups.map(g => g.count));
+                return (
+                  <div className="flex items-end gap-1 h-24">
+                    {groups.map(g => (
+                      <div key={g.sub} className="flex-1 flex flex-col items-center gap-1" title={`${g.sub}: ${g.count} registrations`}>
+                        <div
+                          className="w-full rounded-t bg-gradient-to-t from-[#85E510]/60 to-[#85E510]"
+                          style={{ height: `${Math.max(3, (g.count / max) * 80)}px`, opacity: g.count ? 1 : 0.25 }}
+                        />
+                        <span className="text-[8px] text-slate-400 font-mono">{g.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+              <div className="mt-3 grid grid-cols-3 gap-2 text-center font-mono">
+                <div className="p-2 rounded-lg bg-slate-50 dark:bg-[#070a08] border border-slate-200 dark:border-slate-800">
+                  <div className="text-[9px] text-slate-400 uppercase font-bold">Daily verified</div>
+                  <div className="text-base font-black text-emerald-600 dark:text-emerald-400">{fleet.totals.todayTotal.toLocaleString()}</div>
+                </div>
+                <div className="p-2 rounded-lg bg-slate-50 dark:bg-[#070a08] border border-slate-200 dark:border-slate-800">
+                  <div className="text-[9px] text-slate-400 uppercase font-bold">Weekly verified</div>
+                  <div className="text-base font-black text-slate-900 dark:text-white">{fleet.totals.weekTotal.toLocaleString()}</div>
+                </div>
+                <div className="p-2 rounded-lg bg-slate-50 dark:bg-[#070a08] border border-slate-200 dark:border-slate-800">
+                  <div className="text-[9px] text-slate-400 uppercase font-bold">Monthly verified</div>
+                  <div className="text-base font-black text-[#256002] dark:text-[#8fe617]">{fleet.totals.monthTotal.toLocaleString()}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ─────────────────────────────────────────────────────────────────── */}
           {/* SECTION 4: SENDERS TELEMETRY FLEET GRID & FILTER                    */}
           {/* ─────────────────────────────────────────────────────────────────── */}
@@ -1341,6 +1485,7 @@ export const TelemetricVelocityPage: React.FC = () => {
                   ? sender.recordsPerMinute
                   : (timeTaken !== null ? Number((60 / timeTaken).toFixed(2)) : null);
                 const senderLevel = cadenceTier(timeTaken);
+                const tStatus = sender.terminalStatus || (isOnline ? 'ACTIVE' : 'STANDBY');
 
                 return (
                   <div
@@ -1369,11 +1514,15 @@ export const TelemetricVelocityPage: React.FC = () => {
                       </div>
 
                       <span className={`px-3 py-1 rounded-full text-[10px] font-black font-mono border ${
-                        isOnline
+                        tStatus === 'ACTIVE'
                           ? 'bg-[#85E510]/15 text-[#256002] dark:text-[#8fe617] border-[#85E510]/40'
+                          : tStatus === 'IDLE'
+                          ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/50'
+                          : tStatus === 'LOCKED'
+                          ? 'bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-900/50'
                           : 'bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-200 dark:border-slate-700'
-                      }`}>
-                        {isOnline ? 'ACTIVE' : 'STANDBY'}
+                      }`} title="Terminal status from real server signals: ACTIVE = registered in last 15 min, IDLE = last 24 h, DISCONNECTED = older, LOCKED = account locked">
+                        {tStatus}
                       </span>
                     </div>
 
@@ -1456,6 +1605,34 @@ export const TelemetricVelocityPage: React.FC = () => {
                         <span className="text-slate-400 font-bold font-mono">Unbound</span>
                       )}
                     </div>
+
+                    {/* Server session counter, daily target progress, last activity */}
+                    <div className="space-y-2 pt-1">
+                      <div className="flex items-center justify-between text-[11px] font-sans">
+                        <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
+                          <Activity className="w-3.5 h-3.5 text-[#85E510]" />
+                          <span>Current session:</span>
+                          <span className="font-black font-mono text-slate-900 dark:text-white">{sender.serverSessionCount ?? 0}</span>
+                          <span className="text-[10px] text-slate-400 font-mono">regs (0-start window)</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[10px]" title="Last successful registration persisted on the server">
+                          <Clock className="w-3 h-3" />
+                          <span>{sender.serverLastActivity ? formatAgo(sender.serverLastActivity) : 'no server records'}</span>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 mb-1">
+                          <span>DAILY TARGET PROGRESS</span>
+                          <span>{sender.today}/{senderDailyTarget}</span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${sender.today >= senderDailyTarget ? 'bg-[#85E510]' : sender.today > 0 ? 'bg-amber-400' : 'bg-slate-200 dark:bg-slate-700'}`}
+                            style={{ width: `${Math.min(100, (sender.today / senderDailyTarget) * 100)}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 );
               })}
@@ -1481,10 +1658,13 @@ export const TelemetricVelocityPage: React.FC = () => {
                       <th className="py-3 text-center">Time Spent / Student</th>
                       <th className="py-3 text-center">Speed (Rec/Min)</th>
                       <th className="py-3 text-center">Velocity Level</th>
-                      <th className="py-3 text-center">Today (0-Start)</th>
+                      <th className="py-3 text-center" title="Registrations in the sender's current activity window (a gap over 30 minutes starts a new window at zero)">Session</th>
+                      <th className="py-3 text-center">Today</th>
                       <th className="py-3 text-center">Week</th>
                       <th className="py-3 text-center">Month</th>
                       <th className="py-3 text-center">Total</th>
+                      <th className="py-3 text-center">Daily Target</th>
+                      <th className="py-3 text-center">Last Activity</th>
                       <th className="py-3 text-center">1-Device Lock</th>
                       <th className="py-3 text-right pr-4">Status</th>
                     </tr>
@@ -1549,17 +1729,34 @@ export const TelemetricVelocityPage: React.FC = () => {
                               {senderLevel === 'HIGH' ? 'High' : senderLevel === 'MEDIUM' ? 'Medium' : senderLevel === 'LOW' ? 'Low' : 'Idle'}
                             </span>
                           </td>
-                          <td className="py-3.5 text-center font-black text-slate-900 dark:text-white text-sm">
+                          <td className="py-3.5 text-center">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-black bg-slate-50 dark:bg-[#070a08] border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200" title="Registrations in this sender's current activity window (30-minute gap starts a new window)">
+                              <Activity className="w-3 h-3 text-[#85E510]" />
+                              <span>{s.serverSessionCount ?? 0}</span>
+                            </span>
+                          </td>
+                          <td className={`py-3.5 text-center text-sm ${reportPeriod === 'DAY' ? 'font-black text-emerald-600 dark:text-emerald-400' : 'font-bold text-slate-700 dark:text-slate-300'}`}>
                             {s.today}
                           </td>
-                          <td className="py-3.5 text-center text-slate-600 dark:text-slate-300">
+                          <td className={`py-3.5 text-center ${reportPeriod === 'WEEK' ? 'font-black text-emerald-600 dark:text-emerald-400' : 'text-slate-600 dark:text-slate-300'}`}>
                             {s.week}
                           </td>
-                          <td className="py-3.5 text-center text-slate-600 dark:text-slate-300">
+                          <td className={`py-3.5 text-center ${reportPeriod === 'MONTH' ? 'font-black text-emerald-600 dark:text-emerald-400' : 'text-slate-600 dark:text-slate-300'}`}>
                             {s.month}
                           </td>
                           <td className="py-3.5 text-center font-black text-[#256002] dark:text-[#8fe617] text-sm">
                             {s.total}
+                          </td>
+                          <td className="py-3.5 text-center">
+                            <div className="flex items-center justify-center gap-2">
+                              <div className="w-14 h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                                <div className={`h-full ${s.today >= senderDailyTarget ? 'bg-[#85E510]' : 'bg-amber-400'}`} style={{ width: `${Math.min(100, (s.today / senderDailyTarget) * 100)}%` }} />
+                              </div>
+                              <span className="text-[10px] text-slate-400">{s.today}/{senderDailyTarget}</span>
+                            </div>
+                          </td>
+                          <td className="py-3.5 text-center text-[10px] text-slate-500 dark:text-slate-400">
+                            {s.serverLastActivity ? formatAgo(s.serverLastActivity) : '—'}
                           </td>
                           <td className="py-3.5 text-center">
                             <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
@@ -1688,6 +1885,25 @@ export const TelemetricVelocityPage: React.FC = () => {
               <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#070a08] border border-slate-200 dark:border-slate-800">
                 <div className="text-[9px] text-slate-400 font-bold uppercase">Total</div>
                 <div className="text-lg font-black text-[#256002] dark:text-[#8fe617]">{inspectingSender.total}</div>
+              </div>
+            </div>
+
+            {/* Server session, daily target & synchronization signals */}
+            <div className="grid grid-cols-3 gap-2 text-center font-mono">
+              <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#070a08] border border-slate-200 dark:border-slate-800">
+                <div className="text-[9px] text-slate-400 font-bold uppercase">Current Session</div>
+                <div className="text-lg font-black text-slate-900 dark:text-white">{inspectingSender.serverSessionCount ?? 0}</div>
+                <div className="text-[9px] text-slate-400">0-start activity window</div>
+              </div>
+              <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#070a08] border border-slate-200 dark:border-slate-800">
+                <div className="text-[9px] text-slate-400 font-bold uppercase">Daily Target</div>
+                <div className="text-lg font-black text-amber-600 dark:text-amber-400">{inspectingSender.today}/{senderDailyTarget}</div>
+                <div className="text-[9px] text-slate-400">{Math.min(100, Math.round((inspectingSender.today / senderDailyTarget) * 100))}% complete</div>
+              </div>
+              <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#070a08] border border-slate-200 dark:border-slate-800">
+                <div className="text-[9px] text-slate-400 font-bold uppercase">Last Sync Activity</div>
+                <div className="text-lg font-black text-slate-900 dark:text-white">{inspectingSender.serverLastActivity ? formatAgo(inspectingSender.serverLastActivity) : '—'}</div>
+                <div className="text-[9px] text-slate-400">{inspectingSender.terminalStatus || (inspectingSender.status === 'Active' ? 'ACTIVE' : 'STANDBY')}</div>
               </div>
             </div>
 
