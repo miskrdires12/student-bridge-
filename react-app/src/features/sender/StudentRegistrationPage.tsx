@@ -10,7 +10,7 @@ import {
   getStudents, addStudent, updateStudent, getSchools, getCurrentUser, getTasks,
   DEFAULT_BRANCHES, BRANCH_SCHOOL_MAP, getSenderMetrics, SenderMetrics,
   generateStudentQrToken, getCorrectionLogs, CorrectionLog, getAuthHeaders,
-  incrementSenderLiveCaptures, getPhotoUrl
+  incrementSenderLiveCaptures, getPhotoUrl, refreshFleetTelemetry
 } from '@/lib/store';
 import { queueOfflineOperation } from '@/lib/offlineQueue';
 import { Student } from '@/types';
@@ -129,6 +129,11 @@ export const StudentRegistrationPage: React.FC = () => {
 
   useEffect(() => {
     refreshMetrics();
+    // Metrics read before the fleet snapshot exists use browser-local period
+    // windows; re-read after the authoritative snapshot lands so this panel
+    // cannot disagree with Fleet / Telemetry Velocity totals.
+    let alive = true;
+    refreshFleetTelemetry().then(() => { if (alive) refreshMetrics(); });
     const loadCorrections = () => {
       const cur = getCurrentUser() || user;
       setCorrectionNotices(getCorrectionLogs(cur?.username || cur?.email));
@@ -144,6 +149,7 @@ export const StudentRegistrationPage: React.FC = () => {
     window.addEventListener('studentbridge_sync', handleDataChange);
     window.addEventListener('storage', handleDataChange);
     return () => {
+      alive = false;
       window.removeEventListener('studentbridge_datachange', handleDataChange);
       window.removeEventListener('studentbridge_correction_event', loadCorrections);
       window.removeEventListener('studentbridge_sync', handleDataChange);

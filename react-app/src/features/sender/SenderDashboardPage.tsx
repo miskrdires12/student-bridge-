@@ -4,7 +4,7 @@ import {
   UserPlus, Camera, CheckCircle2, Clock, AlertTriangle, ArrowUpRight,
   TrendingUp, BarChart3, Users, Award, ChevronRight, Calendar, UserCheck
 } from 'lucide-react';
-import { getStudents, getTasks, getCurrentUser, getCorrectionLogs, CorrectionLog, getSenderMetrics, SenderMetrics } from '@/lib/store';
+import { getStudents, getTasks, getCurrentUser, getCorrectionLogs, CorrectionLog, getSenderMetrics, SenderMetrics, refreshFleetTelemetry } from '@/lib/store';
 import { Student, Task } from '@/types';
 
 export const SenderDashboardPage: React.FC = () => {
@@ -24,9 +24,18 @@ export const SenderDashboardPage: React.FC = () => {
     };
     refreshData();
 
+    // Metrics computed before the fleet snapshot lands use browser-local period
+    // windows, which disagree with the server calendar-day totals shown on Fleet
+    // and Telemetry Velocity. Re-read once the authoritative snapshot arrives.
+    let alive = true;
+    refreshFleetTelemetry().then(() => {
+      if (alive && user?.username) setMetrics(getSenderMetrics(user.username));
+    });
+
     window.addEventListener('studentbridge_datachange', refreshData);
     window.addEventListener('studentbridge_correction_event', refreshData);
     return () => {
+      alive = false;
       window.removeEventListener('studentbridge_datachange', refreshData);
       window.removeEventListener('studentbridge_correction_event', refreshData);
     };

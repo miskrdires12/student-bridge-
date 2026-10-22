@@ -2033,7 +2033,13 @@ interface SenderLiveTelemetry {
   lastCapture: number | null;
   totalActiveTimeSecs: number;
   recentIntervalsSecs: number[];
+  countVersion?: number;
 }
+
+// Bumped when the meaning of a stored count changes, so counters written by an
+// older rule (which folded sender-less records into every viewer's total) are
+// discarded instead of living on through the sticky Math.max() fallback.
+const SENDER_TELEMETRY_COUNT_VERSION = 2;
 
 function getStoredSenderTelemetry(norm: string): SenderLiveTelemetry {
   const now = Date.now();
@@ -2047,7 +2053,8 @@ function getStoredSenderTelemetry(norm: string): SenderLiveTelemetry {
     sessionStart: now,
     lastCapture: null,
     totalActiveTimeSecs: 0,
-    recentIntervalsSecs: []
+    recentIntervalsSecs: [],
+    countVersion: SENDER_TELEMETRY_COUNT_VERSION
   };
 
   if (typeof window === 'undefined') return defaultTelemetry;
@@ -2059,6 +2066,13 @@ function getStoredSenderTelemetry(norm: string): SenderLiveTelemetry {
       if (parsed.todayDateStr && parsed.todayDateStr !== todayStr) {
         parsed.today = 0;
         parsed.todayDateStr = todayStr;
+      }
+      if (parsed.countVersion !== SENDER_TELEMETRY_COUNT_VERSION) {
+        parsed.today = 0;
+        parsed.week = 0;
+        parsed.month = 0;
+        parsed.total = 0;
+        parsed.countVersion = SENDER_TELEMETRY_COUNT_VERSION;
       }
       return { ...defaultTelemetry, ...parsed };
     }
@@ -2349,8 +2363,12 @@ export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
 
   const localTodayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const utcTodayStr = now.toISOString().substring(0, 10);
-  const isCurrentSender = curUser?.role === 'SENDER';
 
+  // Degraded-mode attribution matches the server rule exactly: a record counts for a
+  // sender only when it carries that sender's identity. Records with no sender name are
+  // left out of personal totals instead of being folded into the viewer's count, which
+  // previously made every operator (and every row of the sender table) claim the same
+  // anonymous legacy imports as their own work.
   allStudentsToCheck.forEach(s => {
     if (!s || s.receiverHidden) return;
     const sn = (s.senderName || '').toLowerCase().trim();
@@ -2358,8 +2376,7 @@ export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
     const match =
       (sn && (sn === norm || sn === uName || sn === uEmail)) ||
       (sid && (sid === norm || sid === uId || sid === uName)) ||
-      (!sn && !sid && (norm === 'field operator' || norm === 'sender')) ||
-      (isCurrentSender && (!sn || sn === 'field operator' || sn === 'sender' || sn === uName || sn === norm));
+      (!sn && !sid && (norm === 'field operator' || norm === 'sender'));
 
     if (match) {
       realTotal++;

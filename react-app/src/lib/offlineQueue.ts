@@ -147,9 +147,23 @@ export async function getQueueSummary(): Promise<{ pending: number; failed: numb
 }
 
 /**
- * Synchronize all pending offline registrations with the server
+ * Synchronize all pending offline registrations with the server.
+ *
+ * Single-flight: the 15 s background timer, the reconnect handler and explicit
+ * calls can overlap when a flush outlives the interval. Without this guard two
+ * loops read the same snapshot and transmit the same operation twice, which
+ * duplicates sync traffic and audit events even though the server dedupes the
+ * student record itself.
  */
-export async function syncOfflineQueue(): Promise<{ synced: number; failed: number }> {
+let activeFlush: Promise<{ synced: number; failed: number }> | null = null;
+
+export function syncOfflineQueue(): Promise<{ synced: number; failed: number }> {
+  if (activeFlush) return activeFlush;
+  activeFlush = runQueueFlush().finally(() => { activeFlush = null; });
+  return activeFlush;
+}
+
+async function runQueueFlush(): Promise<{ synced: number; failed: number }> {
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     return { synced: 0, failed: 0 };
   }
