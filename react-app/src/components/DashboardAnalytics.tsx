@@ -426,8 +426,8 @@ export const DashboardAnalytics: React.FC<{ actions?: React.ReactNode }> = ({ ac
               <div className="mt-1 text-[11px] font-mono text-[#6b7771] dark:text-[#8a9e93]">
                 pending &bull; failed &bull; last sync {queue.lastSyncAt ? queue.lastSyncAt.replace('T', ' ').slice(0, 16) : 'never'}
               </div>
-              <div className="mt-1 text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93]" title="Server-side verified total (all time, deduplicated by Student ID)">
-                lifetime verified on server: {fleet.totals.totalVerified.toLocaleString()}
+              <div className="mt-1 text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93]" title="Deduplicated server records. 'Attributed' rows carry a sender name; 'unattributed' rows are legacy or imported records with no sender, so they appear in the Student directory total but not in any sender's lifetime count.">
+                server records: {(fleet.totals.totalRecords ?? fleet.totals.totalVerified).toLocaleString()} &bull; attributed {fleet.totals.totalVerified.toLocaleString()} &bull; unattributed {(fleet.totals.unattributedRecords ?? 0).toLocaleString()}
               </div>
             </div>
           </div>
@@ -580,6 +580,7 @@ export const DashboardAnalytics: React.FC<{ actions?: React.ReactNode }> = ({ ac
           <div className="rounded-2xl border border-dashed border-[#dce7e1] dark:border-[#223126] px-4 py-3 text-[10px] font-mono text-[#6b7771] dark:text-[#8a9e93] space-y-1">
             <div className="font-bold uppercase tracking-wider text-[#080808] dark:text-[#f2f7f4]">Metric definitions</div>
             <div>&bull; Verified registration: a distinct Student ID stored on the server (deduplicated, retries and replays never add a second record).</div>
+            <div>&bull; Sender counts cover records that carry a sender name; the Student directory total also includes unattributed legacy/imported records (shown in Sync health).</div>
             <div>&bull; Periods are school-local calendar days ({SCHOOL_TZ}); every record falls in exactly one day bucket, so charts cannot double-count.</div>
             <div>&bull; Daily/weekly/monthly totals = sum of the last 1/7/30 calendar day buckets up to the selected "As of" date — identical to Fleet and Telemetry Velocity.</div>
             <div>&bull; Pending / failed operations come from this workstation's offline queue; other terminals' queues are not visible server-side.</div>

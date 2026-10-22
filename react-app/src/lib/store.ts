@@ -2175,6 +2175,9 @@ export interface FleetTelemetryPayload {
   senderDailyTarget: number;
   totals: {
     totalVerified: number;
+    totalRecords?: number;
+    unattributedRecords?: number;
+    untimestampedRecords?: number;
     activeSenders: number;
     recentlyActiveSenders: number;
     todayTotal: number;

@@ -1356,7 +1356,7 @@ async function buildSenderFleetTelemetry() {
   }
 
   const [studentRes, usersRes] = await Promise.all([
-    fetchSupabaseAllRows("students", "select=id,studentId,senderName,senderId,createdAt,school,branch&order=createdAt.desc,id.desc"),
+    fetchSupabaseAllRows("students", "select=id,studentId,senderName,senderId,createdAt,school&order=createdAt.desc,id.desc"),
     fetchSupabaseAllRows("users", "select=*")
   ]);
   const settings = await getPlatformSettings();
@@ -1372,18 +1372,26 @@ async function buildSenderFleetTelemetry() {
   const seenStudentIds = new Set();
   const globalDaily = {};
   let totalVerified = 0;
+  let totalRecords = 0;
+  let unattributedRecords = 0;
+  let untimestampedRecords = 0;
 
   for (const r of studentRes.rows) {
     const sid = String(r.studentId || r.id || "").trim().toLowerCase();
     if (!sid || seenStudentIds.has(sid)) continue;
     seenStudentIds.add(sid);
+    totalRecords++;
 
     const name = String(r.senderName || r.senderId || "").trim();
-    if (!name) continue;
+    if (!name) {
+      unattributedRecords++;
+      continue;
+    }
 
     const ts = r.createdAt ? Date.parse(r.createdAt) : NaN;
     const validTs = Number.isFinite(ts) ? ts : 0;
     if (validTs) totalVerified++;
+    else untimestampedRecords++;
 
     const key = name.toLowerCase();
     let e = bySender.get(key);
@@ -1490,7 +1498,10 @@ async function buildSenderFleetTelemetry() {
     windowDays: FLEET_WINDOW_DAYS,
     todayKey,
     totals: {
+      totalRecords,
       totalVerified,
+      unattributedRecords,
+      untimestampedRecords,
       activeSenders,
       recentlyActiveSenders: recentlyActive,
       todayTotal: globalDaily[todayKey] || 0,
@@ -1807,6 +1818,9 @@ export default {
         return new Response(JSON.stringify({
           success: true,
           updatedAt: payload.updatedAt,
+          timezone: payload.timezone,
+          windowDays: payload.windowDays,
+          todayKey: payload.todayKey,
           totals: payload.totals,
           senderDailyTarget: payload.senderDailyTarget,
           scope: String(teleUser.role || "").toUpperCase() === "SENDER" ? "SELF" : "ALL",
@@ -4089,12 +4103,17 @@ export default {
       let todayRecords = 0;
       let totalPhotos = 0;
 
-      const todayStr = new Date().toISOString().substring(0, 10);
-      const dateDaysAgo = (n) => {
-        const d = new Date();
-        d.setUTCDate(d.getUTCDate() - n);
-        return d.toISOString().substring(0, 10);
+      // Period boundaries use the same school-local calendar days (Addis Ababa,
+      // UTC+3, no DST) as /api/telemetry/senders, so dashboards cannot disagree.
+      const statsDayKeys = fleetDayWindow(Date.now(), 30);
+      const zonedDayStartUtc = (dayKey) => {
+        const parts = String(dayKey).split("-").map(Number);
+        if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return new Date().toISOString();
+        return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]) - 3 * 3600 * 1000).toISOString();
       };
+      const todayStartIso = zonedDayStartUtc(statsDayKeys[statsDayKeys.length - 1]);
+      const weekStartIso = zonedDayStartUtc(statsDayKeys[statsDayKeys.length - 7]);
+      const monthStartIso = zonedDayStartUtc(statsDayKeys[0]);
 
       const countStudentsQuery = async (extraFilters) => {
         try {
@@ -4115,9 +4134,9 @@ export default {
       const [totalCount, photoVerifiedCount, todayCount, weekCount, monthCount] = await Promise.all([
         countStudentsQuery(schoolQ),
         countStudentsQuery(`&photoIntegrityStatus=eq.PHOTO_VERIFIED${schoolQ}`),
-        countStudentsQuery(`&createdAt=gte.${todayStr}T00:00:00${schoolQ}`),
-        countStudentsQuery(`&createdAt=gte.${dateDaysAgo(7)}T00:00:00${schoolQ}`),
-        countStudentsQuery(`&createdAt=gte.${dateDaysAgo(30)}T00:00:00${schoolQ}`)
+        countStudentsQuery(`&createdAt=gte.${todayStartIso}${schoolQ}`),
+        countStudentsQuery(`&createdAt=gte.${weekStartIso}${schoolQ}`),
+        countStudentsQuery(`&createdAt=gte.${monthStartIso}${schoolQ}`)
       ]);
 
       if (totalCount !== null) totalStudents = totalCount;
