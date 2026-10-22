@@ -1,8 +1,8 @@
 import { Student, User, Task, School, AuditLog, StudentCoreRequest, MistakeItem, UserRole, CardTemplate, PrintJob } from '@/types';
-import { publishStudentSync, subscribeToStudentSync, getPhotoUrl, getPhotoEncodeClass } from './syncEngine';
+import { publishStudentSync, subscribeToStudentSync, getPhotoUrl, getPhotoCandidates, getPhotoEncodeClass } from './syncEngine';
 import { parseGradeAndSection, getBranchForSchool, getStudentBranch } from './gradeUtils';
 
-export { getPhotoUrl, getPhotoEncodeClass, publishStudentSync, subscribeToStudentSync, getBranchForSchool, getStudentBranch };
+export { getPhotoUrl, getPhotoCandidates, getPhotoEncodeClass, publishStudentSync, subscribeToStudentSync, getBranchForSchool, getStudentBranch };
 
 // Branch to School Mapping
 export const BRANCH_SCHOOL_MAP: Record<string, string[]> = {
@@ -1059,6 +1059,10 @@ export function updateStudent(id: string, updates: Partial<Student>): void {
     };
 
     memoryStudents[index] = updatedStudent;
+
+    // Remote stations must learn about a photo that only just arrived, an update to a record
+    // they already hold, or the directory keeps the stale copy until it is reloaded.
+    publishStudentSync('UPSERT', updatedStudent);
 
     // Guaranteed persistence into sb_custom_students in localStorage
     try {

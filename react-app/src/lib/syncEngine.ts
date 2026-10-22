@@ -72,6 +72,49 @@ export function getPhotoUrl(pathOrUrl?: any | null): string | null {
 }
 
 /**
+ * Ordered, de-duplicated photo sources for one record.
+ *
+ * The bucket original comes first, then the light previews the station carries, so the
+ * portrait renders from storage whenever it is there and from the transmitted thumbnail
+ * when it is not (photo still queued on the sender, or the edge API not executing). Callers
+ * walk the list through an onError handler, which is what gives the "thumbnail first, then
+ * the original" behaviour without waiting for a refresh.
+ */
+export function getPhotoCandidates(student?: any | null): string[] {
+  if (!student) return [];
+  const urls: string[] = [];
+  for (const raw of [student.photoPath, student.originalPhotoPath, student.previewPath, student.thumbnailPath, student.capturedPhoto, student.photoBase64]) {
+    const url = getPhotoUrl(raw);
+    if (url && !urls.includes(url)) urls.push(url);
+  }
+  return urls;
+}
+
+/**
+ * onError walker for a photo <img>: step through getPhotoCandidates() for one record so the
+ * bucket original, then the previews the station transmitted, each get a turn before the
+ * avatar (or hiding the frame) is used. React cannot re-issue a failed image load, so the
+ * swap happens on the element and callers key the <img> on the resolved source — when the HD
+ * portrait later lands in storage the row remounts and the original takes over from the
+ * thumbnail without a refresh. That is the "thumbnail first, then the original" contract.
+ */
+export function photoSourceError(candidates: string[], fallbackUrl?: string) {
+  return (event: { currentTarget: EventTarget | null }) => {
+    const el = event.currentTarget as HTMLImageElement | null;
+    if (!el) return;
+    const next = Number(el.dataset.sourceIndex || 0) + 1;
+    if (next < candidates.length) {
+      el.dataset.sourceIndex = String(next);
+      el.src = candidates[next];
+    } else if (fallbackUrl) {
+      el.src = fallbackUrl;
+    } else {
+      el.style.display = 'none';
+    }
+  };
+}
+
+/**
  * Encoded / Unencoded classifier.
  * Students with verified biometric photos are "Encoded" (ready for ID encoding & printing).
  */
@@ -95,17 +138,27 @@ if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
   }
 }
 
+// ntfy.sh caps a message body, and the station's Telegram-protocol thumbnail is only a few
+// KB, so the small preview is worth carrying while the full-resolution capture is not.
+const BUS_PREVIEW_LIMIT = 96 * 1024;
+
+function keepBusPreview(value: any): string {
+  const s = typeof value === 'string' ? value.trim() : '';
+  if (s.startsWith('data:') && s.length > BUS_PREVIEW_LIMIT) return '';
+  return s;
+}
+
 export function cleanStudentForSync(student?: Student): Student | undefined {
   if (!student) return undefined;
   const clean = { ...student } as any;
   delete clean.capturedPhoto;
   delete clean.photoBase64;
-  if (typeof clean.previewPath === 'string' && clean.previewPath.startsWith('data:')) {
-    clean.previewPath = clean.photoPath || '';
-  }
-  if (typeof clean.thumbnailPath === 'string' && clean.thumbnailPath.startsWith('data:')) {
-    clean.thumbnailPath = clean.photoPath || '';
-  }
+  // Keep the transmitted thumbnail instead of replacing it with the storage path: a path
+  // alone renders as a gray avatar for any portrait whose object has not reached the bucket,
+  // which is exactly the window between a send and its background HD upload. Oversized
+  // captures still fall back to the storage path so ntfy never rejects the message.
+  clean.previewPath = keepBusPreview(clean.previewPath) || clean.photoPath || '';
+  clean.thumbnailPath = keepBusPreview(clean.thumbnailPath) || clean.photoPath || '';
   return clean as Student;
 }
 

@@ -392,7 +392,9 @@ export const StudentRegistrationPage: React.FC = () => {
         originalPhotoPath: expectedPhotoUrl,
         capturedPhoto: capturedPhoto, // Retain full resolution locally
         photoBase64: capturedPhoto,
-        photoIntegrityStatus: 'PHOTO_VERIFIED',
+        // The portrait exists on this station from now on; the bucket copy is only proven by
+        // stage 2, so the record must not claim a stored photo before that happens.
+        photoIntegrityStatus: 'PENDING_CLOUD_UPLOAD',
         qrCodeData: generateStudentQrToken({
           studentId: studentId.trim(),
           fullName: fullName.trim(),

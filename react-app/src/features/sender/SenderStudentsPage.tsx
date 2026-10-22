@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Search, Filter, Camera, CheckCircle2, UserPlus, ArrowUpDown, ChevronLeft, ChevronRight } from 'lucide-react';
-import { getStudents, getPhotoUrl } from '@/lib/store';
+import { getStudents, getPhotoCandidates } from '@/lib/store';
+import { photoSourceError } from '@/lib/syncEngine';
 import { Student } from '@/types';
 import { getDistinctGradeOptions, matchesGradeFilter, getGradeDisplay, getStudentBranch } from '@/lib/gradeUtils';
 
@@ -120,7 +121,8 @@ export const SenderStudentsPage: React.FC = () => {
             </thead>
             <tbody className="divide-y divide-[#1e2c22]/70">
               {pagedStudents.map((s) => {
-                const photoSrc = getPhotoUrl(s.photoPath || s.previewPath || s.thumbnailPath);
+                const photoSources = getPhotoCandidates(s);
+                const photoSrc = photoSources[0] || '';
 
                 return (
                   <tr key={s.id || s.studentId} className="hover:bg-white/[0.02] transition-colors">
@@ -128,10 +130,11 @@ export const SenderStudentsPage: React.FC = () => {
                       <div className="w-9 h-9 rounded-full overflow-hidden bg-white/5 border border-white/10 shrink-0 flex items-center justify-center">
                         {photoSrc ? (
                           <img
+                            key={`${s.studentId}:${s.updatedAt || ''}:${photoSrc}`}
                             src={photoSrc}
                             alt={s.fullName}
                             className="w-full h-full object-cover"
-                            onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
+                            onError={photoSourceError(photoSources)}
                           />
                         ) : (
                           <span className="text-[10px] font-bold text-amber-400">NO</span>

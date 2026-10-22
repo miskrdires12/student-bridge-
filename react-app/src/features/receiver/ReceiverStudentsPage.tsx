@@ -16,7 +16,7 @@ import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
 import {
   getStudents, addStudent, updateStudent, deleteStudent,
-  getPhotoUrl, getPhotoEncodeClass, subscribeToStudentSync,
+  getPhotoUrl, getPhotoCandidates, getPhotoEncodeClass, subscribeToStudentSync,
   DEFAULT_BRANCHES, BRANCH_SCHOOL_MAP,
   generateStudentQrToken, getStudentPhotoFileName, getStudentQrFileName,
   addCorrectionLog, getAllSendersMetrics, SenderMetrics, getAuthHeaders,
@@ -24,6 +24,7 @@ import {
   isServerApiOnline
 } from '@/lib/store';
 import { Student } from '@/types';
+import { photoSourceError } from '@/lib/syncEngine';
 import { PhoneCropModal } from '@/components/PhoneCropModal';
 import { R2_PUBLIC_BASE_URL } from '@/lib/syncEngine';
 import {
@@ -2338,7 +2339,8 @@ export const ReceiverStudentsPage: React.FC = () => {
               ) : (
                 pagedStudents.map((s) => {
                   const isSelected = selectedIds.has(s.studentId);
-                  const photoSrc = getPhotoUrl(s.capturedPhoto || s.photoBase64 || s.previewPath || s.photoPath || s.thumbnailPath) || DEFAULT_AVATAR;
+                  const photoSources = getPhotoCandidates(s);
+                  const photoSrc = photoSources[0] || DEFAULT_AVATAR;
                   const isBulked = bulkedIds.has(s.studentId) || s.bulkedStatus === 'BULKED';
 
                   return (
@@ -2367,12 +2369,11 @@ export const ReceiverStudentsPage: React.FC = () => {
                             title="Click photograph to crop and edit online"
                           >
                             <img
+                              key={`${s.studentId}:${s.updatedAt || ''}:${photoSrc}`}
                               src={photoSrc}
                               alt={s.fullName}
                               className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                              onError={(e) => {
-                                (e.target as HTMLImageElement).src = DEFAULT_AVATAR;
-                              }}
+                              onError={photoSourceError(photoSources, DEFAULT_AVATAR)}
                             />
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
                               <Edit2 className="w-3.5 h-3.5 text-[#9EE617]" />
@@ -3091,7 +3092,8 @@ export const ReceiverStudentsPage: React.FC = () => {
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
                     {currentFolderStudents.map(s => {
-                      const photoUrl = getPhotoUrl(s.photoPath || s.previewPath || s.thumbnailPath);
+                      const photoSources = getPhotoCandidates(s);
+                      const photoUrl = photoSources[0] || null;
                       const hasRealPhoto = s.photoIntegrityStatus === 'PHOTO_VERIFIED' ||
                         (photoUrl && !photoUrl.includes('avatar') && !photoUrl.includes('placeholder'));
 
@@ -3106,12 +3108,11 @@ export const ReceiverStudentsPage: React.FC = () => {
                             <div className="aspect-[3/4] w-full rounded-xl bg-[#F8FAF9] border border-[#CBD5E1] overflow-hidden relative mb-2">
                               {photoUrl ? (
                                 <img
+                                  key={`${s.studentId}:${s.updatedAt || ''}:${photoUrl}`}
                                   src={photoUrl}
                                   alt={s.fullName}
                                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
-                                  onError={(e) => {
-                                    (e.target as HTMLImageElement).src = DEFAULT_AVATAR;
-                                  }}
+                                  onError={photoSourceError(photoSources, DEFAULT_AVATAR)}
                                 />
                               ) : (
                                 <img src={DEFAULT_AVATAR} alt="Avatar" className="w-full h-full object-cover" />
@@ -3231,12 +3232,11 @@ export const ReceiverStudentsPage: React.FC = () => {
                   title="Click to Crop & Edit Studio Portrait"
                 >
                   <img
-                    src={getPhotoUrl(detailStudent.capturedPhoto || detailStudent.photoBase64 || detailStudent.photoPath || detailStudent.previewPath || detailStudent.thumbnailPath) || DEFAULT_AVATAR}
+                    key={`${detailStudent.studentId}:${detailStudent.updatedAt || ''}:${getPhotoCandidates(detailStudent)[0] || ''}`}
+                    src={getPhotoCandidates(detailStudent)[0] || DEFAULT_AVATAR}
                     alt={detailStudent.fullName}
                     className="w-full h-full object-cover group-hover/drawerPhoto:scale-105 transition-transform"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src = DEFAULT_AVATAR;
-                    }}
+                    onError={photoSourceError(getPhotoCandidates(detailStudent), DEFAULT_AVATAR)}
                   />
                   <div className="absolute inset-0 bg-black/50 opacity-0 group-hover/drawerPhoto:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1.5 text-white text-xs font-semibold pointer-events-none">
                     <Crop className="h-6 w-6 text-[#8fe617]" />
@@ -3962,7 +3962,8 @@ export const ReceiverStudentsPage: React.FC = () => {
 
                 return filteredMistakes.map(m => {
                   const s = m.student;
-                  const photoSrc = getPhotoUrl(s.capturedPhoto || s.photoBase64 || s.photoPath || s.previewPath || s.thumbnailPath) || DEFAULT_AVATAR;
+                  const photoSources = getPhotoCandidates(s);
+                  const photoSrc = photoSources[0] || DEFAULT_AVATAR;
 
                   return (
                     <div
@@ -3976,7 +3977,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                           className="w-12 h-14 rounded-xl overflow-hidden bg-slate-100 border border-slate-300 shrink-0 cursor-pointer group relative shadow-2xs"
                           title="Click to crop and edit photo in 3:4 portrait"
                         >
-                          <img src={photoSrc} alt={s.fullName} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                          <img key={`${s.studentId}:${s.updatedAt || ''}:${photoSrc}`} src={photoSrc} onError={photoSourceError(photoSources, DEFAULT_AVATAR)} alt={s.fullName} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
                           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
                             <Crop className="w-4 h-4 text-[#9EE617]" />
                           </div>
