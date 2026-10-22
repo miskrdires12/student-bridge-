@@ -889,6 +889,48 @@ async function uploadToR2Bucket(key, bytes, contentType = "image/jpeg") {
   return `${R2_PUBLIC_BASE_URL}/${key}`;
 }
 
+// Signed HEAD on a bucket object. Returns the stored byte length, or 0 when the key is absent.
+async function getR2ObjectSize(key) {
+  if (!key) return 0;
+  let cleanKey = String(key).replace(/^\/+/, "");
+
+  const path = `/${R2_BUCKET}/${cleanKey}`;
+  const url = new URL(path, R2_ENDPOINT);
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = amzDate.substring(0, 8);
+  const region = "auto";
+  const service = "s3";
+
+  const payloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  const host = url.host;
+
+  const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
+  const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+  const canonicalRequest = `HEAD\n${path}\n\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+
+  const algorithm = "AWS4-HMAC-SHA256";
+  const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
+  const stringToSign = `${algorithm}\n${amzDate}\n${credentialScope}\n${await sha256Hex(new TextEncoder().encode(canonicalRequest))}`;
+
+  const signingKey = await getSignatureKey(R2_SECRET_ACCESS_KEY, dateStamp, region, service);
+  const sigBytes = await hmacSha256(signingKey, new TextEncoder().encode(stringToSign));
+  const signature = Array.from(sigBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+
+  const res = await fetch(url.toString(), {
+    method: "HEAD",
+    headers: {
+      "Host": host,
+      "x-amz-date": amzDate,
+      "x-amz-content-sha256": payloadHash,
+      "Authorization": `${algorithm} Credential=${R2_ACCESS_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`
+    }
+  });
+
+  if (!res.ok) return 0;
+  return parseInt(res.headers.get("content-length") || "0", 10) || 0;
+}
+
 async function deleteFromR2Bucket(key) {
   if (!key) return false;
   let cleanKey = key;
@@ -2344,7 +2386,11 @@ export default {
           }
         } catch (e) {}
 
-        let r2Url = `${R2_PUBLIC_BASE_URL}/${photoKey}`;
+        // A bucket write that threw used to be papered over with the public URL string, so the
+        // station marked the portrait PHOTO_VERIFIED and dropped its queued upload while the bucket
+        // still held nothing but the stage-1 thumbnail. Confirm the object landed before claiming it.
+        let r2Url = "";
+        let r2StoredBytes = 0;
         try {
           r2Url = await uploadToR2Bucket(photoKey, bytes, contentType);
           try {
@@ -2354,11 +2400,15 @@ export default {
               await uploadToR2Bucket(`${studentId}.jpg`, bytes, contentType);
             }
           } catch (e) {}
+          r2StoredBytes = await getR2ObjectSize(photoKey);
         } catch (r2Err) {
           console.warn("R2 write note in /api/upload:", r2Err);
         }
+        // uploadToR2Bucket only returns on a 2xx, so a non-empty URL already proves the PUT landed;
+        // the HEAD is corroboration and must never be the sole reason to reject a good write.
+        const photoStored = !!r2Url && (r2StoredBytes === 0 || r2StoredBytes >= bytes.length);
 
-        if (studentId) {
+        if (studentId && photoStored) {
           const photoUrl = `/api/photos/${photoKey}`;
 
           // Snapshot previous cloud photo files so replaced portraits are purged from storage on edit
@@ -2433,6 +2483,16 @@ export default {
           }
         }
 
+        if (!photoStored) {
+          return new Response(JSON.stringify({
+            error: "R2_WRITE_FAILED",
+            stored: false,
+            key: photoKey,
+            expectedBytes: bytes.length,
+            storedBytes: r2StoredBytes
+          }), { status: 502, headers: { "Content-Type": "application/json", ...corsHeaders } });
+        }
+
         await writeAuditLog({
           action: studentId ? "PHOTO_UPLOADED" : "FILE_UPLOADED",
           entityType: "Student",
@@ -2448,6 +2508,7 @@ export default {
           url: `/api/photos/${photoKey}`,
           r2Url: r2Url,
           key: photoKey,
+          storedBytes: r2StoredBytes,
           storage: "Cloudflare R2",
           bucket: R2_BUCKET
         }), {
@@ -2571,25 +2632,33 @@ export default {
           const cleanName = (fullName || "Student").trim().replace(/[\/\\:*?"<>|\s]+/g, "_");
           const photoKey = `${cleanGrade}/${cleanName}.jpg`;
 
+          // Stage 1 carries only the light preview bytes, and a registration queued while the
+          // edge was unreachable can be replayed long after stage 2 stored the real original, so
+          // a thumbnail must never overwrite a portrait that is already larger in the bucket.
+          const bytesArePreviewOnly = !body._fileBytes;
+          const storePhotoGuarded = async (key, mime) => {
+            if (bytesArePreviewOnly) {
+              const storedBytes = await getR2ObjectSize(key);
+              if (storedBytes > photoBytes.length) return;
+            }
+            await uploadToR2Bucket(key, photoBytes, mime);
+            uploadedPhotos.set(key, { contentType: mime, bytes: photoBytes });
+          };
+
           try {
-            const r2Url = await uploadToR2Bucket(photoKey, photoBytes, photoMime);
+            await storePhotoGuarded(photoKey, photoMime);
             photoPath = `/api/photos/${photoKey}`;
             previewPath = `/api/photos/${photoKey}`;
-            uploadedPhotos.set(photoKey, { contentType: photoMime, bytes: photoBytes });
 
             // Also dual-upload root name alias
             try {
-              const rootKey = `${cleanName}.jpg`;
-              await uploadToR2Bucket(rootKey, photoBytes, photoMime);
-              uploadedPhotos.set(rootKey, { contentType: photoMime, bytes: photoBytes });
+              await storePhotoGuarded(`${cleanName}.jpg`, photoMime);
             } catch (e) {}
 
             // Also dual-upload studentId alias
             if (studentId) {
               try {
-                const sidKey = `${studentId}.jpg`;
-                await uploadToR2Bucket(sidKey, photoBytes, photoMime);
-                uploadedPhotos.set(sidKey, { contentType: photoMime, bytes: photoBytes });
+                await storePhotoGuarded(`${studentId}.jpg`, photoMime);
               } catch (e) {}
             }
           } catch (r2Err) {
