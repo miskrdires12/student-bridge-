@@ -470,7 +470,12 @@ export const StudentRegistrationPage: React.FC = () => {
           // Success message appears strictly when the server answered with the saved row!
           setSubmittedStudent(confirmedStudent);
           setCloudVerified(true);
-          setSubmitStatusText('✓ Record delivered to Supabase. Uploading HD photo to Cloudflare R2...');
+          // The edge names the store that actually holds the row, so the operator is never told
+          // "delivered to Supabase" for a record that landed only in Cloudflare R2.
+          const durableStore = res.headers.get('X-SB-Durable') === 'cloudflare-r2'
+            ? 'Cloudflare R2'
+            : 'Supabase';
+          setSubmitStatusText(`✓ Record delivered to ${durableStore}. Uploading HD photo to Cloudflare R2...`);
         } else {
           // HTTP 200 with the SPA HTML shell means the edge Worker is not executing — the
           // record was NOT written. Keep it in the outbox instead of reporting delivery.

@@ -586,38 +586,93 @@ export function removeDeletedStudentId(studentId: string): void {
   } catch (e) {}
 }
 
+const FEED_PAGE_SIZE = 500;
+const FEED_PAGE_CONCURRENCY = 4;
+const FEED_PAGE_TIMEOUT_MS = 25000;
+
+function fetchFeedWithTimeout(url: string): Promise<Response> {
+  if (typeof AbortController === 'undefined') return fetch(url);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FEED_PAGE_TIMEOUT_MS);
+  return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
+interface FeedPage {
+  students: Student[];
+  total: number;
+  totalPages: number;
+}
+
+async function fetchFeedPage(page: number, sinceIso?: string): Promise<FeedPage> {
+  const delta = sinceIso ? `&since=${encodeURIComponent(sinceIso)}` : '';
+  const res = await fetchFeedWithTimeout(`/api/students?page=${page}&limit=${FEED_PAGE_SIZE}${delta}`);
+  if (!res.ok) throw new Error(`Feed page ${page} responded ${res.status}`);
+  const data = await res.json();
+  const students: Student[] = Array.isArray(data?.students) ? data.students : [];
+  const total = Number(data?.total) || students.length;
+  const totalPages = Number(data?.totalPages) || Math.max(1, Math.ceil(total / FEED_PAGE_SIZE));
+  return { students, total, totalPages };
+}
+
+// Pull the registry one indexed page at a time instead of asking for the whole table in a single
+// response. Measured on production: `/api/students?all=true` is 21.7 MB and takes 120 s, while
+// `?page=1&limit=500` answers in 0.6 s. No station can finish the monolithic request inside its
+// own abort window, so it fell through to the stale bundled snapshot — which is exactly why a
+// freshly sent student stayed invisible on the receiver and the totals disagreed.
+// `complete` is only true when every page arrived and the rows assembled reach the total the
+// database reported; callers may prune their local copy against a complete feed and nothing else.
+export async function fetchLiveDataset(sinceIso?: string): Promise<{ students: Student[]; total: number; complete: boolean }> {
+  const first = await fetchFeedPage(1, sinceIso);
+  const byId = new Map<string, Student>();
+  const collect = (list: Student[]) => {
+    list.forEach(s => { if (s && s.studentId) byId.set(s.studentId, s); });
+  };
+  collect(first.students);
+
+  let lostPage = false;
+  const remaining: number[] = [];
+  for (let p = 2; p <= first.totalPages; p++) remaining.push(p);
+
+  for (let i = 0; i < remaining.length; i += FEED_PAGE_CONCURRENCY) {
+    const batch = remaining.slice(i, i + FEED_PAGE_CONCURRENCY);
+    const pages = await Promise.all(
+      batch.map(p => fetchFeedPage(p, sinceIso).catch(pageErr => {
+        console.warn(`Feed page ${p} lost, feed is not complete:`, pageErr);
+        return null;
+      }))
+    );
+    pages.forEach(pg => { if (pg) collect(pg.students); else lostPage = true; });
+  }
+
+  const students = Array.from(byId.values());
+  const total = Math.max(first.total, students.length);
+  return { students, total, complete: !lostPage && students.length >= total };
+}
+
 export async function initStore(): Promise<void> {
   const deletedIds = getDeletedStudentIds();
 
-  // 1. Authoritative source of truth: the FULL live dataset from the edge API
-  // (Supabase PostgreSQL, paginated server-side). The static /data/students.json
-  // file is an offline fallback ONLY — it can lag the live DB by whole days.
+  // 1. Authoritative source of truth: the FULL live dataset from the edge API, pulled one
+  // indexed page at a time. See fetchLiveDataset() for why the registry is never requested
+  // as a single response.
   let baseStudents: Student[] = [];
   let liveServerStudents: Student[] = [];
-  let serverTotal = 0;
+  let feedComplete = false;
   try {
-    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timeoutId = controller ? setTimeout(() => controller.abort(), 30000) : null;
-    const res = await fetch('/api/students?all=true', {
-      signal: controller ? controller.signal : undefined
-    });
-    if (timeoutId) clearTimeout(timeoutId);
-    if (res.ok) {
-      const data = await res.json();
-      serverApiOnline = true;
-      if (data && Array.isArray(data.students) && data.students.length > 0) {
-        liveServerStudents = data.students;
-        serverTotal = Number(data.total) || data.students.length;
-      }
+    const feed = await fetchLiveDataset();
+    serverApiOnline = true;
+    if (feed.students.length > 0) {
+      liveServerStudents = feed.students;
+      feedComplete = feed.complete;
     }
   } catch (apiErr) {
     serverApiOnline = false;
-    console.warn('Full live dataset fetch warning:', apiErr);
+    console.warn('Live dataset page fetch warning:', apiErr);
   }
 
   // 2. Degraded/offline path only: stale baseline + latest-500 overlay.
   // Also used when the API answered with a provably incomplete list.
-  const datasetHealthy = liveServerStudents.length > 0 && liveServerStudents.length >= serverTotal;
+  const datasetHealthy = liveServerStudents.length > 0 && feedComplete;
   if (!datasetHealthy) {
     try {
       const res = await fetch('/data/students.json');
@@ -718,76 +773,88 @@ export async function initStore(): Promise<void> {
     window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
   }
 
-  // 3b. Continuous authoritative reconciliation with the full server dataset.
-  // Guarantees the UI list can never silently diverge from /api/stats totals:
-  // every 3 minutes (or every 60s while degraded / after tab wake / reconnect)
-  // memoryStudents is converged to the complete Supabase dataset.
+  // 3b. Continuous authoritative reconciliation with the live server dataset.
+  // A delta pass (rows changed since the last cursor) runs every 60 s and costs kilobytes; the
+  // full paginated convergence runs every 15 min, immediately while degraded, on reconnect and
+  // when the tab wakes. Only a full pass may remove records, because a delta is by definition
+  // not the whole registry.
+  const FULL_CONVERGENCE_MS = 15 * 60 * 1000;
+  const DELTA_OVERLAP_MS = 60 * 1000;
   let lastFullSyncAt = datasetHealthy ? Date.now() : 0;
   let lastSyncHealthy = datasetHealthy;
+  let deltaCursorAt = Date.now();
+
+  const mergeLiveRows = (live: Student[], allowPrune: boolean) => {
+    const delIds = getDeletedStudentIds();
+    const merged = new Map<string, Student>();
+    memoryStudents.forEach(s => { if (s.studentId) merged.set(s.studentId, s); });
+    let dirty = false;
+
+    const liveIds = new Set<string>();
+    live.forEach(s => {
+      if (!s || !s.studentId) return;
+      liveIds.add(s.studentId);
+      if (delIds.has(s.studentId) || delIds.has(s.studentId.toLowerCase()) || (s.id && delIds.has(s.id))) return;
+      const local = merged.get(s.studentId);
+      const localIsNewer = local && (local.updatedAt || '') > (s.updatedAt || '');
+      const eff = localIsNewer ? { ...s, ...local } : { ...(local || {}), ...s };
+      if (!local || (eff.updatedAt || '') !== (local.updatedAt || '')) dirty = true;
+      merged.set(s.studentId, eff);
+    });
+
+    // Drop server-side permanent deletions that the stale baseline still carries.
+    // Only trust removals when this response is provably the complete table.
+    if (allowPrune) {
+      memoryStudents.forEach(s => {
+        if (s.studentId && !liveIds.has(s.studentId) &&
+            !localCustomStudents.some(cs => cs.studentId === s.studentId)) {
+          merged.delete(s.studentId);
+          dirty = true;
+        }
+      });
+    }
+
+    const reconciled = Array.from(merged.values());
+    reconciled.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+    const changed = dirty || reconciled.length !== memoryStudents.length ||
+      reconciled[0]?.studentId !== memoryStudents[0]?.studentId;
+    if (changed) {
+      memoryStudents = reconciled;
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
+      }
+    }
+  };
 
   const runFullStudentSync = async () => {
-    // While healthy refresh at most every 3 min; while degraded retry every tick
-    if (lastSyncHealthy && Date.now() - lastFullSyncAt < 3 * 60 * 1000) return;
+    const wantFull = !lastSyncHealthy || Date.now() - lastFullSyncAt >= FULL_CONVERGENCE_MS;
+    // The cursor is taken before the request so a record written while it was in flight is
+    // still caught by the next delta instead of falling into the gap.
+    const passStartedAt = Date.now();
+    const sinceIso = wantFull ? undefined : new Date(deltaCursorAt - DELTA_OVERLAP_MS).toISOString().replace(/\.\d{3}Z$/, 'Z');
     try {
-      const res = await fetch('/api/students?all=true');
-      if (!res.ok) { lastSyncHealthy = false; return; }
-      const data = await res.json();
-      const live: Student[] = Array.isArray(data.students) ? data.students : [];
-      const serverTotalRows = Number(data.total) || live.length;
-      if (live.length === 0) { lastSyncHealthy = false; return; }
-      const complete = live.length >= serverTotalRows;
-      lastSyncHealthy = complete;
-      lastFullSyncAt = Date.now();
+      const feed = await fetchLiveDataset(sinceIso);
+      serverApiOnline = true;
+      deltaCursorAt = passStartedAt;
 
-      const delIds = getDeletedStudentIds();
-      const merged = new Map<string, Student>();
-      memoryStudents.forEach(s => { if (s.studentId) merged.set(s.studentId, s); });
-      let dirty = false;
+      if (feed.students.length > 0) mergeLiveRows(feed.students, wantFull && feed.complete);
 
-      const liveIds = new Set<string>();
-      live.forEach(s => {
-        if (!s || !s.studentId) return;
-        liveIds.add(s.studentId);
-        if (delIds.has(s.studentId) || delIds.has(s.studentId.toLowerCase()) || (s.id && delIds.has(s.id))) return;
-        const local = merged.get(s.studentId);
-        const localIsNewer = local && (local.updatedAt || '') > (s.updatedAt || '');
-        const eff = localIsNewer ? { ...s, ...local } : { ...(local || {}), ...s };
-        if (!local || (eff.updatedAt || '') !== (local.updatedAt || '')) dirty = true;
-        merged.set(s.studentId, eff);
-      });
-
-      // Drop server-side permanent deletions that the stale baseline still carries.
-      // Only trust removals when this response is provably the complete table.
-      if (complete) {
-        memoryStudents.forEach(s => {
-          if (s.studentId && !liveIds.has(s.studentId) &&
-              !localCustomStudents.some(cs => cs.studentId === s.studentId)) {
-            merged.delete(s.studentId);
-            dirty = true;
-          }
-        });
-      }
-
-      const reconciled = Array.from(merged.values());
-      reconciled.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-
-      const changed = dirty || reconciled.length !== memoryStudents.length ||
-        reconciled[0]?.studentId !== memoryStudents[0]?.studentId;
-      if (changed) {
-        memoryStudents = reconciled;
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
-        }
+      if (wantFull) {
+        lastSyncHealthy = feed.complete;
+        lastFullSyncAt = Date.now();
+      } else {
+        lastSyncHealthy = true;
       }
     } catch (e) {
       lastSyncHealthy = false;
-      console.warn('Full student sync notice:', e);
+      console.warn('Student feed reconcile notice:', e);
     }
   };
 
   if (!datasetHealthy) runFullStudentSync();
   if (typeof window !== 'undefined' && !(window as any).__sbFullSyncTimer) {
-    // 60s tick: refreshes every 3 min when healthy, every minute while degraded,
+    // 60s tick: a cheap delta pass while healthy, a full paginated convergence while degraded,
     // and immediately on reconnect or when the tab becomes visible again.
     (window as any).__sbFullSyncTimer = setInterval(runFullStudentSync, 60 * 1000);
     window.addEventListener('online', () => { lastFullSyncAt = 0; runFullStudentSync(); });

@@ -1183,11 +1183,15 @@ async function getLiveRegistryFromR2() {
  * Authoritative atomic write of records/live_registry.json directly to Cloudflare R2.
  */
 async function saveLiveRegistryToR2(registry) {
-  if (!Array.isArray(registry) || registry.length === 0 || registry.length > 5000) return;
+  if (!Array.isArray(registry) || registry.length === 0 || registry.length > 5000) return false;
   try {
     const regBytes = new TextEncoder().encode(JSON.stringify(registry));
     await uploadToR2Bucket("records/live_registry.json", regBytes, "application/json");
-  } catch (e) {}
+    return true;
+  } catch (e) {
+    console.warn("saveLiveRegistryToR2 failed:", e);
+    return false;
+  }
 }
 
 function formatCleanGrade(rawGrade) {
@@ -1332,6 +1336,40 @@ async function countSupabaseTable(table) {
     if (attempt < 2) await new Promise(r => setTimeout(r, 100 * (attempt + 1)));
   }
   return 0;
+}
+
+// A complete `all=true` scan of the registry is slow (thousands of rows through a throttled
+// free-tier Postgres), so an isolate serves the rows it already assembled for this long before
+// paying for another scan. Stations reconcile against the delta feed in between, so the window
+// only has to cover a page load, not a send.
+const FULL_FEED_CACHE_MS = 90 * 1000;
+
+// Delta feeds are answered with `updatedSince`, and PostgREST needs a bare ISO instant:
+// fractional seconds and offsets are trimmed so `gt.` compares against a real timestamp.
+function normalizeSinceParam(raw) {
+  const s = (raw || "").trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return "";
+  return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`;
+}
+
+// Single-row existence probe used to satisfy a replayed create that the database answered with a
+// conflict instead of the merge the `on_conflict` upsert was asked for.
+async function studentRowExists(studentId) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/students?select=studentId&studentId=eq.${encodeURIComponent(studentId)}&limit=1`, {
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Accept-Profile": "cloudflare"
+      }
+    });
+    if (!res.ok) return false;
+    const found = await res.json();
+    return Array.isArray(found) && found.length > 0;
+  } catch (e) {
+    return false;
+  }
 }
 
 // PostgREST caps each response at db-max-rows (1000), so paginate with Range headers
@@ -1809,6 +1847,7 @@ export default {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Device-Id, X-Station-Role",
+      "Access-Control-Expose-Headers": "Content-Range, X-SB-Durable",
     };
 
     if (request.method === "OPTIONS") {
@@ -1819,18 +1858,15 @@ export default {
     // 1. HEALTH CHECK & DATABASE CONNECTIVITY
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/health") {
-      let liveCount = cachedAllStudents ? cachedAllStudents.length : 4500;
-      let dbConnected = true;
-      try {
-        const countRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=count`, {
-          headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}`, "Accept-Profile": "cloudflare" }
-        });
-        if (countRes.ok) {
-          const range = countRes.headers.get("content-range");
-          if (range) liveCount = parseInt(range.split("/")[1], 10) || liveCount;
-        }
-      } catch (e) {
-        dbConnected = false;
+      // Ask the same cheap ranged count the feed uses. `select=count` aggregates the whole
+      // table and has been cancelled by Supabase's statement timeout, which used to leave this
+      // endpoint reporting the hardcoded 4500 fallback as a live figure.
+      let liveCount = cachedAllStudents && cachedAllStudents.length > 0 ? cachedAllStudents.length : 0;
+      let dbConnected = false;
+      const scannedCount = await countSupabaseTable("students");
+      if (scannedCount > 0) {
+        dbConnected = true;
+        liveCount = scannedCount;
       }
 
       return new Response(
@@ -2169,9 +2205,16 @@ export default {
       const sectionParam = (url.searchParams.get("section") || "ALL").trim();
       const hiddenParam = url.searchParams.get("hidden"); // "true" or "false" or null
 
+      // Rows written at or after this instant. A delta answer is never the whole table, so the
+      // caller merges it instead of pruning against it. `or=` is already taken by search.
+      const since = search ? "" : normalizeSinceParam(url.searchParams.get("since"));
+
       // 1. Direct High-Speed Supabase Query (Indexed & Server-Paginated, <50ms)
       try {
         let sbQuery = `${SUPABASE_URL}/rest/v1/students?select=*&order=createdAt.desc,id.desc`;
+        if (since) {
+          sbQuery += `&or=(updatedAt.gt.${since},createdAt.gt.${since})`;
+        }
         if (hiddenParam === "true") {
           sbQuery += `&receiverHidden=eq.true`;
         } else if (hiddenParam === "false") {
@@ -2191,22 +2234,39 @@ export default {
         }
 
         let sbRes;
-        if (isAllRequested) {
+        let servedFromEdgeCache = false;
+        if (isAllRequested && !since) {
           // Only an unfiltered "all" request can be cross-checked against the whole table;
           // a filtered feed has no independent row budget to compare against.
           const unfiltered = !search && school === "ALL" && grade === "ALL" && !hiddenParam;
-          const dbCount = unfiltered ? await countSupabaseTable("students") : 0;
-          const { rows, total, complete } = await fetchSupabaseAllRows("students", sbQuery.split("?")[1], dbCount);
-          const expectedRows = Math.max(total, dbCount);
-          sbRes = {
+          const cacheAge = Date.now() - lastAllFetchTime;
+          if (unfiltered && cachedAllStudents && cachedAllStudents.length > 0 && cacheAge < FULL_FEED_CACHE_MS) {
+            const cachedFeed = cachedAllStudents.slice();
+            servedFromEdgeCache = true;
+            sbRes = {
+              ok: true,
+              headers: { get: (h) => h === "content-range" ? `0-${Math.max(0, cachedFeed.length - 1)}/${cachedFeed.length}` : null },
+              json: async () => cachedFeed
+            };
+          } else {
+            const dbCount = unfiltered ? await countSupabaseTable("students") : 0;
+            const { rows, total, complete } = await fetchSupabaseAllRows("students", sbQuery.split("?")[1], dbCount);
+            const expectedRows = Math.max(total, dbCount);
             // A truncated page set must never be presented as the whole table: stations
             // reconcile and prune their local copies against this answer, so a short feed can
             // make a full registry look like a few dozen students. When pages were lost, fall
             // through to the resilient cached dataset instead.
-            ok: rows.length > 0 && complete && (expectedRows === 0 || rows.length >= expectedRows),
-            headers: { get: (h) => h === "content-range" ? `0-${Math.max(0, rows.length - 1)}/${Math.max(expectedRows, rows.length)}` : null },
-            json: async () => rows
-          };
+            const fullScanArrived = rows.length > 0 && complete && (expectedRows === 0 || rows.length >= expectedRows);
+            if (fullScanArrived && unfiltered) {
+              cachedAllStudents = rows;
+              lastAllFetchTime = Date.now();
+            }
+            sbRes = {
+              ok: fullScanArrived,
+              headers: { get: (h) => h === "content-range" ? `0-${Math.max(0, rows.length - 1)}/${Math.max(expectedRows, rows.length)}` : null },
+              json: async () => rows
+            };
+          }
         } else {
           sbRes = await fetch(sbQuery, {
             headers: {
@@ -2255,6 +2315,7 @@ export default {
                 total,
                 totalPages,
                 count: sbStudents.length,
+                servedFrom: servedFromEdgeCache ? "edge-cache" : "database",
                 students: sbStudents
               }),
               {
@@ -2279,6 +2340,14 @@ export default {
         filtered = filtered.filter(s => s.receiverHidden === true);
       } else if (hiddenParam === "false") {
         filtered = filtered.filter(s => s.receiverHidden !== true);
+      }
+
+      if (since) {
+        const sinceMs = Date.parse(since) - 1000;
+        filtered = filtered.filter(s => {
+          const t = Date.parse(s.updatedAt || s.createdAt || "");
+          return Number.isFinite(t) && t >= sinceMs;
+        });
       }
 
       if (search || school !== "ALL" || grade !== "ALL" || sectionParam !== "ALL") {
@@ -2319,6 +2388,7 @@ export default {
           total,
           totalPages,
           count: students.length,
+          servedFrom: "edge-dataset",
           students
         }),
         {
@@ -2748,51 +2818,101 @@ export default {
         let insertedRecord = newStudent;
 
         // 3. Isolated R2 Recovery Artifact (immediate per-student file)
+        let r2RecordStored = false;
         try {
           const recBytes = new TextEncoder().encode(JSON.stringify(insertedRecord, null, 2));
           await uploadToR2Bucket(`records/${insertedRecord.studentId}.json`, recBytes, "application/json");
+          r2RecordStored = true;
         } catch (r2RecErr) {
           console.warn("R2 student persistence note:", r2RecErr);
         }
 
-        // Asynchronously update R2 records/live_registry.json in background so 30 concurrent senders return immediately
-        const updateLiveRegistryPromise = (async () => {
+        // R2 records/live_registry.json is the Cloudflare-side durable copy: it is the overlay
+        // every station's read path merges, so a record saved there is readable with Supabase
+        // entirely offline. Only the newest LIVE_REGISTRY_KEEP rows are kept, because
+        // saveLiveRegistryToR2 refuses to write a list past its guard — an uncapped registry
+        // would quietly stop persisting sends once it grew large enough.
+        const LIVE_REGISTRY_KEEP = 1500;
+        const persistToLiveRegistry = async () => {
           try {
-            let currentLiveReg = await getLiveRegistryFromR2();
-            if (Array.isArray(currentLiveReg)) {
-              const existingIdx = currentLiveReg.findIndex(r => r.studentId === insertedRecord.studentId);
-              if (existingIdx !== -1) {
-                currentLiveReg[existingIdx] = { ...currentLiveReg[existingIdx], ...insertedRecord };
-              } else {
-                currentLiveReg.unshift(insertedRecord);
-              }
-              await saveLiveRegistryToR2(currentLiveReg);
+            const currentLiveReg = await getLiveRegistryFromR2();
+            if (!Array.isArray(currentLiveReg)) return false;
+            const existingIdx = currentLiveReg.findIndex(r => r.studentId === insertedRecord.studentId);
+            if (existingIdx !== -1) {
+              currentLiveReg[existingIdx] = { ...currentLiveReg[existingIdx], ...insertedRecord };
+            } else {
+              currentLiveReg.unshift(insertedRecord);
             }
+            return await saveLiveRegistryToR2(currentLiveReg.slice(0, LIVE_REGISTRY_KEEP));
           } catch (r2RegErr) {
-            console.warn("R2 live registry async update note:", r2RegErr);
+            console.warn("R2 live registry update note:", r2RegErr);
+            return false;
           }
-        })();
-
-        if (ctx && typeof ctx.waitUntil === 'function') {
-          ctx.waitUntil(updateLiveRegistryPromise);
-        }
+        };
 
         // 4. Authoritative Write to Supabase cloudflare.students
-        try {
-          await fetch(`${SUPABASE_URL}/rest/v1/students?on_conflict=studentId`, {
-            method: "POST",
-            headers: {
-              "apikey": SUPABASE_KEY,
-              "Authorization": `Bearer ${SUPABASE_KEY}`,
-              "Content-Type": "application/json",
-              "Content-Profile": "cloudflare",
-              "Accept-Profile": "cloudflare",
-              "Prefer": "resolution=merge-duplicates"
-            },
-            body: JSON.stringify(dbInsertPayload)
+        let dbWriteOk = false;
+        let dbWriteDetail = "";
+        for (let attempt = 0; attempt < 2 && !dbWriteOk; attempt++) {
+          try {
+            const sbWriteRes = await fetch(`${SUPABASE_URL}/rest/v1/students?on_conflict=studentId`, {
+              method: "POST",
+              headers: {
+                "apikey": SUPABASE_KEY,
+                "Authorization": `Bearer ${SUPABASE_KEY}`,
+                "Content-Type": "application/json",
+                "Content-Profile": "cloudflare",
+                "Accept-Profile": "cloudflare",
+                "Prefer": "resolution=merge-duplicates"
+              },
+              body: JSON.stringify(dbInsertPayload)
+            });
+            dbWriteOk = sbWriteRes.ok;
+            if (!dbWriteOk) {
+              const writeBody = (await sbWriteRes.text().catch(() => "")).slice(0, 140);
+              dbWriteDetail = `HTTP ${sbWriteRes.status} ${writeBody}`;
+              // A replayed outbox create can legitimately answer with a conflict while the row is
+              // already in the table. That send is satisfied, so confirm the row exists rather
+              // than rejecting a record the database already holds.
+              if (sbWriteRes.status === 409 || /duplicate|conflict/i.test(writeBody)) {
+                dbWriteOk = await studentRowExists(insertedRecord.studentId);
+              }
+            }
+          } catch (sbInsertErr) {
+            dbWriteDetail = String(sbInsertErr).slice(0, 140);
+          }
+          if (!dbWriteOk && attempt === 0) await new Promise(r => setTimeout(r, 150));
+        }
+
+        let registryStored = false;
+        if (dbWriteOk) {
+          // The durable row already exists, so the Cloudflare overlay may catch up after the
+          // response and 30 concurrent senders keep returning immediately.
+          if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(persistToLiveRegistry());
+          else persistToLiveRegistry();
+        } else {
+          // Supabase refused the row, so Cloudflare R2 is the only way this send survives the
+          // isolate. Confirm that write before answering: a station removes the operation from
+          // its outbox on a 2xx, and a record held only in memory here is not a record.
+          registryStored = await persistToLiveRegistry();
+        }
+        const isDurable = dbWriteOk || registryStored;
+
+        if (!isDurable) {
+          // Answering 2xx here would let the station drop the operation from its outbox while the
+          // record exists nowhere but this isolate. Fail loudly so the queue keeps retrying the
+          // same studentId; the upsert is idempotent, so a replay cannot duplicate the student.
+          console.warn(`Send ${insertedRecord.studentId} not durable: supabase=${dbWriteDetail || 'failed'} r2Registry=${registryStored} r2Record=${r2RecordStored}`);
+          return new Response(JSON.stringify({
+            error: "NOT_DURABLE",
+            stored: false,
+            studentId: insertedRecord.studentId,
+            detail: dbWriteDetail,
+            r2RecordStored
+          }), {
+            status: 502,
+            headers: { "Content-Type": "application/json", ...corsHeaders }
           });
-        } catch (sbInsertErr) {
-          console.warn("Supabase student sync notice:", sbInsertErr);
         }
 
         const sidMatchLower = (insertedRecord.studentId || "").trim().toLowerCase();
@@ -2849,7 +2969,11 @@ export default {
 
         return new Response(JSON.stringify(insertedRecord), {
           status: 201,
-          headers: { "Content-Type": "application/json", ...corsHeaders }
+          headers: {
+            "Content-Type": "application/json",
+            "X-SB-Durable": dbWriteOk ? "supabase" : "cloudflare-r2",
+            ...corsHeaders
+          }
         });
       } catch (e) {
         return new Response(JSON.stringify({ error: e.message }), {
