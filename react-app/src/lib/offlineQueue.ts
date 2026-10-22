@@ -43,6 +43,25 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 /**
+ * Parse a cloud-write answer into a JSON object, or null when the server did not answer
+ * with JSON.
+ *
+ * HTTP 200 alone is not proof of a write: a Pages deployment whose edge Worker is not
+ * executing serves the SPA's HTML shell for /api/*, still with status 200. Treating that
+ * as success would drop the queued record, which on this station is the only copy left.
+ */
+export async function cloudJsonResponse(res: Response): Promise<any | null> {
+  try {
+    const text = await res.text();
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed[0] || null;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Queue an operation in IndexedDB for offline resilience
  */
 export async function queueOfflineOperation(type: PendingOperation['type'], payload: any): Promise<PendingOperation> {
@@ -176,59 +195,46 @@ async function runQueueFlush(): Promise<{ synced: number; failed: number }> {
 
   for (const op of ops) {
     try {
+      let res: Response | null = null;
+
       if (op.type === 'CREATE_STUDENT') {
-        const res = await fetch('/api/students', {
+        res = await fetch('/api/students', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify(op.payload)
         });
-
-        if (res.ok) {
-          await removePendingOperation(op.id);
-          synced++;
-        } else {
-          failed++;
-          await markOperationFailure(op, `HTTP ${res.status}`);
-        }
       } else if (op.type === 'UPDATE_STUDENT') {
-        const res = await fetch('/api/students', {
+        res = await fetch('/api/students', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify(op.payload)
         });
-        if (res.ok) {
-          await removePendingOperation(op.id);
-          synced++;
-        } else {
-          failed++;
-          await markOperationFailure(op, `HTTP ${res.status}`);
-        }
       } else if (op.type === 'DELETE_STUDENT') {
         const permanent = op.payload?.permanent ? '&permanent=true' : '';
-        const res = await fetch(`/api/students?id=${encodeURIComponent(op.payload.id || op.payload.studentId)}${permanent}`, {
+        res = await fetch(`/api/students?id=${encodeURIComponent(op.payload.id || op.payload.studentId)}${permanent}`, {
           method: 'DELETE',
           headers: { ...getAuthHeaders() }
         });
-        if (res.ok) {
-          await removePendingOperation(op.id);
-          synced++;
-        } else {
-          failed++;
-          await markOperationFailure(op, `HTTP ${res.status}`);
-        }
       } else if (op.type === 'UPLOAD_PHOTO') {
-        const res = await fetch('/api/upload', {
+        res = await fetch('/api/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify(op.payload)
         });
-        if (res.ok) {
-          await removePendingOperation(op.id);
-          synced++;
-        } else {
-          failed++;
-          await markOperationFailure(op, `HTTP ${res.status}`);
-        }
+      }
+      if (!res) continue;
+
+      const body = await cloudJsonResponse(res);
+      // A duplicate studentId means the record is already in the database, so the queued
+      // create has effectively been satisfied and must not retry forever.
+      const duplicate = res.status === 409 || body?.error === 'DUPLICATE_ID';
+
+      if (duplicate || (res.ok && body)) {
+        await removePendingOperation(op.id);
+        synced++;
+      } else {
+        failed++;
+        await markOperationFailure(op, res.ok ? 'edge API returned no JSON (backend not executing)' : `HTTP ${res.status}`);
       }
     } catch (err) {
       failed++;

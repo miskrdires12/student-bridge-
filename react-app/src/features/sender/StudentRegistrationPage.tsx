@@ -12,7 +12,7 @@ import {
   generateStudentQrToken, getCorrectionLogs, CorrectionLog, getAuthHeaders,
   incrementSenderLiveCaptures, getPhotoUrl, refreshFleetTelemetry
 } from '@/lib/store';
-import { queueOfflineOperation } from '@/lib/offlineQueue';
+import { queueOfflineOperation, cloudJsonResponse } from '@/lib/offlineQueue';
 import { Student } from '@/types';
 import { PhoneCropModal } from '@/components/PhoneCropModal';
 import { CameraCaptureModal } from '@/components/CameraCaptureModal';
@@ -55,8 +55,14 @@ export const StudentRegistrationPage: React.FC = () => {
 
   // Helper for generating an ID
   const generateNewId = () => {
-    const randomNum = Math.floor(10000 + Math.random() * 90000);
-    return `SB-2026-${randomNum}`;
+    // 90k possible IDs against a 6k-record registry makes collisions routine, and a
+    // collision used to hand the operator a taken ID that disabled the primary button.
+    const taken = new Set(getStudents().map(s => (s.studentId || '').trim().toUpperCase()));
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const candidate = `SB-2026-${Math.floor(10000 + Math.random() * 90000)}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return `SB-2026-${Date.now().toString(36).toUpperCase()}`;
   };
 
   const draftKey = `sb_reg_draft_${((user?.username || user?.email || 'field-operator') as string).toLowerCase().trim()}`;
@@ -116,6 +122,9 @@ export const StudentRegistrationPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatusText, setSubmitStatusText] = useState('');
   const [submittedStudent, setSubmittedStudent] = useState<Student | null>(null);
+  // false = the record lives on this station and in the outbox only; the green
+  // "cloud verified" banner must not be shown for it.
+  const [cloudVerified, setCloudVerified] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const schools = getSchools();
@@ -406,9 +415,21 @@ export const StudentRegistrationPage: React.FC = () => {
       };
 
       // 1. SHORT-RANGE TRANSMISSION: Instantly commit to local memory, localStorage & broadcast to local tabs (0ms)
-      // Note: addStudent already increments the sender live captures exactly once (+1 single count).
-      addStudent(localStudentPayload);
-      refreshMetrics();
+      // Retrying a transmission must reuse the record that is already on this station —
+      // addStudent counts every call, so re-adding the same studentId would inflate the
+      // sender totals shown on the dashboards.
+      const existingLocal = getStudents().find(s =>
+        s.id === localStudentPayload.id ||
+        (s.studentId || '').trim().toUpperCase() === localStudentPayload.studentId.trim().toUpperCase()
+      );
+      if (existingLocal) {
+        localStudentPayload.id = existingLocal.id;
+        updateStudent(existingLocal.id, localStudentPayload);
+      } else {
+        // Note: addStudent increments the sender live captures exactly once (+1 single count).
+        addStudent(localStudentPayload);
+        refreshMetrics();
+      }
 
       // 2. LONG-RANGE TRANSMISSION: Send to Supabase PostgreSQL + Cloudflare R2
       setSubmitStatusText('Delivering record & photo to cloud repository...');
@@ -427,32 +448,42 @@ export const StudentRegistrationPage: React.FC = () => {
           body: JSON.stringify(cloudPayload)
         });
 
-        if (res.ok) {
-          const cloudSaved = await res.json().catch(() => ({}));
+        const cloudSaved = res.ok ? await cloudJsonResponse(res) : null;
+
+        if (res.status === 409 || cloudSaved?.error === 'DUPLICATE_ID') {
+          // Already in the database: nothing to re-send, and the operator must not be
+          // trapped on a record the cloud rejected.
+          setSubmittedStudent(localStudentPayload);
+          setCloudVerified(false);
+          setSubmitStatusText('Student ID already exists in the cloud database — kept on this station.');
+          setSubmitError('Notice: this Student ID was already recorded in the database. The local record is kept so nothing is lost; you can register the next student now.');
+        } else if (cloudSaved) {
           const confirmedStudent = {
             ...localStudentPayload,
-            ...(cloudSaved || {}),
+            ...cloudSaved,
             capturedPhoto,
             photoBase64: capturedPhoto
           };
           updateStudent(localStudentPayload.id, confirmedStudent);
-          // Success message appears strictly when verified and delivered!
+          // Success message appears strictly when the server answered with the saved row!
           setSubmittedStudent(confirmedStudent);
-          setSubmitStatusText('✓ 100% Delivered! Record & biometric photo secured.');
+          setCloudVerified(true);
+          setSubmitStatusText('✓ Record delivered to Supabase. Uploading HD photo to Cloudflare R2...');
         } else {
-          const errData = await res.json().catch(() => ({}));
-          if (res.status === 409 || errData.error === 'DUPLICATE_ID') {
-            setIsIdTaken(true);
-            setSubmitError('Notice: Student ID was already recorded in database. Local student kept.');
-          } else {
-            await queueOfflineOperation('CREATE_STUDENT', cloudPayload).catch(() => {});
-            setSubmitStatusText('Queued for offline delivery. Will sync when server is reachable.');
-          }
+          // HTTP 200 with the SPA HTML shell means the edge Worker is not executing — the
+          // record was NOT written. Keep it in the outbox instead of reporting delivery.
+          await queueOfflineOperation('CREATE_STUDENT', cloudPayload).catch(() => {});
+          setSubmittedStudent(localStudentPayload);
+          setCloudVerified(false);
+          setSubmitStatusText('Saved on this station and queued — the cloud did not answer, so it will sync automatically.');
+          if (!res.ok) setSubmitError(`The server rejected the record (HTTP ${res.status}). It is safe on this station and in the outbox; you can register the next student now.`);
         }
       } catch (netErr) {
         // Offline or slow cloud connection: automatically queued for background sync
         await queueOfflineOperation('CREATE_STUDENT', cloudPayload).catch(() => {});
-        setSubmitStatusText('Queued for offline delivery. Will sync when server is reachable.');
+        setSubmittedStudent(localStudentPayload);
+        setCloudVerified(false);
+        setSubmitStatusText('Saved on this station and queued for offline delivery. Will sync when the server is reachable.');
       }
 
       // Operator UI instantly unlocks so they can immediately proceed!
@@ -460,51 +491,46 @@ export const StudentRegistrationPage: React.FC = () => {
 
       // 3. LONG-RANGE STAGE 2 (Telegram Protocol Background HD Upload):
       // Asynchronously upload full-resolution original photo to Cloudflare R2 bucket 'siliconlabs'
+      const photoOperation = {
+        studentId: studentId.trim(),
+        grade: cleanGrade,
+        fullName: cleanName,
+        filename: photoKey,
+        data: capturedPhoto
+      };
       (async () => {
         try {
           const upRes = await fetch('/api/upload', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({
-              studentId: studentId.trim(),
-              grade: cleanGrade,
-              fullName: cleanName,
-              filename: photoKey,
-              data: capturedPhoto // Original full-resolution HD photo
-            })
+            body: JSON.stringify(photoOperation)
           });
 
-          if (upRes.ok) {
-            const upData = await upRes.json().catch(() => ({}));
-            const r2PhotoUrl = upData.url || upData.r2Url || expectedPhotoUrl;
+          const upData = upRes.ok ? await cloudJsonResponse(upRes) : null;
+          // Only a JSON answer from the Worker proves the object reached the bucket; the
+          // HTML shell on a 200 would otherwise mark an absent photo as verified.
+          if (upData && (upData.url || upData.r2Url || upData.key)) {
+            const r2PhotoUrl = upData.r2Url || upData.url || expectedPhotoUrl;
             updateStudent(localStudentPayload.id, {
-              photoPath: r2PhotoUrl,
-              originalPhotoPath: upData.r2Url || r2PhotoUrl,
-              previewPath: r2PhotoUrl,
+              photoPath: upData.url || r2PhotoUrl,
+              originalPhotoPath: r2PhotoUrl,
+              previewPath: upData.url || r2PhotoUrl,
               capturedPhoto: capturedPhoto,
               photoBase64: capturedPhoto,
               photoIntegrityStatus: 'PHOTO_VERIFIED'
             });
-            setSubmitStatusText('✓ 100% Complete: Record & Cloudflare R2 HD photo secured');
+            setSubmitStatusText('✓ HD portrait stored in Cloudflare R2');
           } else {
-            // Server error: queue in offlineQueue for automatic background retry
-            await queueOfflineOperation('UPLOAD_PHOTO', {
-              studentId: studentId.trim(),
-              grade: cleanGrade,
-              fullName: cleanName,
-              filename: photoKey,
-              data: capturedPhoto
-            }).catch(() => {});
+            // Server error or inactive edge API: queue for automatic background retry
+            await queueOfflineOperation('UPLOAD_PHOTO', photoOperation).catch(() => {});
+            updateStudent(localStudentPayload.id, { photoIntegrityStatus: 'PENDING_CLOUD_UPLOAD' });
+            setSubmitStatusText(prev => `${prev} HD photo queued for Cloudflare R2 upload.`);
           }
         } catch (uploadErr) {
           // Cellular drop or offline: queue for automatic background retry
-          await queueOfflineOperation('UPLOAD_PHOTO', {
-            studentId: studentId.trim(),
-            grade: cleanGrade,
-            fullName: cleanName,
-            filename: photoKey,
-            data: capturedPhoto
-          }).catch(() => {});
+          await queueOfflineOperation('UPLOAD_PHOTO', photoOperation).catch(() => {});
+          updateStudent(localStudentPayload.id, { photoIntegrityStatus: 'PENDING_CLOUD_UPLOAD' });
+          setSubmitStatusText(prev => `${prev} HD photo queued for Cloudflare R2 upload.`);
         }
       })();
     } catch (err: any) {
@@ -536,6 +562,7 @@ export const StudentRegistrationPage: React.FC = () => {
     setZoom(1);
     setAspectRatio('3:4');
     setSubmittedStudent(null);
+    setCloudVerified(false);
     setSubmitError(null);
     refreshMetrics();
   };
@@ -697,21 +724,31 @@ export const StudentRegistrationPage: React.FC = () => {
         </div>
       )}
 
-      {/* Live Long-Range Transmission Confirmed & Verified Banner */}
+      {/* Long-Range Transmission Banner: green only for a server-confirmed write, amber for
+          a record that is safe on this station and waiting in the outbox. Both unlock the
+          next registration — the operator is never trapped behind an unreachable server. */}
       {submittedStudent && (
-        <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-emerald-950 via-slate-900 to-[#0e1d09] border-2 border-[#85E510] text-white shadow-xl space-y-3 animate-in fade-in zoom-in-95 duration-200">
+        <div className={`p-4 sm:p-5 rounded-2xl bg-gradient-to-r ${cloudVerified
+            ? 'from-emerald-950 via-slate-900 to-[#0e1d09] border-2 border-[#85E510]'
+            : 'from-amber-950 via-slate-900 to-[#241703] border-2 border-amber-400'} text-white shadow-xl space-y-3 animate-in fade-in zoom-in-95 duration-200`}>
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-emerald-800/60 pb-3">
             <div className="flex items-center gap-2.5">
-              <span className="w-3 h-3 rounded-full bg-[#85E510] animate-pulse shrink-0" />
+              <span className={`w-3 h-3 rounded-full animate-pulse shrink-0 ${cloudVerified ? 'bg-[#85E510]' : 'bg-amber-400'}`} />
               <div>
-                <div className="font-heading font-black text-sm text-[#85E510] uppercase tracking-wide flex items-center gap-2">
-                  <span>Long-Range Transmission Confirmed &amp; Verified</span>
-                  <span className="px-2 py-0.5 rounded-full bg-[#85E510]/20 text-[#85E510] border border-[#85E510]/40 text-[10px] font-mono font-bold">
-                    R2 + Supabase Synchronized
+                <div className={`font-heading font-black text-sm uppercase tracking-wide flex items-center gap-2 ${cloudVerified ? 'text-[#85E510]' : 'text-amber-300'}`}>
+                  <span>{cloudVerified ? 'Long-Range Transmission Confirmed & Verified' : 'Saved on This Station — Waiting for the Cloud'}</span>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold border ${cloudVerified
+                      ? 'bg-[#85E510]/20 text-[#85E510] border-[#85E510]/40'
+                      : 'bg-amber-400/20 text-amber-200 border-amber-400/40'}`}>
+                    {cloudVerified ? 'R2 + Supabase Synchronized' : 'In station outbox'}
                   </span>
                 </div>
                 <p className="text-xs text-slate-300 mt-0.5">
-                  Delivered on: <strong className="text-white">{new Date().toLocaleTimeString()}</strong> &bull; Date: <strong className="text-white">{new Date().toISOString().substring(0, 10)}</strong> &bull; Station: <span className="text-[#85E510] font-bold">Receiver Verified</span>
+                  {cloudVerified ? (
+                    <>Delivered on: <strong className="text-white">{new Date().toLocaleTimeString()}</strong> &bull; Date: <strong className="text-white">{new Date().toISOString().substring(0, 10)}</strong> &bull; Station: <span className="text-[#85E510] font-bold">Receiver Verified</span></>
+                  ) : (
+                    <>{submitStatusText || 'Stored on this station; it will transmit automatically when the server answers.'}</>
+                  )}
                 </p>
               </div>
             </div>
@@ -720,7 +757,9 @@ export const StudentRegistrationPage: React.FC = () => {
               <button
                 type="button"
                 onClick={resetFormForNext}
-                className="w-full sm:w-auto py-2 px-4 rounded-xl bg-[#85E510] hover:bg-[#76cf0c] text-[#062404] font-black text-xs flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer"
+                className={`w-full sm:w-auto py-2 px-4 rounded-xl text-[#062404] font-black text-xs flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer ${cloudVerified
+                    ? 'bg-[#85E510] hover:bg-[#76cf0c]'
+                    : 'bg-amber-300 hover:bg-amber-200'}`}
               >
                 <span>Register Next Student</span>
                 <ArrowRight className="w-4 h-4" />
@@ -769,7 +808,7 @@ export const StudentRegistrationPage: React.FC = () => {
               <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
               <div>
                 <div className="font-heading font-black text-sm text-rose-900 uppercase tracking-tight flex items-center gap-2">
-                  <span>Upload Incomplete — Next Student Blocked</span>
+                  <span>{submittedStudent ? 'Transmission Not Confirmed' : 'Upload Incomplete — Nothing Transmitted'}</span>
                   <span className="px-2 py-0.5 rounded-full bg-rose-200 text-rose-900 text-[10px] font-black">
                     Action Required
                   </span>
@@ -778,7 +817,9 @@ export const StudentRegistrationPage: React.FC = () => {
                   {submitError}
                 </p>
                 <p className="text-[11px] text-rose-700 font-medium mt-1">
-                  Per system rules, you cannot proceed to register the next student until this student's full biometric photograph and record are confirmed by the receiver server.
+                  {submittedStudent
+                    ? 'The student is safe on this station and in its outbox, and this page retries the transmission by itself. You can register the next student now.'
+                    : 'Nothing left this station. Complete the highlighted item and transmit again, or press Clear Form to start over.'}
                 </p>
               </div>
             </div>
@@ -801,6 +842,16 @@ export const StudentRegistrationPage: React.FC = () => {
               <RefreshCw className={`w-3.5 h-3.5 ${isSubmitting ? 'animate-spin' : ''}`} />
               <span>Retry Transmission Now</span>
             </button>
+            {submittedStudent && (
+              <button
+                type="button"
+                onClick={resetFormForNext}
+                className="py-2 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-black text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+              >
+                <span>Register Next Student</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -1279,7 +1330,7 @@ export const StudentRegistrationPage: React.FC = () => {
             <button
               type={submittedStudent ? "button" : "submit"}
               onClick={submittedStudent ? resetFormForNext : undefined}
-              disabled={isSubmitting || isIdTaken || (!submittedStudent && !fullName.trim())}
+              disabled={isSubmitting || (!submittedStudent && (isIdTaken || !fullName.trim()))}
               className="w-full sm:flex-1 py-3.5 px-5 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] disabled:opacity-50 text-[#062404] font-heading font-black text-sm shadow-[0_4px_15px_rgba(133,229,16,0.3)] transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
               {isSubmitting ? (
@@ -1290,7 +1341,7 @@ export const StudentRegistrationPage: React.FC = () => {
               ) : submittedStudent ? (
                 <>
                   <ArrowRight className="w-4 h-4 text-[#062404]" />
-                  <span>Student Delivered &bull; Click to Register Next</span>
+                  <span>{cloudVerified ? 'Student Delivered' : 'Student Kept on Station'} &bull; Click to Register Next</span>
                 </>
               ) : (
                 <>
