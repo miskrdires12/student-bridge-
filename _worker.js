@@ -194,6 +194,325 @@ function normalizeStudentTimeFields(s) {
 }
 
 // -----------------------------------------------------------------------------
+// D1 — the row store that lives on the same edge as this worker
+// -----------------------------------------------------------------------------
+//
+// A Supabase page request leaves the edge for a Postgres connection on the other side of the ocean
+// and answers in 40-89 seconds; the same keyset query against D1 measured 0.7 ms. D1 is also
+// strongly consistent, so a row written here is readable by the next request even when that request
+// lands on a different isolate - which the R2 live_registry overlay could not promise while the
+// write that should have created it was timing out.
+// Everything below is inert until the Pages project carries an `SB_D1` binding, so a deploy without
+// one behaves exactly as the build that ships today.
+
+const D1_COLUMNS = [
+  "studentId", "id", "fullName", "phone", "sex", "grade", "dateOfBirth", "emailAddress", "address",
+  "school", "department", "academicYear", "guardianFullName", "emergencyContactName",
+  "emergencyContactPhone", "contactName", "cityRegion", "bloodType", "rollNumber", "nationality",
+  "nationalId", "photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "qrCodeData",
+  "senderId", "senderName", "originStation", "photoIntegrityStatus", "storageKey", "storageSyncAt",
+  "status", "receiverHidden", "hiddenAt", "batchId", "organizationId", "createdAt", "updatedAt",
+  "receiverNote", "hasMistake", "parentPhone", "emergency_contact_phone", "guardianPhone"
+];
+
+const D1_TIME_COLS = new Set(["createdAt", "updatedAt", "hiddenAt", "storageSyncAt"]);
+const D1_BOOL_COLS = new Set(["receiverHidden", "hasMistake"]);
+// The table carries one snake_case column the records only ever spell in camelCase.
+const D1_COL_ALIASES = { emergency_contact_phone: "emergencyContactPhone" };
+
+function d1Ready(env) {
+  return !!(env && env.SB_D1 && typeof env.SB_D1.prepare === "function");
+}
+
+function d1Value(col, raw, fallbackId) {
+  if (col === "studentId") return fallbackId;
+  // These two are NOT NULL in the schema, so an absent flag must mean false rather than an empty cell.
+  if (D1_BOOL_COLS.has(col)) return (raw === true || raw === 1 || raw === "true" || raw === "1") ? 1 : 0;
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw === "object") return JSON.stringify(raw);
+  const text = String(raw);
+  return D1_TIME_COLS.has(col) ? toUtcInstant(text) : text;
+}
+
+const D1_UPSERT_SQL = `INSERT OR REPLACE INTO students (${D1_COLUMNS.join(", ")}) ` +
+  `VALUES (${D1_COLUMNS.map(() => "?").join(", ")})`;
+
+function d1RowValues(row) {
+  const id = String((row && (row.studentId || row.id)) || "").trim();
+  if (!id) return null;
+  return D1_COLUMNS.map(col => {
+    let raw = row[col];
+    if (raw === undefined && D1_COL_ALIASES[col]) raw = row[D1_COL_ALIASES[col]];
+    return d1Value(col, raw, id);
+  });
+}
+
+async function writeStudentToD1(env, student) {
+  if (!d1Ready(env)) return false;
+  const values = d1RowValues(student || {});
+  if (!values) return false;
+  try {
+    // Bound parameters, not string concatenation: a name carrying an apostrophe would otherwise be
+    // the end of the statement.
+    await env.SB_D1.prepare(D1_UPSERT_SQL).bind(...values).run();
+    return true;
+  } catch (d1WriteErr) {
+    console.warn("D1 student write note:", d1WriteErr);
+    return false;
+  }
+}
+
+// An APK batch push arrives as one array of records. D1's `.batch()` sends many statements in a
+// single round trip; the chunk size keeps that request small enough that no individual statement
+// approaches the limit where D1 answers SQLITE_TOOBIG.
+async function writeStudentsToD1Batch(env, rows) {
+  if (!d1Ready(env) || !Array.isArray(rows) || rows.length === 0) return 0;
+  let written = 0;
+  const D1_BATCH_CHUNK = 25;
+  for (let i = 0; i < rows.length; i += D1_BATCH_CHUNK) {
+    const stmts = [];
+    for (const row of rows.slice(i, i + D1_BATCH_CHUNK)) {
+      const values = d1RowValues(row);
+      if (values) stmts.push(env.SB_D1.prepare(D1_UPSERT_SQL).bind(...values));
+    }
+    if (!stmts.length) continue;
+    try {
+      await env.SB_D1.batch(stmts);
+      written += stmts.length;
+    } catch (d1BatchErr) {
+      console.warn("D1 batch write note:", d1BatchErr);
+      break;
+    }
+  }
+  return written;
+}
+
+async function readStudentFromD1(env, key) {
+  if (!d1Ready(env)) return null;
+  try {
+    const row = await env.SB_D1.prepare("SELECT * FROM students WHERE studentId = ? OR id = ? LIMIT 1")
+      .bind(key, key).first();
+    // Hydrated on the way out so a caller never sees 0/1 where the rest of the system says true/false.
+    return row ? d1HydrateStudent(row) : null;
+  } catch (d1ReadErr) {
+    console.warn("D1 student read note:", d1ReadErr);
+    return null;
+  }
+}
+
+// A PATCH is applied as read-merge-replace rather than a column UPDATE. An UPDATE would silently
+// match zero rows when the record reached Postgres but not D1, and the two stores would drift apart
+// with nothing reporting it; the merge writes the row back whole and heals that gap.
+async function patchStudentInD1(env, studentId, patch) {
+  if (!d1Ready(env)) return false;
+  const existing = await readStudentFromD1(env, studentId);
+  const merged = Object.assign({}, existing || {}, patch || {});
+  merged.studentId = (existing && existing.studentId) || merged.studentId || studentId;
+  return writeStudentToD1(env, merged);
+}
+
+// Returns the number of rows actually removed, so a delete that matched nothing cannot be
+// reported as a completed purge.
+async function deleteStudentFromD1(env, key) {
+  if (!d1Ready(env)) return 0;
+  try {
+    const res = await env.SB_D1.prepare("DELETE FROM students WHERE studentId = ? OR id = ?")
+      .bind(key, key).run();
+    return (res && res.meta && res.meta.changes) || 0;
+  } catch (d1DeleteErr) {
+    console.warn("D1 student delete note:", d1DeleteErr);
+    return 0;
+  }
+}
+
+// The table's time columns are all fixed-width UTC with a trailing Z, so a string comparison gives
+// the same order the instants have. Re-emitting the cursor through toISOString is what keeps that
+// true: a caller that sends an offset or a fractional-seconds difference still compares correctly.
+function d1CanonicalInstant(value) {
+  const raw = toUtcInstant(value);
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : raw;
+}
+
+function d1HydrateStudent(row) {
+  if (!row || typeof row !== "object") return row;
+  row.receiverHidden = row.receiverHidden === 1 || row.receiverHidden === true;
+  row.hasMistake = row.hasMistake === 1 || row.hasMistake === true;
+  return normalizeStudentWireFields(row);
+}
+
+const D1_SORT_COLS = new Set(["createdAt", "updatedAt", "fullName", "grade", "school", "studentId", "status"]);
+
+// Every filter the feed has ever supported, expressed once. The rows and the total are produced by
+// the same WHERE clause, which is the only way a header count can agree with the list below it.
+function d1FeedWhere(opts) {
+  const clauses = [];
+  const binds = [];
+  const o = opts || {};
+  if (o.hidden === "true") {
+    clauses.push("receiverHidden = 1");
+  } else if (o.hidden === "false") {
+    clauses.push("receiverHidden = 0");
+  }
+  if (o.since) {
+    const cursor = d1CanonicalInstant(o.since);
+    clauses.push("(updatedAt > ? OR createdAt > ?)");
+    binds.push(cursor, cursor);
+  }
+  if (o.search) {
+    const like = `%${String(o.search).toLowerCase()}%`;
+    clauses.push("(lower(fullName) LIKE ? OR lower(studentId) LIKE ? OR lower(phone) LIKE ?)");
+    binds.push(like, like, like);
+  }
+  if (o.school && o.school !== "ALL") {
+    clauses.push("lower(school) LIKE ?");
+    binds.push(`%${String(o.school).toLowerCase()}%`);
+  }
+  if (o.grade && o.grade !== "ALL") {
+    clauses.push("grade = ?");
+    binds.push(String(o.grade));
+  }
+  return { clause: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", binds };
+}
+
+// One page of the feed plus the exact number of rows the same filter matches. Returns null when the
+// project carries no SB_D1 binding or the query fails, so the caller falls back to Supabase.
+async function queryStudentFeedFromD1(env, opts) {
+  if (!d1Ready(env)) return null;
+  const o = opts || {};
+  const { clause, binds } = d1FeedWhere(o);
+  const sortCol = D1_SORT_COLS.has(o.sort) ? o.sort : "createdAt";
+  const dir = String(o.order || "").toLowerCase() === "asc" ? "ASC" : "DESC";
+  const limit = Math.min(2000, Math.max(1, parseInt(o.limit, 10) || 500));
+  const offset = Math.max(0, parseInt(o.offset, 10) || 0);
+  try {
+    const countRow = await env.SB_D1.prepare(`SELECT COUNT(*) AS n FROM students ${clause}`)
+      .bind(...binds).first();
+    const total = (countRow && Number(countRow.n)) || 0;
+    const page = await env.SB_D1.prepare(
+      `SELECT * FROM students ${clause} ORDER BY ${sortCol} ${dir}, studentId ASC LIMIT ${limit} OFFSET ${offset}`
+    ).bind(...binds).all();
+    const students = ((page && page.results) || []).map(d1HydrateStudent);
+    return { students, total, limit, offset };
+  } catch (d1FeedErr) {
+    console.warn("D1 feed query note:", d1FeedErr);
+    return null;
+  }
+}
+
+// The legacy `?all=true` answer the APK depends on. Reading it in fixed-size pages keeps each
+// statement small and still returns the whole table; the count comes from the same filter, so the
+// header number and the list length are the same measurement rather than two that can drift apart.
+async function queryAllStudentsFromD1(env, opts) {
+  if (!d1Ready(env)) return null;
+  const PAGE = 1000;
+  const MAX_PAGES = 25;
+  const all = [];
+  let total = 0;
+  try {
+    const { clause, binds } = d1FeedWhere(opts);
+    const countRow = await env.SB_D1.prepare(`SELECT COUNT(*) AS n FROM students ${clause}`)
+      .bind(...binds).first();
+    total = (countRow && Number(countRow.n)) || 0;
+    const sortCol = D1_SORT_COLS.has((opts && opts.sort)) ? opts.sort : "createdAt";
+    const dir = String((opts && opts.order) || "").toLowerCase() === "asc" ? "ASC" : "DESC";
+    for (let i = 0; i < MAX_PAGES; i++) {
+      const page = await env.SB_D1.prepare(
+        `SELECT * FROM students ${clause} ORDER BY ${sortCol} ${dir}, studentId ASC LIMIT ${PAGE} OFFSET ${i * PAGE}`
+      ).bind(...binds).all();
+      const rows = (page && page.results) || [];
+      all.push(...rows.map(d1HydrateStudent));
+      if (rows.length < PAGE) break;
+    }
+    return { students: all, total };
+  } catch (d1AllErr) {
+    console.warn("D1 full feed query note:", d1AllErr);
+    return null;
+  }
+}
+
+// Every dashboard counter in one statement. Five separate count queries were five different
+// instants, and a retry that gave up on one of them let "this month" fall back to a number
+// measured against a different table state than "total" - which is exactly how a station came to
+// display 6,087 records held against 5,742 shown. One aggregate cannot disagree with itself.
+async function queryStatsFromD1(env, opts) {
+  if (!d1Ready(env)) return null;
+  const o = opts || {};
+  const where = [];
+  const whereBinds = [];
+  if (o.school && o.school !== "ALL") {
+    where.push("lower(school) LIKE ?");
+    whereBinds.push(`%${String(o.school).toLowerCase()}%`);
+  }
+  const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  // Second precision on both sides: the stored instants vary in whether they carry fractional
+  // seconds, and a fixed-length substring comparison keeps that from flipping a same-second tie.
+  const periodBinds = [o.todayStartIso, o.weekStartIso, o.monthStartIso]
+    .map(v => d1CanonicalInstant(v));
+  try {
+    const row = await env.SB_D1.prepare(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN photoIntegrityStatus = 'PHOTO_VERIFIED' THEN 1 ELSE 0 END) AS photos,
+              SUM(CASE WHEN substr(createdAt, 1, 19) >= substr(?, 1, 19) THEN 1 ELSE 0 END) AS today,
+              SUM(CASE WHEN substr(createdAt, 1, 19) >= substr(?, 1, 19) THEN 1 ELSE 0 END) AS week,
+              SUM(CASE WHEN substr(createdAt, 1, 19) >= substr(?, 1, 19) THEN 1 ELSE 0 END) AS month
+         FROM students ${clause}`
+      // Placeholders bind in the order they appear in the text, so the three period bounds come
+      // before the scope filter that sits in the WHERE clause.
+    ).bind(...periodBinds, ...whereBinds).first();
+    if (!row) return null;
+    return {
+      total: Number(row.total) || 0,
+      photos: Number(row.photos) || 0,
+      today: Number(row.today) || 0,
+      week: Number(row.week) || 0,
+      month: Number(row.month) || 0
+    };
+  } catch (d1StatsErr) {
+    console.warn("D1 stats query note:", d1StatsErr);
+    return null;
+  }
+}
+
+// The store the feed reads from must be the store health counts, or the operator sees one total in
+// the header and another in the directory.
+async function countStudentsInD1(env) {
+  if (!d1Ready(env)) return 0;
+  try {
+    const row = await env.SB_D1.prepare("SELECT COUNT(*) AS n FROM students").first();
+    return (row && Number(row.n)) || 0;
+  } catch (d1CountErr) {
+    console.warn("D1 count note:", d1CountErr);
+    return 0;
+  }
+}
+
+// The fleet counter walks the whole table. Reading it in fixed pages from D1 rather than from
+// Postgres is what lets its total be the same measurement as /api/stats rather than a second one
+// taken at a different instant.
+async function readFleetRowsFromD1(env) {
+  if (!d1Ready(env)) return null;
+  const PAGE = 1000;
+  const MAX_PAGES = 30;
+  const out = [];
+  try {
+    for (let i = 0; i < MAX_PAGES; i++) {
+      const res = await env.SB_D1.prepare(
+        `SELECT id, studentId, senderName, senderId, createdAt, school FROM students
+          ORDER BY createdAt DESC, studentId ASC LIMIT ${PAGE} OFFSET ${i * PAGE}`
+      ).all();
+      const rows = (res && res.results) || [];
+      out.push(...rows);
+      if (rows.length < PAGE) break;
+    }
+    return out;
+  } catch (d1FleetErr) {
+    console.warn("D1 fleet read note:", d1FleetErr);
+    return null;
+  }
+}
+
+// -----------------------------------------------------------------------------
 // SERVER-SIDE CRYPTOGRAPHIC JWT SESSION & RBAC SYSTEM (Web Crypto API)
 // -----------------------------------------------------------------------------
 
@@ -1671,15 +1990,18 @@ function sumDailyKeys(dailyMap, dayKeys) {
   return sum;
 }
 
-async function buildSenderFleetTelemetry() {
+async function buildSenderFleetTelemetry(env) {
   if (fleetTelemetryCache && Date.now() - fleetTelemetryCache.at < 60000) {
     return fleetTelemetryCache.payload;
   }
 
-  const [studentRes, usersRes] = await Promise.all([
-    fetchSupabaseAllRows("students", "select=id,studentId,senderName,senderId,createdAt,school&order=createdAt.desc,id.desc"),
-    fetchSupabaseAllRows("users", "select=*")
+  const [d1FleetRows, usersRes, sbFleetRows] = await Promise.all([
+    readFleetRowsFromD1(env),
+    fetchSupabaseAllRows("users", "select=*"),
+    d1Ready(env) ? Promise.resolve(null) : fetchSupabaseAllRows(
+      "students", "select=id,studentId,senderName,senderId,createdAt,school&order=createdAt.desc,id.desc")
   ]);
+  const studentRows = d1FleetRows || (sbFleetRows && sbFleetRows.rows) || [];
   const settings = await getPlatformSettings();
 
   const now = Date.now();
@@ -1697,7 +2019,7 @@ async function buildSenderFleetTelemetry() {
   let unattributedRecords = 0;
   let untimestampedRecords = 0;
 
-  for (const r of studentRes.rows) {
+  for (const r of studentRows) {
     const sid = String(r.studentId || r.id || "").trim().toLowerCase();
     if (!sid || seenStudentIds.has(sid)) continue;
     seenStudentIds.add(sid);
@@ -2042,10 +2364,18 @@ export default {
       // endpoint reporting the hardcoded 4500 fallback as a live figure.
       let liveCount = cachedAllStudents && cachedAllStudents.length > 0 ? cachedAllStudents.length : 0;
       let dbConnected = false;
-      const scannedCount = await countSupabaseTable("students");
-      if (scannedCount > 0) {
+      let rowStore = "Supabase PostgreSQL & Cloudflare R2";
+      const d1RowCount = await countStudentsInD1(env);
+      if (d1RowCount > 0) {
         dbConnected = true;
-        liveCount = scannedCount;
+        liveCount = d1RowCount;
+        rowStore = "Cloudflare D1 (authoritative) + Supabase PostgreSQL";
+      } else {
+        const scannedCount = await countSupabaseTable("students");
+        if (scannedCount > 0) {
+          dbConnected = true;
+          liveCount = scannedCount;
+        }
       }
 
       return new Response(
@@ -2056,7 +2386,7 @@ export default {
           domain: url.hostname,
           time: new Date().toISOString(),
           database: {
-            provider: "Supabase PostgreSQL & Cloudflare R2",
+            provider: rowStore,
             schema: "cloudflare",
             table: "cloudflare.students",
             connected: dbConnected,
@@ -2139,7 +2469,7 @@ export default {
       const teleAuthErr = requireAuthorization(teleUser, ["SENDER", "RECEIVER", "ADMIN", "SUPER_ADMIN"]);
       if (teleAuthErr) return teleAuthErr;
       try {
-        const payload = await buildSenderFleetTelemetry();
+        const payload = await buildSenderFleetTelemetry(env);
         let senders = payload.senders;
         if (String(teleUser.role || "").toUpperCase() === "SENDER") {
           const me = String(teleUser.username || "").toLowerCase();
@@ -2388,7 +2718,46 @@ export default {
       // caller merges it instead of pruning against it. `or=` is already taken by search.
       const since = search ? "" : normalizeSinceParam(url.searchParams.get("since"));
 
-      // 1. Direct High-Speed Supabase Query (Indexed & Server-Paginated, <50ms)
+      // 1. D1 lives on the same edge as this worker, so the feed is read there first. The page and
+      //    its total come out of one WHERE clause, which is what makes the header number the same
+      //    measurement as the list under it rather than a second count that can drift.
+      if (d1Ready(env)) {
+        const d1Opts = { hidden: hiddenParam, since, search, school, grade, sort: "createdAt", order: "desc" };
+        const d1Feed = isAllRequested
+          ? await queryAllStudentsFromD1(env, d1Opts)
+          : await queryStudentFeedFromD1(env, { ...d1Opts, limit, offset });
+        // A store that holds no rows at all is a store that lost data, not an empty filter result,
+        // so only that case falls through to the slow Supabase read.
+        if (d1Feed && Array.isArray(d1Feed.students) &&
+          (d1Feed.total > 0 || since || (await countStudentsInD1(env)) > 0)) {
+          let d1Students = d1Feed.students;
+          if (edgeDeletedStudents.size > 0) {
+            d1Students = d1Students.filter(s => {
+              const sidL = (s.studentId || "").toLowerCase();
+              const idL = (s.id || "").toLowerCase();
+              return !edgeDeletedStudents.has(sidL) && !edgeDeletedStudents.has(idL);
+            });
+          }
+          const d1Total = d1Feed.total || d1Students.length;
+          return new Response(JSON.stringify({
+            page,
+            limit,
+            total: d1Total,
+            totalPages: Math.ceil(d1Total / limit) || 1,
+            count: d1Students.length,
+            servedFrom: "d1",
+            students: d1Students
+          }), {
+            headers: {
+              "Content-Type": "application/json",
+              "Cache-Control": "no-cache, no-store, must-revalidate",
+              ...corsHeaders
+            }
+          });
+        }
+      }
+
+      // 2. Direct High-Speed Supabase Query (Indexed & Server-Paginated, <50ms)
       try {
         let sbQuery = `${SUPABASE_URL}/rest/v1/students?select=*&order=createdAt.desc,id.desc`;
         if (since) {
@@ -2515,7 +2884,7 @@ export default {
         console.warn("Direct Supabase GET /api/students notice, using fallback:", sbErr);
       }
 
-      // 2. Resilient Fallback to in-memory cached dataset
+      // 3. Resilient Fallback to in-memory cached dataset
       const allData = await getAllStudentsDataset(env, request.url);
       let filtered = allData;
 
@@ -3002,10 +3371,18 @@ export default {
           }
         }
 
-        // 2. Cloudflare R2 Authoritative Insert
+        // 2. D1 is the row store on this edge, so it is written before anything that has to cross
+        //    the ocean. The bind parameters keep a name with an apostrophe out of the SQL, which a
+        //    string-concatenated upsert would not.
+        let d1WriteOk = false;
+        if (d1Ready(env)) {
+          d1WriteOk = await writeStudentToD1(env, newStudent);
+        }
+
+        // 3. Cloudflare R2 Authoritative Insert
         let insertedRecord = newStudent;
 
-        // 3. Isolated R2 Recovery Artifact (immediate per-student file)
+        // 4. Isolated R2 Recovery Artifact (immediate per-student file)
         let r2RecordStored = false;
         try {
           const recBytes = new TextEncoder().encode(JSON.stringify(insertedRecord, null, 2));
@@ -3038,7 +3415,7 @@ export default {
           }
         };
 
-        // 4. Authoritative Write to Supabase cloudflare.students
+        // 5. Authoritative Write to Supabase cloudflare.students
         let dbWriteOk = false;
         let dbWriteDetail = "";
         for (let attempt = 0; attempt < 2 && !dbWriteOk; attempt++) {
@@ -3072,30 +3449,38 @@ export default {
           if (!dbWriteOk && attempt === 0) await new Promise(r => setTimeout(r, 150));
         }
 
+        // The feed now reads D1, so a row that reached Postgres but not D1 would be invisible even
+        // though the write answered as durable. Retry before the answer, then report it loudly.
+        if (d1Ready(env) && !d1WriteOk && dbWriteOk) {
+          d1WriteOk = await writeStudentToD1(env, newStudent);
+          if (!d1WriteOk) console.warn(`Send ${newStudent.studentId} is in Postgres but not D1`);
+        }
+
         let registryStored = false;
-        if (dbWriteOk) {
-          // The durable row already exists, so the Cloudflare overlay may catch up after the
-          // response and 30 concurrent senders keep returning immediately.
+        if (dbWriteOk || d1WriteOk) {
+          // A durable row already exists in at least one store, so the Cloudflare overlay may catch
+          // up after the response and 30 concurrent senders keep returning immediately.
           if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(persistToLiveRegistry());
           else persistToLiveRegistry();
         } else {
-          // Supabase refused the row, so Cloudflare R2 is the only way this send survives the
+          // Both databases refused the row, so Cloudflare R2 is the only way this send survives the
           // isolate. Confirm that write before answering: a station removes the operation from
           // its outbox on a 2xx, and a record held only in memory here is not a record.
           registryStored = await persistToLiveRegistry();
         }
-        const isDurable = dbWriteOk || registryStored;
+        const isDurable = d1WriteOk || dbWriteOk || registryStored;
 
         if (!isDurable) {
           // Answering 2xx here would let the station drop the operation from its outbox while the
           // record exists nowhere but this isolate. Fail loudly so the queue keeps retrying the
           // same studentId; the upsert is idempotent, so a replay cannot duplicate the student.
-          console.warn(`Send ${insertedRecord.studentId} not durable: supabase=${dbWriteDetail || 'failed'} r2Registry=${registryStored} r2Record=${r2RecordStored}`);
+          console.warn(`Send ${insertedRecord.studentId} not durable: supabase=${dbWriteDetail || 'failed'} d1=${d1WriteOk} r2Registry=${registryStored} r2Record=${r2RecordStored}`);
           return new Response(JSON.stringify({
             error: "NOT_DURABLE",
             stored: false,
             studentId: insertedRecord.studentId,
             detail: dbWriteDetail,
+            d1: d1Ready(env) ? "failed" : "unbound",
             r2RecordStored
           }), {
             status: 502,
@@ -3175,7 +3560,7 @@ export default {
           status: 201,
           headers: {
             "Content-Type": "application/json",
-            "X-SB-Durable": dbWriteOk ? "supabase" : "cloudflare-r2",
+            "X-SB-Durable": d1WriteOk ? "d1" : (dbWriteOk ? "supabase" : "cloudflare-r2"),
             "X-SB-Bus": busResult.mode === "deferred" || busResult.published
               ? busResult.mode
               : `failed-${busResult.mode}${busResult.status ? `-${busResult.status}` : ''}`,
@@ -3382,6 +3767,9 @@ export default {
             dbInsertPayload[k] = v;
           }
         }
+
+        // D1 first: an APK scan must be readable from the feed without waiting on the ocean.
+        await writeStudentToD1(env, newStudent);
 
         // Authoritative write to Supabase cloudflare.students
         try {
@@ -3619,6 +4007,11 @@ export default {
           return row;
         });
 
+        // D1 is written on the request path, before the answer: an APK that pushes a batch and
+        // immediately pulls the feed must see the rows it just sent, and a background write could
+        // land after that pull.
+        await writeStudentsToD1Batch(env, dbBatch);
+
         // Asynchronously upsert to Supabase in batches
         const syncSupabasePromise = (async () => {
           try {
@@ -3701,6 +4094,29 @@ export default {
       const settings = await getPlatformSettings();
       const rawSchool = url.searchParams.get("school");
       const schoolFilter = (rawSchool === null ? (settings.syncSchool || "Warka") : rawSchool).trim().toLowerCase();
+      // D1 first: this is the answer the APK waits on, and the same query that takes tens of
+      // seconds against Postgres takes under a millisecond here.
+      const d1Scope = schoolFilter && schoolFilter !== "all" ? { school: schoolFilter, hidden: "false" } : { hidden: "false" };
+      const d1Feed = await queryAllStudentsFromD1(env, d1Scope);
+      // An empty D1 table is not treated as an empty school: a store that holds no rows at all
+      // has lost data, and the fallback read is what keeps the APK answering in that case.
+      if (d1Feed && Array.isArray(d1Feed.students) &&
+        (d1Feed.students.length > 0 || (await countStudentsInD1(env)) > 0)) {
+        return new Response(JSON.stringify({
+          success: true,
+          count: d1Feed.students.length,
+          school: rawSchool === null ? (settings.syncSchool || "Warka") : rawSchool,
+          students: d1Feed.students
+        }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            ...corsHeaders
+          }
+        });
+      }
+
       let all = await getAllStudentsDataset(env, request.url);
 
       let list = all.filter(s => !s.receiverHidden);
@@ -3904,6 +4320,10 @@ export default {
           console.warn("R2 update in PATCH notice:", r2Err);
         }
 
+        // D1 takes the same merged record the R2 artifact holds, ahead of the ocean round trip, so
+        // an edit is visible on the next feed page even when Supabase answers slowly.
+        await patchStudentInD1(env, mergedStudent.studentId || studentId, mergedStudent);
+
         // Authoritative write to Supabase cloudflare.students
         try {
           const supabasePayload = {};
@@ -4026,7 +4446,10 @@ export default {
             console.warn("R2 live registry restore note:", r2RegErr);
           }
 
-          // 2. Update Supabase
+          // 2. Update D1, then Supabase
+          await patchStudentInD1(env, targetId, {
+            receiverHidden: false, hiddenAt: null, updatedAt: new Date().toISOString()
+          });
           try {
             await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
               method: "PATCH",
@@ -4152,7 +4575,8 @@ export default {
             photoKeys.add(`${targetId}.jpg`);
             photoKeys.add(`records/${targetId}.json`);
 
-            // 1. Delete the PostgreSQL row
+            // 1. Delete the row from every store that holds it
+            const d1RowsRemoved = await deleteStudentFromD1(env, targetId);
             let rowsRemoved = 0;
             try {
               const dropRes = await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
@@ -4228,7 +4652,7 @@ export default {
             // but it is not an event: one retrying client wrote 985 "permanent purge completed" rows
             // in seventeen minutes and pushed the day's real history out of the log window. Nothing
             // left the database and no cloud file was removed, so there is nothing to report.
-            if (!registryStripped && rowsRemoved === 0 && cloudPurged.length === 0) return;
+            if (!registryStripped && rowsRemoved === 0 && d1RowsRemoved === 0 && cloudPurged.length === 0) return;
 
             fetch("https://ntfy.sh/sb_prod_sync_cloudflare_r2_v1", {
               method: "POST",
@@ -4282,7 +4706,12 @@ export default {
             console.warn("R2 live registry soft delete note:", r2RegErr);
           }
 
-          // 2. Update Supabase PostgreSQL
+          // 2. Update D1 and Supabase PostgreSQL
+          await patchStudentInD1(env, targetId, {
+            receiverHidden: true,
+            hiddenAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
           try {
             await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
               method: "PATCH",
@@ -4354,22 +4783,26 @@ export default {
         });
       }
 
-      let found = null;
-      try {
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(studentId)},studentId.ilike.${encodeURIComponent(studentId)})&select=*`, {
-          headers: {
-            "apikey": SUPABASE_KEY,
-            "Authorization": `Bearer ${SUPABASE_KEY}`,
-            "Accept-Profile": "cloudflare"
+      // D1 holds every row the feed serves and answers in under a millisecond, so the QR scan reads
+      // there and only reaches Postgres when D1 has nothing.
+      let found = await readStudentFromD1(env, studentId);
+      if (!found) {
+        try {
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(studentId)},studentId.ilike.${encodeURIComponent(studentId)})&select=*`, {
+            headers: {
+              "apikey": SUPABASE_KEY,
+              "Authorization": `Bearer ${SUPABASE_KEY}`,
+              "Accept-Profile": "cloudflare"
+            }
+          });
+          if (res.ok) {
+            const list = await res.json();
+            if (list && list.length > 0) {
+              found = list[0];
+            }
           }
-        });
-        if (res.ok) {
-          const list = await res.json();
-          if (list && list.length > 0) {
-            found = list[0];
-          }
-        }
-      } catch (e) {}
+        } catch (e) {}
+      }
 
       if (!found) {
         const sidLower = studentId.toLowerCase();
@@ -4723,6 +5156,20 @@ export default {
       const weekStartIso = zonedDayStartUtc(statsDayKeys[statsDayKeys.length - 7]);
       const monthStartIso = zonedDayStartUtc(statsDayKeys[0]);
 
+      let totalCount = null, photoVerifiedCount = null, todayCount = null, weekCount = null, monthCount = null;
+      let statsSource = "d1";
+      // One aggregate statement answers every counter from the same table state.
+      const d1Stats = await queryStatsFromD1(env, {
+        school: schoolParam, todayStartIso, weekStartIso, monthStartIso
+      });
+      if (d1Stats) {
+        totalCount = d1Stats.total;
+        photoVerifiedCount = d1Stats.photos;
+        todayCount = d1Stats.today;
+        weekCount = d1Stats.week;
+        monthCount = d1Stats.month;
+      }
+
       const countStudentsQuery = async (extraFilters) => {
         // Retry before giving up: one dropped query used to make this handler fall back to
         // the unfiltered numbers, so a school-scoped request could report the whole registry
@@ -4748,13 +5195,18 @@ export default {
         return null;
       };
 
-      const [totalCount, photoVerifiedCount, todayCount, weekCount, monthCount] = await Promise.all([
-        countStudentsQuery(schoolQ),
-        countStudentsQuery(`&photoIntegrityStatus=eq.PHOTO_VERIFIED${schoolQ}`),
-        countStudentsQuery(`&createdAt=gte.${todayStartIso}${schoolQ}`),
-        countStudentsQuery(`&createdAt=gte.${weekStartIso}${schoolQ}`),
-        countStudentsQuery(`&createdAt=gte.${monthStartIso}${schoolQ}`)
-      ]);
+      // Only when D1 did not answer: five queries measured at five instants, each with its own
+      // retry, which is why these numbers could disagree with each other.
+      if (!d1Stats) {
+        statsSource = "supabase";
+        [totalCount, photoVerifiedCount, todayCount, weekCount, monthCount] = await Promise.all([
+          countStudentsQuery(schoolQ),
+          countStudentsQuery(`&photoIntegrityStatus=eq.PHOTO_VERIFIED${schoolQ}`),
+          countStudentsQuery(`&createdAt=gte.${todayStartIso}${schoolQ}`),
+          countStudentsQuery(`&createdAt=gte.${weekStartIso}${schoolQ}`),
+          countStudentsQuery(`&createdAt=gte.${monthStartIso}${schoolQ}`)
+        ]);
+      }
 
       // A field the database would not answer is served from the last complete snapshot for
       // the same scope and named in statsMissing; if there is no snapshot the field is null.
@@ -4823,6 +5275,7 @@ export default {
         statsComplete: statsMissing.length === 0,
         statsMissing,
         statsSnapshotAgeMs: statsAgeMs,
+        statsSource,
         pendingReview: missingPhotos,
         acceptanceRate: (totalStudentsOut && photosOut !== null && totalStudentsOut > 0)
           ? ((photosOut / totalStudentsOut) * 100).toFixed(1) + "%"
