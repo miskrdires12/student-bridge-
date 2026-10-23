@@ -1,8 +1,9 @@
 import { Student, User, Task, School, AuditLog, StudentCoreRequest, MistakeItem, UserRole, CardTemplate, PrintJob } from '@/types';
-import { publishStudentSync, subscribeToStudentSync, getPhotoUrl, getPhotoCandidates, getPhotoEncodeClass } from './syncEngine';
+import { publishStudentSync, subscribeToStudentSync, getPhotoUrl, getPhotoCandidates, getPhotoEncodeClass, fetchDeliveryReceipts, syncStationId } from './syncEngine';
 import { parseGradeAndSection, getBranchForSchool, getStudentBranch } from './gradeUtils';
 
-export { getPhotoUrl, getPhotoCandidates, getPhotoEncodeClass, publishStudentSync, subscribeToStudentSync, getBranchForSchool, getStudentBranch };
+export { getPhotoUrl, getPhotoCandidates, getPhotoEncodeClass, publishStudentSync, subscribeToStudentSync, getBranchForSchool, getStudentBranch, fetchDeliveryReceipts, syncStationId };
+export type { DeliveryReceipt } from './syncEngine';
 
 // Branch to School Mapping
 export const BRANCH_SCHOOL_MAP: Record<string, string[]> = {
@@ -2031,8 +2032,9 @@ export function getAuthHeaders(): Record<string, string> {
   }
   const curUser = getCurrentUser();
   headers['X-Station-Role'] = curUser?.role || 'SENDER';
-  const devId = localStorage.getItem('sb_device_id') || 'mobile-sender';
-  headers['X-Device-Id'] = devId;
+  // The same id the sync bus publishes under: the edge stamps it on the record's bus event, and a
+  // receiver must be able to tell its own send from another station's when it confirms receipt.
+  headers['X-Device-Id'] = getOrCreateDeviceId();
   return headers;
 }
 

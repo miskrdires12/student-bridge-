@@ -16,8 +16,27 @@ import { queueOfflineOperation, cloudJsonResponse } from '@/lib/offlineQueue';
 import { Student } from '@/types';
 import { PhoneCropModal } from '@/components/PhoneCropModal';
 import { CameraCaptureModal } from '@/components/CameraCaptureModal';
-import { R2_PUBLIC_BASE_URL } from '@/lib/syncEngine';
+import { R2_PUBLIC_BASE_URL, fetchDeliveryReceipts, syncStationId, DeliveryReceipt } from '@/lib/syncEngine';
 import { parseGradeAndSection } from '@/lib/gradeUtils';
+
+// How long the sender keeps asking the cloud which stations applied its last send. Receivers on
+// the bus answer within a second or two; the window covers a station whose tab was just opening.
+const RECEIPT_POLL_MS = 3000;
+const RECEIPT_WATCH_MS = 120000;
+const RECEIPT_SLOW_POLL_MS = 20000;
+const RECEIPT_STOP_MS = 20 * 60 * 1000;
+
+// The bus header reports how the instant push went, not whether the record arrived: a station that
+// the bus refused to subscribe still reads the send from the cloud within a few seconds. Naming the
+// refusal separately keeps a throttled third party from being reported as a failed delivery.
+function busFailureReason(busState: string): string {
+  if (!busState.startsWith('failed')) return '';
+  if (busState.includes('bus-limit')) return 'the sync bus is at its free subscription limit';
+  if (busState.includes('timeout')) return 'the sync bus did not answer in time';
+  if (busState.includes('unreachable')) return 'the sync bus could not be reached';
+  const code = busState.match(/(\d{3})$/)?.[1];
+  return code ? `the sync bus rejected the push (${code})` : 'the sync bus rejected the push';
+}
 
 // Unfinished registration draft, persisted per operator so a page refresh keeps
 // the completion state (and therefore the remaining-item counts) intact.
@@ -130,7 +149,56 @@ export const StudentRegistrationPage: React.FC = () => {
   // "cloud verified" banner must not be shown for it.
   const [cloudVerified, setCloudVerified] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Receiver confirmation for the send that just finished: the cloud answers with the stations
+  // that applied the bus record into their own directory, so a green banner can name who holds it
+  // instead of asserting a delivery nobody checked.
+  const [receiverReceipts, setReceiverReceipts] = useState<DeliveryReceipt[]>([]);
+  const [receiptsWatching, setReceiptsWatching] = useState(false);
+  // What the sync bus answered when the edge published this send.
+  const [busState, setBusState] = useState('');
+  // Which store the edge confirmed holding the row — it names the one that actually answered.
+  const [durableStore, setDurableStore] = useState('Supabase');
+  const [stationId] = useState(syncStationId);
 
+  useEffect(() => {
+    const sid = (submittedStudent?.studentId || '').trim();
+    if (!cloudVerified || !sid) return;
+    const selfStation = syncStationId();
+    const startedAt = Date.now();
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const poll = async () => {
+      const found = await fetchDeliveryReceipts(sid);
+      if (stopped) return;
+      // This station's own copy is not a receiver confirmation, it is the sender echoed back.
+      const others = found.filter(r => r.station !== selfStation);
+      if (others.length > 0) setReceiverReceipts(others);
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= RECEIPT_WATCH_MS) setReceiptsWatching(false);
+      if (elapsed >= RECEIPT_STOP_MS) return;
+      // Watching continues past the fast window at a slower cadence: a receiver that was still
+      // booting, or one the browser only wakes every half minute, confirms a real delivery, and the
+      // operator should see that rather than a verdict that closed before the evidence arrived.
+      timer = setTimeout(poll, elapsed >= RECEIPT_WATCH_MS ? RECEIPT_SLOW_POLL_MS : RECEIPT_POLL_MS);
+    };
+
+    setReceiverReceipts([]);
+    setReceiptsWatching(true);
+    poll();
+
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [cloudVerified, submittedStudent?.studentId]);
+
+  const confirmedStationNames = receiverReceipts.map(r => r.stationName || r.station);
+  const lastReceiptTime = receiverReceipts.length
+    ? new Date(receiverReceipts[receiverReceipts.length - 1].at).toLocaleTimeString()
+    : '';
+  // The record's own creation stamp, so the banner never shows a clock that changes every render.
+  const sentStamp = submittedStudent?.createdAt || '';
   const schools = getSchools();
 
   // Refresh Sender Metrics dynamically on mount, after submission, or data changes
@@ -476,9 +544,10 @@ export const StudentRegistrationPage: React.FC = () => {
           setCloudVerified(true);
           // The edge names the store that actually holds the row, so the operator is never told
           // "delivered to Supabase" for a record that landed only in Cloudflare R2.
-          const durableStore = res.headers.get('X-SB-Durable') === 'cloudflare-r2'
-            ? 'Cloudflare R2'
-            : 'Supabase';
+          setDurableStore(res.headers.get('X-SB-Durable') === 'cloudflare-r2' ? 'Cloudflare R2' : 'Supabase');
+          // The edge waits for the bus to answer before returning, so this is the sync network's
+          // own reply, not an assumption that the message went out.
+          setBusState(res.headers.get('X-SB-Bus') || 'unknown');
           setSubmitStatusText(`✓ Record delivered to ${durableStore}. Uploading HD photo to Cloudflare R2...`);
         } else {
           // HTTP 200 with the SPA HTML shell means the edge Worker is not executing — the
@@ -575,6 +644,9 @@ export const StudentRegistrationPage: React.FC = () => {
     setSubmittedStudent(null);
     setCloudVerified(false);
     setSubmitError(null);
+    setReceiverReceipts([]);
+    setReceiptsWatching(false);
+    setBusState('');
     refreshMetrics();
   };
 
@@ -747,16 +819,32 @@ export const StudentRegistrationPage: React.FC = () => {
               <span className={`w-3 h-3 rounded-full animate-pulse shrink-0 ${cloudVerified ? 'bg-[#85E510]' : 'bg-amber-400'}`} />
               <div>
                 <div className={`font-heading font-black text-sm uppercase tracking-wide flex items-center gap-2 ${cloudVerified ? 'text-[#85E510]' : 'text-amber-300'}`}>
-                  <span>{cloudVerified ? 'Long-Range Transmission Confirmed & Verified' : 'Saved on This Station — Waiting for the Cloud'}</span>
+                  <span>{cloudVerified
+                    ? (receiverReceipts.length > 0 ? 'Delivered & Confirmed On Receiver Stations' : 'Long-Range Transmission Saved & Verified')
+                    : 'Saved on This Station — Waiting for the Cloud'}</span>
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold border ${cloudVerified
                       ? 'bg-[#85E510]/20 text-[#85E510] border-[#85E510]/40'
                       : 'bg-amber-400/20 text-amber-200 border-amber-400/40'}`}>
-                    {cloudVerified ? 'R2 + Supabase Synchronized' : 'In station outbox'}
+                    {cloudVerified ? `Saved in ${durableStore}` : 'In station outbox'}
                   </span>
                 </div>
                 <p className="text-xs text-slate-300 mt-0.5">
                   {cloudVerified ? (
-                    <>Delivered on: <strong className="text-white">{new Date().toLocaleTimeString()}</strong> &bull; Date: <strong className="text-white">{new Date().toISOString().substring(0, 10)}</strong> &bull; Station: <span className="text-[#85E510] font-bold">Receiver Verified</span></>
+                    <>
+                      <span>Sent at <strong className="text-white">{sentStamp ? new Date(sentStamp).toLocaleTimeString() : '—'}</strong> from station <strong className="text-white">{stationId}</strong> &bull; </span>
+                      {receiverReceipts.length > 0 ? (
+                        <>
+                          <span className="text-[#85E510] font-bold">delivered on {receiverReceipts.length} receiver station{receiverReceipts.length > 1 ? 's' : ''}: {confirmedStationNames.join(', ')}{lastReceiptTime ? ` (confirmed ${lastReceiptTime})` : ''}</span>
+                          {busFailureReason(busState) && (
+                            <span className="text-slate-300"> &bull; {busFailureReason(busState)}, it still arrived through the cloud read</span>
+                          )}
+                        </>
+                      ) : receiptsWatching ? (
+                        <span className="text-amber-200">waiting for the receiver stations that are online to confirm&hellip;</span>
+                      ) : (
+                        <span>no receiver station has confirmed yet — the record is in the cloud and this station keeps watching for the receivers that come online{busFailureReason(busState) ? `; ${busFailureReason(busState)}` : ''}</span>
+                      )}
+                    </>
                   ) : (
                     <>{submitStatusText || 'Stored on this station; it will transmit automatically when the server answers.'}</>
                   )}
@@ -1352,7 +1440,9 @@ export const StudentRegistrationPage: React.FC = () => {
               ) : submittedStudent ? (
                 <>
                   <ArrowRight className="w-4 h-4 text-[#062404]" />
-                  <span>{cloudVerified ? 'Student Delivered' : 'Student Kept on Station'} &bull; Click to Register Next</span>
+                  <span>{receiverReceipts.length > 0
+                    ? 'Receiver Confirmed'
+                    : cloudVerified ? 'Saved in Cloud' : 'Student Kept on Station'} &bull; Click to Register Next</span>
                 </>
               ) : (
                 <>

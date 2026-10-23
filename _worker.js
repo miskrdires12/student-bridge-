@@ -39,6 +39,50 @@ function applyEnvSecrets(env) {
 }
 
 // -----------------------------------------------------------------------------
+// SUPABASE DEADLINE
+//
+// PostgREST holds a request open for minutes when the database is asleep or saturated. A Worker
+// waiting on it answers *nothing*: no feed, no send, and the resilient fallback below it never
+// runs because the primary call never returns. This measured as /api/health, /api/students and
+// POST /api/students all hanging past 90 s while every Cloudflare-only path answered in under a
+// second. Only a Supabase call can stall a request this way, so only it gets a deadline; when the
+// deadline fires the caller falls back to the Cloudflare copy, which is what the stations need in
+// order to keep working.
+// -----------------------------------------------------------------------------
+const SUPABASE_WAIT_MS = 8000;
+// A database that missed one deadline is not going to answer the next five calls any better, and
+// a station retrying every few seconds would spend its whole budget waiting for it. After a
+// deadline the path that is not answering is skipped briefly and every request is served from the
+// Cloudflare copy instead; the skip window is short so a database that recovers is used again.
+const SUPABASE_SKIP_MS = 20000;
+let supabaseSkipUntil = 0;
+const externalFetch = globalThis.fetch;
+
+function fetch(input, init = {}) {
+  const target = typeof input === "string" ? input : (input && input.url) || "";
+  if (!target.startsWith(SUPABASE_URL) || init.signal) return externalFetch(input, init);
+  if (Date.now() < supabaseSkipUntil) {
+    return Promise.reject(new Error("Supabase still in its skip window; serving the Cloudflare copy"));
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SUPABASE_WAIT_MS);
+  return externalFetch(input, { ...init, signal: controller.signal }).then(
+    (res) => {
+      clearTimeout(timer);
+      return res;
+    },
+    (err) => {
+      clearTimeout(timer);
+      if (err && err.name === "AbortError") {
+        supabaseSkipUntil = Date.now() + SUPABASE_SKIP_MS;
+        console.warn(`Supabase did not answer within ${SUPABASE_WAIT_MS / 1000}s; serving Cloudflare for ${SUPABASE_SKIP_MS / 1000}s`);
+      }
+      throw err;
+    }
+  );
+}
+
+// -----------------------------------------------------------------------------
 // BRANCH AND SCHOOL MAPPING (Canonical)
 // -----------------------------------------------------------------------------
 const BRANCH_SCHOOL_MAP = {
@@ -100,7 +144,7 @@ function extractValidPhone(...candidates) {
   return null;
 }
 
-function normalizeStudentPhoneFields(s) {
+function normalizeStudentWireFields(s) {
   if (!s || typeof s !== "object") return s;
   const validPhone = extractValidPhone(
     s.emergencyContactPhone,
@@ -125,12 +169,34 @@ function normalizeStudentPhoneFields(s) {
     s.emergency_contact_phone = "";
     s.guardianPhone = "";
   }
+  normalizeStudentTimeFields(s);
+  return s;
+}
+
+// Postgres answers with "2026-10-22T19:22:56.856" for these columns: not a single zone marker.
+// JavaScript reads such a string as local time, so a station three hours ahead of UTC sees a record
+// that is three minutes old as three hours and three minutes stale - it applies the row and then
+// refuses to confirm it, because the delivery window it measures has already passed. The columns hold
+// UTC, so say so on the wire once here instead of leaving every client and the APK to guess.
+function toUtcInstant(value) {
+  const raw = (value === undefined || value === null) ? "" : String(value).trim();
+  if (!raw || /(Z|[+-]\d{2}:?\d{2})$/i.test(raw)) return raw;
+  const iso = raw.replace(" ", "T");
+  // Only a real timestamp gets the marker; a bare date must stay a bare date.
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(iso) ? `${iso}Z` : raw;
+}
+
+function normalizeStudentTimeFields(s) {
+  if (!s || typeof s !== "object") return s;
+  if (s.createdAt) s.createdAt = toUtcInstant(s.createdAt);
+  if (s.updatedAt) s.updatedAt = toUtcInstant(s.updatedAt);
   return s;
 }
 
 // -----------------------------------------------------------------------------
 // SERVER-SIDE CRYPTOGRAPHIC JWT SESSION & RBAC SYSTEM (Web Crypto API)
 // -----------------------------------------------------------------------------
+
 function base64UrlEncode(bytes) {
   let str = "";
   if (typeof bytes === "string") {
@@ -550,12 +616,13 @@ function formatBytesSb(bytes) {
   return `${(bytes / 1073741824).toFixed(2)} GB`;
 }
 
-async function listR2AllKeys() {
+async function listR2AllKeys(prefix = null) {
   const enc = new TextEncoder();
   const keys = new Map();
   let continuationToken = null;
   for (let page = 0; page < 40; page++) {
     const query = [["list-type", "2"], ["max-keys", "1000"]];
+    if (prefix) query.push(["prefix", prefix]);
     if (continuationToken) query.push(["continuation-token", continuationToken]);
     query.sort((a, b) => (a[0] < b[0] ? -1 : 1));
     const canonicalQuery = query.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
@@ -595,6 +662,100 @@ async function listR2AllKeys() {
     continuationToken = nextTok;
   }
   return keys;
+}
+
+// ---------------------------------------------------------------------------
+// RECEIVER DELIVERY RECEIPTS
+// A station that applies a record it did not send posts a receipt here, so "delivered" on the
+// sender means a named receiver actually held the data, not that an HTTP call returned 201.
+// Each station writes its own object under acks/<studentId>/ — two receivers answering in the
+// same second would otherwise overwrite each other through one shared file.
+// ---------------------------------------------------------------------------
+const deliveryReceipts = new Map();
+
+function ackKeyPart(value) {
+  const safe = String(value || "").trim().replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64);
+  return safe || "unknown";
+}
+
+function rememberReceipt(receipt) {
+  if (!receipt || !receipt.studentId || !receipt.station) return;
+  const byStation = deliveryReceipts.get(receipt.studentId) || new Map();
+  byStation.set(receipt.station, receipt);
+  deliveryReceipts.set(receipt.studentId, byStation);
+  // Only the send being watched needs to stay in memory; a shift of registrations must not
+  // grow the map without bound.
+  if (deliveryReceipts.size > 400) {
+    deliveryReceipts.delete(deliveryReceipts.keys().next().value);
+  }
+}
+
+async function collectDeliveryReceipts(studentId) {
+  const byStation = new Map();
+  const local = deliveryReceipts.get(studentId);
+  if (local) local.forEach((receipt, station) => byStation.set(station, receipt));
+  try {
+    const keys = await listR2AllKeys(`acks/${ackKeyPart(studentId)}/`);
+    const bodies = await Promise.all(Array.from(keys.keys()).map(async (key) => {
+      const obj = await getFromR2Bucket(key).catch(() => null);
+      if (!obj || !obj.bytes) return null;
+      try {
+        return JSON.parse(new TextDecoder().decode(obj.bytes));
+      } catch (parseErr) {
+        return null;
+      }
+    }));
+    const wanted = studentId.trim().toLowerCase();
+    bodies.forEach(receipt => {
+      if (!receipt || !receipt.station) return;
+      if (String(receipt.studentId || "").trim().toLowerCase() !== wanted) return;
+      if (!byStation.has(receipt.station)) byStation.set(receipt.station, receipt);
+    });
+  } catch (scanErr) {
+    console.warn("Delivery receipt scan failed:", scanErr);
+  }
+  return Array.from(byStation.values())
+    .sort((a, b) => String(a.at || "").localeCompare(String(b.at || "")));
+}
+
+/**
+ * Publish on the Global Cloud Sync Bus and WAIT for the answer. A fire-and-forget publish lets a
+ * station report "delivered" for a send the bus never carried, and ntfy answering 200 is the only
+ * proof that a remote station could have received it. The timeout keeps a stalled public bus from
+ * stalling the student send it is meant to inform.
+ */
+async function publishToSyncBus(title, bodyJson) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4500);
+  try {
+    const res = await fetch("https://ntfy.sh/sb_prod_sync_cloudflare_r2_v1", {
+      method: "POST",
+      headers: {
+        "Title": title,
+        "Priority": "urgent",
+        "Tags": "student,sync,encoded"
+      },
+      body: bodyJson,
+      signal: controller.signal
+    });
+    // ntfy's free tier answers 429 when a topic holds too many anonymous subscriptions or an IP has
+    // published its daily allowance. Naming that is the difference between "the bus is throttled"
+    // and "the bus is broken", and only one of them needs a code change.
+    if (!res.ok) return { published: false, status: res.status, mode: res.status === 429 ? "bus-limit" : "rejected" };
+    const ack = await res.json().catch(() => null);
+    // Over 4096 bytes ntfy stores the body as a file and the receivers have to fetch it.
+    return { published: true, status: res.status, mode: ack && ack.attachment ? "attachment" : "inline" };
+  } catch (busErr) {
+    const aborted = busErr && busErr.name === "AbortError";
+    return {
+      published: false,
+      status: 0,
+      mode: aborted ? "timeout" : "unreachable",
+      detail: String(busErr && busErr.message || busErr).slice(0, 80)
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 let r2ScanCache = { totalObjects: 0, totalBytes: 0, byPrefix: [], keySet: new Map(), scannedAt: 0 };
@@ -957,29 +1118,38 @@ async function deleteFromR2Bucket(key) {
 
   const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
   const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
-  const canonicalRequest = `DELETE\n${path}\n\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
 
   const algorithm = "AWS4-HMAC-SHA256";
   const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
-  const stringToSign = `${algorithm}\n${amzDate}\n${credentialScope}\n${await sha256Hex(new TextEncoder().encode(canonicalRequest))}`;
 
   const signingKey = await getSignatureKey(R2_SECRET_ACCESS_KEY, dateStamp, region, service);
-  const sigBytes = await hmacSha256(signingKey, new TextEncoder().encode(stringToSign));
-  const signature = Array.from(sigBytes).map(b => b.toString(16).padStart(2, "0")).join("");
 
-  const authHeader = `${algorithm} Credential=${R2_ACCESS_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  const signedFetch = async (method) => {
+    const canonicalRequest = `${method}\n${path}\n\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+    const stringToSign = `${algorithm}\n${amzDate}\n${credentialScope}\n${await sha256Hex(new TextEncoder().encode(canonicalRequest))}`;
+    const sigBytes = await hmacSha256(signingKey, new TextEncoder().encode(stringToSign));
+    const signature = Array.from(sigBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+    const authHeader = `${algorithm} Credential=${R2_ACCESS_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
-  const res = await fetch(url.toString(), {
-    method: "DELETE",
-    headers: {
-      "Host": host,
-      "x-amz-date": amzDate,
-      "x-amz-content-sha256": payloadHash,
-      "Authorization": authHeader
-    }
-  });
+    return fetch(url.toString(), {
+      method,
+      headers: {
+        "Host": host,
+        "x-amz-date": amzDate,
+        "x-amz-content-sha256": payloadHash,
+        "Authorization": authHeader
+      }
+    });
+  };
 
-  return res.ok || res.status === 204 || res.status === 404;
+  // R2 answers 204 to a DELETE whether or not the object was there, so the delete itself cannot say
+  // if it removed anything. That is what let one retrying station log 985 "permanent purge completed"
+  // entries against a record that stopped existing on the first of them. Reading the key first costs
+  // one request and buys a count the audit log and the caller can act on.
+  const existed = (await signedFetch("HEAD")).ok;
+  const res = await signedFetch("DELETE");
+
+  return existed && (res.ok || res.status === 204);
 }
 
 function normalizeR2PhotoRef(p) {
@@ -990,8 +1160,10 @@ function normalizeR2PhotoRef(p) {
   if (s.startsWith("http")) {
     try { s = new URL(s).pathname.replace(/^\/+/, ""); } catch (e) { return null; }
   }
-  if (s.startsWith("api/photos/")) s = s.slice("api/photos/".length);
+  // Same ordering as stripPhotoRef: the stored reference carries a leading slash, so it has to come
+  // off before the prefix test or the key keeps "api/photos/" and points at an object that never exists.
   s = s.replace(/^\/+/, "");
+  if (s.startsWith("api/photos/")) s = s.slice("api/photos/".length);
   try { s = decodeURIComponent(s); } catch (e) {}
   return s || null;
 }
@@ -1687,7 +1859,7 @@ async function getAllStudentsDataset(env, originUrl, forceRefresh = false) {
     // fall through to the static + R2 merge, otherwise a truncated snapshot becomes the
     // authoritative dataset - and the daily backup would persist it as the whole registry.
     if (rows.length > 0 && complete) {
-      rows.forEach(normalizeStudentPhoneFields);
+      rows.forEach(normalizeStudentWireFields);
       cachedAllStudents = rows;
       lastAllFetchTime = Date.now();
       return cachedAllStudents;
@@ -1749,7 +1921,7 @@ async function getAllStudentsDataset(env, originUrl, forceRefresh = false) {
     }
 
     const resolvedBranch = s.branch || s.location || s.address || getBranchForSchoolWorker(s.school);
-    return normalizeStudentPhoneFields({
+    return normalizeStudentWireFields({
       ...s,
       receiverHidden: isHidden,
       hiddenAt: hiddenAt,
@@ -1854,7 +2026,7 @@ export default {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Device-Id, X-Station-Role",
-      "Access-Control-Expose-Headers": "Content-Range, X-SB-Durable",
+      "Access-Control-Expose-Headers": "Content-Range, X-SB-Durable, X-SB-Bus",
     };
 
     if (request.method === "OPTIONS") {
@@ -2297,7 +2469,7 @@ export default {
           }
           let sbStudents = await sbRes.json();
           if (Array.isArray(sbStudents)) {
-            sbStudents.forEach(normalizeStudentPhoneFields);
+            sbStudents.forEach(normalizeStudentWireFields);
             // Merge in-memory customStudents if any exist
             if (customStudents.length > 0) {
               const existingSids = new Set(sbStudents.map(s => s.studentId));
@@ -2795,6 +2967,11 @@ export default {
           }),
           senderName: body.senderName || authUser.username || "Field Operator",
           senderId: authUser.sub || null,
+          // The device that sent it, kept beside senderId because senderId is the operator account:
+          // two stations of one login are indistinguishable from the row alone, and a receiver must
+          // be able to tell its own send from another station's before it confirms anything.
+          // Supabase has no such column, and the write whitelist drops this key rather than failing.
+          originStation: (request.headers.get("X-Device-Id") || request.headers.get("X-Hardware-Id") || "").toString().trim().slice(0, 48) || null,
           photoIntegrityStatus: photoPath ? "PHOTO_VERIFIED" : "NO_PHOTO",
           status: "Accepted",
           idProductionStatus: "READY",
@@ -2942,7 +3119,9 @@ export default {
           }
         }
 
-        // Broadcast to Global Cloud Sync Bus (clean payload under 400 bytes so ntfy.sh never rejects with 413)
+        // Broadcast to Global Cloud Sync Bus. The envelope is budgeted by the station before it
+        // sends, so the record here carries no base64 portrait — only the storage path a receiver
+        // can read from the public CDN.
         const ntfyCleanRecord = { ...insertedRecord };
         delete ntfyCleanRecord.capturedPhoto;
         delete ntfyCleanRecord.photoBase64;
@@ -2953,20 +3132,34 @@ export default {
           ntfyCleanRecord.thumbnailPath = ntfyCleanRecord.photoPath || '';
         }
 
-        fetch("https://ntfy.sh/sb_prod_sync_cloudflare_r2_v1", {
-          method: "POST",
-          headers: {
-            "Title": `STUDENT_ENROLLED_${insertedRecord.studentId}`,
-            "Priority": "urgent",
-            "Tags": "student,sync,encoded"
-          },
-          body: JSON.stringify({
+        // The publishing station identifies itself on the bus so a receiver never acknowledges its
+        // own send back to the sender as a second confirmation.
+        const originStation = (request.headers.get("X-Device-Id") || request.headers.get("X-Hardware-Id") || "").toString().trim().slice(0, 48);
+
+        // The instant push runs behind the answer, not in front of it. A web station has already
+        // published this same record itself, receivers read the cloud copy whether or not the push
+        // lands, and a slow public bus must not add seconds to the operator's send.
+        const busTask = publishToSyncBus(
+          `STUDENT_ENROLLED_${insertedRecord.studentId}`,
+          JSON.stringify({
             action: "UPSERT",
             student: ntfyCleanRecord,
             studentId: insertedRecord.studentId,
+            originStation,
             timestamp: Date.now()
           })
-        }).catch(() => {});
+        ).then(busResult => {
+          if (!busResult.published) {
+            console.warn(`Send ${insertedRecord.studentId} reached the cloud but not the sync bus: ${busResult.mode} ${busResult.status} ${busResult.detail || ''}`);
+          }
+          return busResult;
+        });
+        let busResult = { published: false, status: 0, mode: "deferred" };
+        if (ctx && typeof ctx.waitUntil === "function") {
+          ctx.waitUntil(busTask.catch(() => {}));
+        } else {
+          busResult = await busTask;
+        }
 
         await writeAuditLog({
           action: "STUDENT_CREATED",
@@ -2983,6 +3176,9 @@ export default {
           headers: {
             "Content-Type": "application/json",
             "X-SB-Durable": dbWriteOk ? "supabase" : "cloudflare-r2",
+            "X-SB-Bus": busResult.mode === "deferred" || busResult.published
+              ? busResult.mode
+              : `failed-${busResult.mode}${busResult.status ? `-${busResult.status}` : ''}`,
             ...corsHeaders
           }
         });
@@ -2992,6 +3188,83 @@ export default {
           headers: { "Content-Type": "application/json", ...corsHeaders }
         });
       }
+    }
+
+    // -------------------------------------------------------------------------
+    // 3A2. RECEIVER DELIVERY RECEIPTS
+    // A station posts here the moment a bus record is applied into its own directory, and the
+    // sending station polls the matching read. Without this the sender only ever learns that an
+    // HTTP call succeeded — which says nothing about a receiver holding the data.
+    // -------------------------------------------------------------------------
+    if (url.pathname === "/api/students/received" && request.method === "POST") {
+      const authUser = await authenticateRequest(request);
+      const authErr = requireAuthorization(authUser, ["SENDER", "RECEIVER", "ADMIN", "SUPER_ADMIN"]);
+      if (authErr) return authErr;
+
+      try {
+        const body = await parseRequestBody(request);
+        const studentId = (body.studentId || body.student_id || "").toString().trim();
+        const station = (body.station || body.deviceId || "").toString().trim().slice(0, 48);
+        if (!studentId || !station) {
+          return new Response(JSON.stringify({ error: "Missing required fields (studentId, station)" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json", ...corsHeaders }
+          });
+        }
+
+        const receipt = {
+          studentId,
+          station,
+          stationName: (body.stationName || station).toString().trim().slice(0, 48),
+          role: (authUser.role || "RECEIVER").toString().toUpperCase(),
+          at: new Date().toISOString()
+        };
+        // Answer from memory first: the sender's next poll often lands on this same isolate, and
+        // it should see the receipt without waiting on the bucket.
+        rememberReceipt(receipt);
+        const stored = await uploadToR2Bucket(
+          `acks/${ackKeyPart(studentId)}/${ackKeyPart(station)}.json`,
+          new TextEncoder().encode(JSON.stringify(receipt)),
+          "application/json"
+        ).catch(err => {
+          console.warn("Delivery receipt R2 write failed:", err);
+          return false;
+        });
+
+        return new Response(JSON.stringify({ ok: true, stored: !!stored, studentId, station }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      } catch (ackErr) {
+        return new Response(JSON.stringify({ error: String(ackErr.message || ackErr) }), {
+          status: 400,
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      }
+    }
+
+    if (url.pathname === "/api/students/delivery" && request.method === "GET") {
+      const authUser = await authenticateRequest(request);
+      const authErr = requireAuthorization(authUser, ["SENDER", "RECEIVER", "ADMIN", "SUPER_ADMIN"]);
+      if (authErr) return authErr;
+
+      const studentId = (url.searchParams.get("studentId") || "").trim();
+      if (!studentId) {
+        return new Response(JSON.stringify({ error: "Missing studentId" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      }
+      const receipts = await collectDeliveryReceipts(studentId);
+      return new Response(JSON.stringify({
+        studentId,
+        count: receipts.length,
+        received: receipts,
+        checkedAt: new Date().toISOString()
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders }
+      });
     }
 
     // -------------------------------------------------------------------------
@@ -3170,8 +3443,17 @@ export default {
         }
         lastAllFetchTime = 0; // Force immediate cache refresh
 
-        // Broadcast to Global Cloud Sync Bus via ntfy.sh
+        // Broadcast to Global Cloud Sync Bus via ntfy.sh. The APK posts the portrait inline, so the
+        // bytes have to come out before the record goes on the bus: over 4096 bytes ntfy stores the
+        // body as a file and the stations reading the feed throw the message away.
         const ntfyCleanRecord = { ...newStudent };
+        delete ntfyCleanRecord.capturedPhoto;
+        delete ntfyCleanRecord.photoBase64;
+        for (const photoField of ["previewPath", "thumbnailPath"]) {
+          if (typeof ntfyCleanRecord[photoField] === "string" && ntfyCleanRecord[photoField].startsWith("data:")) {
+            ntfyCleanRecord[photoField] = ntfyCleanRecord.photoPath || "";
+          }
+        }
         fetch("https://ntfy.sh/sb_prod_sync_cloudflare_r2_v1", {
           method: "POST",
           headers: {
@@ -3183,6 +3465,7 @@ export default {
             action: "UPSERT",
             student: ntfyCleanRecord,
             studentId: newStudent.studentId,
+            originStation: (request.headers.get("X-Device-Id") || request.headers.get("X-Hardware-Id") || "").toString().trim().slice(0, 48),
             timestamp: Date.now()
           })
         }).catch(() => {});
@@ -3424,7 +3707,7 @@ export default {
       if (schoolFilter && schoolFilter !== "all") {
         list = list.filter(s => (s.school || "").toLowerCase().includes(schoolFilter));
       }
-      list.forEach(normalizeStudentPhoneFields);
+      list.forEach(normalizeStudentWireFields);
 
       return new Response(JSON.stringify({
         success: true,
@@ -3609,7 +3892,7 @@ export default {
             mergedStudent = { ...customStudents[cIdx], ...mergedStudent };
           }
         }
-        normalizeStudentPhoneFields(mergedStudent);
+        normalizeStudentWireFields(mergedStudent);
         lastAllFetchTime = 0; // Invalidate cache so edits show instantly
 
         // Durable Cloudflare R2 persistence for updates
@@ -3820,8 +4103,11 @@ export default {
             if (s.startsWith("http")) {
               try { s = new URL(s).pathname.replace(/^\/+/, ""); } catch (e) { return null; }
             }
-            if (s.startsWith("api/photos/")) s = s.slice("api/photos/".length);
+            // The stored reference is "/api/photos/<grade>/<name>.jpg", so the leading slash has to come
+            // off before the prefix test. Checking "api/photos/" first left the prefix inside the key, the
+            // delete then targeted a key that never existed, and the photo survived every permanent purge.
             s = s.replace(/^\/+/, "");
+            if (s.startsWith("api/photos/")) s = s.slice("api/photos/".length);
             try { s = decodeURIComponent(s); } catch (e) {}
             return s || null;
           };
@@ -3838,7 +4124,10 @@ export default {
             let cloudSkipped = [];
             try {
               // Authoritative reference snapshot straight from Supabase (row still present)
-              const preRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=photoPath,thumbnailPath,previewPath,originalPhotoPath,storageKey,fullName,grade&id=or.(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
+              // `or` is a top-level PostgREST operator, so it has to be the filter name itself. Written as
+              // `id=or.(...)` the request is rejected, this snapshot silently returned nothing, and the
+              // photo keys it was supposed to hand over never reached the purge below.
+              const preRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=photoPath,thumbnailPath,previewPath,originalPhotoPath,storageKey,fullName,grade&or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
                 headers: {
                   "apikey": SUPABASE_KEY,
                   "Authorization": `Bearer ${SUPABASE_KEY}`,
@@ -3864,16 +4153,22 @@ export default {
             photoKeys.add(`records/${targetId}.json`);
 
             // 1. Delete the PostgreSQL row
+            let rowsRemoved = 0;
             try {
-              await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
+              const dropRes = await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
                 method: "DELETE",
                 headers: {
                   "apikey": SUPABASE_KEY,
                   "Authorization": `Bearer ${SUPABASE_KEY}`,
                   "Content-Profile": "cloudflare",
-                  "Accept-Profile": "cloudflare"
+                  "Accept-Profile": "cloudflare",
+                  "Prefer": "return=representation"
                 }
               });
+              if (dropRes.ok) {
+                const dropped = await dropRes.json().catch(() => []);
+                rowsRemoved = Array.isArray(dropped) ? dropped.length : 0;
+              }
             } catch (e) {}
 
             // 2. Purge every cloud photo object, unless another remaining student still references it
@@ -3907,6 +4202,34 @@ export default {
 
             r2ScanCache.scannedAt = 0;
 
+            // The live registry is the Cloudflare copy the directory reads while the database is
+            // unreachable, and every assembly merges it back in - so a record removed only from
+            // PostgreSQL keeps coming back from here. Thirteen deleted test students survived nine
+            // permanent deletes precisely this way, because the deleted-id list lives in one isolate's
+            // memory and the registry does not.
+            let registryStripped = false;
+            try {
+              const registryRows = await getLiveRegistryFromR2();
+              if (Array.isArray(registryRows)) {
+                const kept = registryRows.filter(s => {
+                  if (!s) return false;
+                  return (s.studentId || "").toLowerCase() !== tLower && (s.id || "").toLowerCase() !== tLower;
+                });
+                if (kept.length !== registryRows.length) {
+                  await saveLiveRegistryToR2(kept);
+                  registryStripped = true;
+                }
+              }
+            } catch (e) {
+              console.warn("live registry purge notice:", targetId, e);
+            }
+
+            // A station that asks to purge a record that is already gone gets the same 200 answer,
+            // but it is not an event: one retrying client wrote 985 "permanent purge completed" rows
+            // in seventeen minutes and pushed the day's real history out of the log window. Nothing
+            // left the database and no cloud file was removed, so there is nothing to report.
+            if (!registryStripped && rowsRemoved === 0 && cloudPurged.length === 0) return;
+
             fetch("https://ntfy.sh/sb_prod_sync_cloudflare_r2_v1", {
               method: "POST",
               headers: { "Title": `STUDENT_DELETED_${targetId}`, "Priority": "high" },
@@ -3917,7 +4240,7 @@ export default {
               action: "STUDENT_DELETED_PERMANENT",
               entityType: "Student",
               entityId: targetId,
-              details: `Permanent purge completed: database row removed, ${cloudPurged.length} cloud files deleted from R2 (${cloudPurged.slice(0, 4).join(", ")})${cloudSkipped.length ? `, ${cloudSkipped.length} shared file(s) kept` : ""}`,
+              details: `Permanent purge completed: ${rowsRemoved ? "database row removed" : "no database row held it"}, ${cloudPurged.length} cloud files deleted from R2 (${cloudPurged.slice(0, 4).join(", ")})${registryStripped ? ", removed from the Cloudflare live registry" : ""}${cloudSkipped.length ? `, ${cloudSkipped.length} shared file(s) kept` : ""}`,
               user: authUser,
               ipAddress: request.headers.get("cf-connecting-ip") || null,
               metadataExtra: { purgedFiles: cloudPurged.slice(0, 20) }
@@ -4055,7 +4378,7 @@ export default {
       }
 
       if (found) {
-        normalizeStudentPhoneFields(found);
+        normalizeStudentWireFields(found);
         return new Response(JSON.stringify({
           success: true,
           found: true,
