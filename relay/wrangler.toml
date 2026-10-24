@@ -1,0 +1,26 @@
+name = "sb-relay"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+account_id = "a5b6150294de0fedb8e0cd789114b939"
+
+# The hub is the one place every station's open socket lives, so it must be a single
+# globally-addressable instance rather than per-visitor shards: one name, one hub, all stations.
+[durable_objects]
+bindings = [{ name = "HUB", class_name = "StationRelayHub" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["StationRelayHub"]
+
+# Read-side authority for the reconciler sweep. The Pages project cannot bind D1 from the CLI, so
+# the relay carries the binding and the edge keeps its own copy of the same rows.
+[[d1_databases]]
+binding = "SB_D1"
+database_name = "student-bridge"
+database_id = "b6f524df-058d-4000-b6bf-c5d5c98a8b74"
+
+[observability]
+enabled = true
+
+[vars]
+PAGES_ORIGIN = "https://student-bridge.pages.dev"

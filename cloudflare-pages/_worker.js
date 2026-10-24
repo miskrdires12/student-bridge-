@@ -513,6 +513,91 @@ async function readFleetRowsFromD1(env) {
 }
 
 // -----------------------------------------------------------------------------
+// STATION RELAY — the connection that turns a poll into a push
+// -----------------------------------------------------------------------------
+//
+// A station finds out about another station's send by reading the delta feed on a timer, so the
+// fastest arrival the app can offer is the timer interval and the slowest is whatever one stalled
+// read costs. The relay ends both halves: sb-relay holds one open WebSocket per station inside a
+// Durable Object, this edge posts the fact of a durable write to it, and the hub pushes it down every
+// connected socket in the same round trip. What travels is a nudge plus the record the writer was
+// already holding - never portrait bytes, whose reference is already public in R2.
+//
+// It is an accelerator, not a dependency. Every station still walks the same delta read on its own
+// timer, so an unreachable hub or a dropped message costs latency rather than data, and a relay that
+// does not answer can never turn a successful send into an error the operator is shown.
+//
+// The socket is opened by a browser, which cannot attach an Authorization header to a WebSocket, and
+// it must not be open to whoever asks. So the edge mints a short-lived ticket from the identity it
+// has already authenticated and the relay hands that ticket back to this edge to be checked - the
+// relay holds no copy of the signing secret.
+
+const RELAY_BASE_URL = "https://sb-relay.colldwater340.workers.dev";
+const RELAY_TICKET_TTL_SECONDS = 12 * 3600;
+// Long enough to deliver a frame, short enough that a hub which has stopped answering cannot add
+// seconds to a response the operator is already waiting on.
+const RELAY_POST_WAIT_MS = 1500;
+
+function relayBase(env) {
+  return (env && env.RELAY_URL) || RELAY_BASE_URL;
+}
+
+function mintRelayTicket(station, role) {
+  return signJwtToken({ purpose: "sb-relay", station, role }, RELAY_TICKET_TTL_SECONDS);
+}
+
+async function readRelayTicket(ticket) {
+  const payload = await verifyJwtToken(ticket);
+  if (!payload || payload.purpose !== "sb-relay" || !payload.station) return null;
+  return {
+    station: String(payload.station).slice(0, 64),
+    role: String(payload.role || "RECEIVER").toUpperCase().slice(0, 20)
+  };
+}
+
+// Called after the write is durable and off the response path, so a slow hub cannot add to the send
+// the operator is already watching.
+function relayAnnounce(ctx, env, message) {
+  if (!message || typeof message.type !== "string") return;
+  if (!message.studentId && message.type !== "BATCH") return;
+  let body;
+  try {
+    body = JSON.stringify(message);
+  } catch (encodeErr) {
+    return;
+  }
+  const post = externalFetch(`${relayBase(env)}/publish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+    signal: AbortSignal.timeout ? AbortSignal.timeout(RELAY_POST_WAIT_MS) : undefined
+  }).then(res => {
+    if (!res.ok) console.warn(`relay announce ${message.type} ${message.studentId || ""}: HTTP ${res.status}`);
+  }).catch(err => {
+    console.warn("relay announce note:", err && err.message);
+  });
+  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(post);
+}
+
+// Every writer knows the station that wrote it from the same header the delta read stores, and the
+// hub uses it to keep a station from being nudged about its own send.
+function relayOrigin(request) {
+  return (request.headers.get("X-Device-Id") || request.headers.get("X-Hardware-Id") || "").toString().trim().slice(0, 48);
+}
+
+// A nudge carries the directory fields and the photo references, never in-portrait bytes: a base64
+// face on a socket is a megabyte where a CDN path is forty characters.
+function relayStudentRecord(record) {
+  const out = { ...record };
+  delete out.capturedPhoto;
+  delete out.photoBase64;
+  for (const key of ["previewPath", "thumbnailPath"]) {
+    if (typeof out[key] === "string" && out[key].startsWith("data:")) out[key] = out.photoPath || "";
+  }
+  return out;
+}
+
+// -----------------------------------------------------------------------------
 // SERVER-SIDE CRYPTOGRAPHIC JWT SESSION & RBAC SYSTEM (Web Crypto API)
 // -----------------------------------------------------------------------------
 
@@ -2405,6 +2490,44 @@ export default {
     }
 
     // -------------------------------------------------------------------------
+    // 1A2. STATION RELAY SOCKET
+    // -------------------------------------------------------------------------
+    if (url.pathname === "/api/relay/ticket" && request.method === "GET") {
+      const authUser = await authenticateRequest(request);
+      const authErr = requireAuthorization(authUser, ["SENDER", "RECEIVER", "ADMIN", "SUPER_ADMIN"]);
+      if (authErr) return authErr;
+
+      const station = String(relayOrigin(request) || (authUser && authUser.id) || "unknown").slice(0, 64);
+      const role = (authUser.role || "RECEIVER").toString().toUpperCase();
+      const ticket = await mintRelayTicket(station, role);
+      return new Response(JSON.stringify({
+        connectUrl: `${relayBase(env)}/connect?station=${encodeURIComponent(station)}&ticket=${encodeURIComponent(ticket)}`,
+        station,
+        role,
+        expiresAt: new Date(Date.now() + RELAY_TICKET_TTL_SECONDS * 1000).toISOString()
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders }
+      });
+    }
+
+    // The relay holds no signing key, so the edge that minted a ticket is the only thing that can say
+    // whether it is real. One call per socket, at connect time.
+    if (url.pathname === "/api/relay/verify" && request.method === "GET") {
+      const identity = await readRelayTicket((url.searchParams.get("ticket") || "").trim());
+      if (!identity) {
+        return new Response(JSON.stringify({ ok: false }), {
+          status: 401,
+          headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, ...identity }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders }
+      });
+    }
+
+    // -------------------------------------------------------------------------
     // 1B. CLOUDFLARE R2 STORAGE & DOMAIN TELEMETRY API
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/storage/status" && request.method === "GET") {
@@ -3546,6 +3669,17 @@ export default {
           busResult = await busTask;
         }
 
+        // The record goes out over the relay socket as well. ntfy is a public third party that refuses
+        // anonymous subscriptions once a shift fills a topic, so the push that makes a send arrive now
+        // cannot depend on it; the hub is this system's own connection to every station.
+        relayAnnounce(ctx, env, {
+          type: "UPSERT",
+          studentId: insertedRecord.studentId,
+          origin: originStation,
+          at: insertedRecord.updatedAt || insertedRecord.createdAt,
+          student: ntfyCleanRecord
+        });
+
         await writeAuditLog({
           action: "STUDENT_CREATED",
           entityType: "Student",
@@ -3607,6 +3741,15 @@ export default {
         // Answer from memory first: the sender's next poll often lands on this same isolate, and
         // it should see the receipt without waiting on the bucket.
         rememberReceipt(receipt);
+        // And tell the sender directly. A confirmation the operator finds on a timer is evidence that
+        // arrived late; pushed down the sender's own socket it is the message it was always meant to be.
+        relayAnnounce(ctx, env, {
+          type: "RECEIPT",
+          studentId,
+          station,
+          stationName: receipt.stationName,
+          at: receipt.at
+        });
         const stored = await uploadToR2Bucket(
           `acks/${ackKeyPart(studentId)}/${ackKeyPart(station)}.json`,
           new TextEncoder().encode(JSON.stringify(receipt)),
@@ -3770,6 +3913,14 @@ export default {
 
         // D1 first: an APK scan must be readable from the feed without waiting on the ocean.
         await writeStudentToD1(env, newStudent);
+
+        relayAnnounce(ctx, env, {
+          type: "UPSERT",
+          studentId: newStudent.studentId,
+          origin: relayOrigin(request),
+          at: newStudent.updatedAt || newStudent.createdAt,
+          student: relayStudentRecord(newStudent)
+        });
 
         // Authoritative write to Supabase cloudflare.students
         try {
@@ -4011,6 +4162,15 @@ export default {
         // immediately pulls the feed must see the rows it just sent, and a background write could
         // land after that pull.
         await writeStudentsToD1Batch(env, dbBatch);
+
+        // One nudge for the whole batch. The receivers read the rows they are missing rather than
+        // being handed hundreds of frames for records they may already hold.
+        relayAnnounce(ctx, env, {
+          type: "BATCH",
+          origin: relayOrigin(request),
+          count: dbBatch.length,
+          at: new Date().toISOString()
+        });
 
         // Asynchronously upsert to Supabase in batches
         const syncSupabasePromise = (async () => {
@@ -4324,6 +4484,15 @@ export default {
         // an edit is visible on the next feed page even when Supabase answers slowly.
         await patchStudentInD1(env, mergedStudent.studentId || studentId, mergedStudent);
 
+        // An edit is a send too: every station still showing the record as it was has to be told,
+        // and the row it reads back is the merged one rather than the patch.
+        relayAnnounce(ctx, env, {
+          type: "UPSERT",
+          studentId: mergedStudent.studentId || studentId,
+          origin: relayOrigin(request),
+          at: mergedStudent.updatedAt
+        });
+
         // Authoritative write to Supabase cloudflare.students
         try {
           const supabasePayload = {};
@@ -4450,6 +4619,7 @@ export default {
           await patchStudentInD1(env, targetId, {
             receiverHidden: false, hiddenAt: null, updatedAt: new Date().toISOString()
           });
+          relayAnnounce(ctx, env, { type: "RESTORE", studentId: targetId, origin: relayOrigin(request) });
           try {
             await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
               method: "PATCH",
@@ -4595,6 +4765,11 @@ export default {
               }
             } catch (e) {}
 
+            // The row is out of both stores now, so every station holding it can be told to drop it.
+            // Announced here rather than at the end because the photo purge below is the slow part and
+            // a station still showing a record it no longer owns is the thing operators report.
+            relayAnnounce(ctx, env, { type: "DELETE", studentId: targetId, origin: relayOrigin(request) });
+
             // 2. Purge every cloud photo object, unless another remaining student still references it
             for (const key of photoKeys) {
               try {
@@ -4712,6 +4887,7 @@ export default {
             hiddenAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           });
+          relayAnnounce(ctx, env, { type: "HIDE", studentId: targetId, origin: relayOrigin(request) });
           try {
             await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
               method: "PATCH",

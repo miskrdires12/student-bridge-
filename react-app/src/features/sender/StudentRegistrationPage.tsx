@@ -159,6 +159,9 @@ export const StudentRegistrationPage: React.FC = () => {
   // Which store the edge confirmed holding the row — it names the one that actually answered.
   const [durableStore, setDurableStore] = useState('Supabase');
   const [stationId] = useState(syncStationId);
+  // The relay pushes a receiver's confirmation the moment the edge records it; this is the poll the
+  // nudge fires, so the banner can be driven by evidence arriving rather than by a timer expiring.
+  const receiptPollRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const sid = (submittedStudent?.studentId || '').trim();
@@ -185,13 +188,28 @@ export const StudentRegistrationPage: React.FC = () => {
 
     setReceiverReceipts([]);
     setReceiptsWatching(true);
+    receiptPollRef.current = poll;
     poll();
 
     return () => {
       stopped = true;
+      if (receiptPollRef.current === poll) receiptPollRef.current = null;
       if (timer) clearTimeout(timer);
     };
   }, [cloudVerified, submittedStudent?.studentId]);
+
+  // A confirmation that lands over the relay socket is read immediately instead of on the next tick
+  // of the watch loop, so "receiver confirmed" appears when it is true rather than seconds later.
+  useEffect(() => {
+    const handleReceiptNudge = (event: Event) => {
+      const detail = (event as CustomEvent<{ studentId?: string }>).detail;
+      const sid = (submittedStudent?.studentId || '').trim();
+      if (!sid || !detail || detail.studentId !== sid) return;
+      receiptPollRef.current?.();
+    };
+    window.addEventListener('studentbridge_receipt_event', handleReceiptNudge);
+    return () => window.removeEventListener('studentbridge_receipt_event', handleReceiptNudge);
+  }, [submittedStudent?.studentId]);
 
   const confirmedStationNames = receiverReceipts.map(r => r.stationName || r.station);
   const lastReceiptTime = receiverReceipts.length

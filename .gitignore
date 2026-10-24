@@ -56,3 +56,7 @@ lean-deploy.zip
 scratch/
 react-app/node_modules/
 react-app/dist/
+
+# Cloudflare CLI local state (cache, D1/Miniflare state, deploy temp bundles)
+.wrangler/
+relay/.wrangler/

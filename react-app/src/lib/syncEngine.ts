@@ -467,6 +467,7 @@ export function startCloudDeltaSync(onUpsert: CloudDeltaListener): () => void {
     cloudDeltaBootSweep = true;
     document.addEventListener('visibilitychange', () => scheduleCloudDelta(0));
     scheduleCloudDelta(1500);
+    startStationRelay();
   }
   return () => {
     cloudDeltaListeners.delete(onUpsert);
@@ -517,10 +518,185 @@ async function pollCloudDelta() {
   }
   // A station that is merely in the background syncs more slowly; it does not stop receiving, and
   // the browser throttling a hidden tab is no reason to leave its directory stale.
-  const interval = document.visibilityState === 'hidden' ? CLOUD_DELTA_POLL_MS * 5 : CLOUD_DELTA_POLL_MS;
+  // With a relay socket open the push path owns the timing, so this read goes back to being what it
+  // should always have been: the safety net that proves nothing was missed, not the delivery.
+  const interval = relayConnected
+    ? CLOUD_DELTA_POLL_MS * 3
+    : (document.visibilityState === 'hidden' ? CLOUD_DELTA_POLL_MS * 5 : CLOUD_DELTA_POLL_MS);
   // A full page means more of one send batch is waiting behind the cap, but only keep going when
   // the cursor actually moved, so rows sharing a timestamp cannot loop forever.
   scheduleCloudDelta(advanced ? 0 : interval);
+}
+
+/**
+ * The station's connection to the relay hub.
+ *
+ * Everything above is a station asking the cloud whether anything happened. The relay inverts it:
+ * the edge posts the write it just made to a hub that holds this tab's open socket, and the record
+ * arrives on the frame. The socket is opened against the relay Worker rather than the Pages edge
+ * because only a Worker can keep one connection alive per station across requests, and it carries a
+ * ticket minted by the edge from the identity it already authenticated, because a browser cannot put
+ * an Authorization header on a WebSocket.
+ *
+ * A push never replaces the read. Every message also schedules a cursor walk, because a hub that
+ * dropped a frame would otherwise leave this station missing a record it never knew to ask for.
+ */
+const RELAY_PING_MS = 25000;
+const RELAY_RECONNECT_MAX_MS = 30000;
+// Coalescing window for the reconcile a nudge triggers, so a batch of sends costs one read rather
+// than one per record.
+const RELAY_RECONCILE_MS = 1500;
+
+let relaySocket: WebSocket | null = null;
+let relayConnected = false;
+let relayTimer: ReturnType<typeof setTimeout> | undefined;
+let relayPingTimer: ReturnType<typeof setInterval> | undefined;
+let relayBackoffMs = 1000;
+let relayStarted = false;
+
+export function isStationRelayConnected(): boolean {
+  return relayConnected;
+}
+
+function scheduleRelayReconnect() {
+  stopRelayPing();
+  if (relayTimer) clearTimeout(relayTimer);
+  const delay = Math.min(relayBackoffMs, RELAY_RECONNECT_MAX_MS);
+  relayBackoffMs = Math.max(relayBackoffMs * 2, 1000);
+  relayTimer = setTimeout(openStationRelay, delay);
+}
+
+export function startStationRelay(): void {
+  if (typeof window === 'undefined' || relayStarted) return;
+  relayStarted = true;
+  openStationRelay();
+  // A station that was left open over a shift change holds a socket the hub may already have given
+  // up on. Re-checking on focus reconnects it without waiting for the next send to go missing.
+  window.addEventListener('focus', () => {
+    if (!relaySocket || relaySocket.readyState === WebSocket.CLOSED) {
+      relayBackoffMs = 1000;
+      openStationRelay();
+    }
+  });
+}
+
+async function openStationRelay() {
+  if (relaySocket && (relaySocket.readyState === WebSocket.OPEN || relaySocket.readyState === WebSocket.CONNECTING)) return;
+  let grant: { connectUrl?: string } | null = null;
+  try {
+    const res = await fetch('/api/relay/ticket', { headers: stationAuthHeaders(), cache: 'no-store' });
+    if (!res.ok) {
+      scheduleRelayReconnect();
+      return;
+    }
+    grant = await res.json().catch(() => null);
+  } catch {
+    scheduleRelayReconnect();
+    return;
+  }
+  if (!grant || !grant.connectUrl) {
+    scheduleRelayReconnect();
+    return;
+  }
+
+  let socket: WebSocket;
+  try {
+    socket = new WebSocket(grant.connectUrl);
+  } catch {
+    scheduleRelayReconnect();
+    return;
+  }
+  relaySocket = socket;
+
+  socket.onopen = () => {
+    relayConnected = true;
+    relayBackoffMs = 1000;
+    stopRelayPing();
+    relayPingTimer = setInterval(() => {
+      try {
+        socket.send(JSON.stringify({ type: 'PING' }));
+      } catch {
+        // The close handler owns the reconnect; a send that fails is how it starts.
+      }
+    }, RELAY_PING_MS);
+  };
+  socket.onmessage = (event: MessageEvent) => {
+    if (typeof event.data === 'string') handleRelayMessage(event.data);
+  };
+  socket.onclose = () => {
+    if (relaySocket !== socket) return;
+    relaySocket = null;
+    relayConnected = false;
+    scheduleRelayReconnect();
+  };
+  socket.onerror = () => {
+    if (relaySocket !== socket) return;
+    relaySocket = null;
+    relayConnected = false;
+    scheduleRelayReconnect();
+  };
+}
+
+function stopRelayPing() {
+  if (relayPingTimer) {
+    clearInterval(relayPingTimer);
+    relayPingTimer = undefined;
+  }
+}
+
+function handleRelayMessage(raw: string): void {
+  let message: any;
+  try {
+    message = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  const type = String(message?.type || '').toUpperCase();
+  if (!type || type === 'HELLO' || type === 'PING' || type === 'PONG') return;
+
+  if (type === 'RECEIPT') {
+    // A receiver confirmed a record. Whoever sent it is watching for exactly this, so it is passed
+    // on as an event rather than folded into the delta path: the confirmation is about a send that
+    // this station already holds.
+    window.dispatchEvent(new CustomEvent('studentbridge_receipt_event', {
+      detail: {
+        studentId: message.studentId,
+        station: message.station,
+        stationName: message.stationName || message.station,
+        at: message.at
+      }
+    }));
+    return;
+  }
+
+  if (type === 'UPSERT' && message.student && message.student.studentId) {
+    applyRelayStudent(message.student as Student, String(message.origin || ''));
+    return;
+  }
+
+  if (type === 'HIDE' || type === 'DELETE') {
+    window.dispatchEvent(new CustomEvent('studentbridge_softdelete', { detail: message.studentId }));
+  }
+
+  // BATCH, and every nudge that carries no record: read the cursor, which holds the real answer.
+  scheduleCloudDelta(RELAY_RECONCILE_MS);
+}
+
+function applyRelayStudent(student: Student, origin: string): void {
+  const stampedAt = Date.parse(student.updatedAt || student.createdAt || '');
+  // A frame older than the row this station already walked would rewind the directory.
+  if (Number.isFinite(stampedAt) && stampedAt <= cloudDeltaCursor) return;
+  cloudDeltaListeners.forEach(listener => {
+    try {
+      listener(student);
+    } catch (listenerErr) {
+      console.warn('Relay subscriber notice:', listenerErr);
+    }
+  });
+  if (Number.isFinite(stampedAt) && Date.now() - stampedAt <= CLOUD_DELTA_ACK_WINDOW_MS && !cloudDeltaBootSweep) {
+    reportAppliedReceipt(student.studentId, origin || (student as any).originStation || (student as any).senderId || '');
+  }
+  scheduleCloudDelta(RELAY_RECONCILE_MS);
 }
 
 /**
