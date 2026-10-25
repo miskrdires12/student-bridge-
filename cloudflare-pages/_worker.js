@@ -1163,12 +1163,23 @@ async function publishToSyncBus(title, bodyJson) {
 }
 
 let r2ScanCache = { totalObjects: 0, totalBytes: 0, byPrefix: [], keySet: new Map(), scannedAt: 0 };
+const R2_SCAN_SNAPSHOT_KEY = "stats/r2_scan_snapshot.json";
+// A cold Worker isolate has no in-memory scan, and rebuilding one means paging the whole
+// bucket (16 S3 list calls, ~15 s). The last finished scan is mirrored to D1 and R2, so a fresh
+// isolate can serve the numbers it would have served minutes earlier instead of paying for a listing.
+const SCAN_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
+let scanSnapshotReadAttempted = false;
+let scanInFlight = null;
+// Which copy a fresh isolate actually read. Surfaced in the capacity responses because a cold
+// dashboard that answers in 400ms and one that answers in 15s look identical otherwise.
+let scanHydrateNote = "none";
 
 // Serve cached scan numbers instantly; renew an expired scan in the background so
 // dashboard polling never waits on the ~10s full-bucket listing.
 async function scanCachedWithBgRefresh(ctx, force = false) {
   const TTL_MS = 5 * 60 * 1000;
   if (force) return await ensureR2Scan(true);
+  if (r2ScanCache.scannedAt === 0) await hydrateScanFromSnapshot();
   if (r2ScanCache.scannedAt === 0) return await ensureR2Scan(false);
   if (Date.now() - r2ScanCache.scannedAt >= TTL_MS && ctx && ctx.waitUntil) {
     ctx.waitUntil(ensureR2Scan(true));
@@ -1176,32 +1187,124 @@ async function scanCachedWithBgRefresh(ctx, force = false) {
   return r2ScanCache;
 }
 
+async function hydrateScanFromSnapshot() {
+  if (scanSnapshotReadAttempted) return;
+  scanSnapshotReadAttempted = true;
+  let snap = null;
+  try {
+    // D1 answers in about a millisecond and is bound on every request, so it is the first place
+    // a fresh isolate looks. R2 (public domain, then signed GET) is the fallback for the window
+    // before the first D1-backed scan.
+    if (d1Ready(activeEnv)) {
+      const row = await activeEnv.SB_D1.prepare(
+        "SELECT totalObjects, totalBytes, byPrefix, scannedAt FROM r2_scan_snapshot WHERE scope = ?1"
+      ).bind("bucket").first();
+      if (row && Number(row.scannedAt) > 0) {
+        snap = {
+          totalObjects: Number(row.totalObjects) || 0,
+          totalBytes: Number(row.totalBytes) || 0,
+          byPrefix: (() => { try { return JSON.parse(row.byPrefix || "[]"); } catch (e) { return []; } })(),
+          scannedAt: Number(row.scannedAt)
+        };
+        scanHydrateNote = "d1";
+      } else {
+        scanHydrateNote = "d1-row-empty";
+      }
+    } else {
+      scanHydrateNote = "no-d1-binding";
+    }
+    if (!snap) {
+      let text = null;
+      try {
+        const res = await fetch(`${R2_PUBLIC_BASE_URL}/${R2_SCAN_SNAPSHOT_KEY}`, { cache: "no-store", signal: AbortSignal.timeout(5000) });
+        if (res.ok) text = await res.text();
+        else scanHydrateNote += `/cdn-${res.status}`;
+      } catch (cdnErr) {
+        scanHydrateNote += "/cdn-failed";
+      }
+      if (!text) {
+        const obj = await getFromR2Bucket(R2_SCAN_SNAPSHOT_KEY);
+        if (obj && obj.bytes) text = new TextDecoder().decode(obj.bytes);
+        else scanHydrateNote += "/signed-get-empty";
+      }
+      if (text) snap = JSON.parse(text);
+    }
+    if (!snap) {
+      scanHydrateNote += "/no-copy";
+      console.warn("scan hydrate note: no readable copy of", R2_SCAN_SNAPSHOT_KEY);
+      return;
+    }
+    const scannedAt = Number(snap.scannedAt) || 0;
+    if (!(scannedAt > 0) || Date.now() - scannedAt > SCAN_SNAPSHOT_MAX_AGE_MS) {
+      scanHydrateNote += `/stale-${Math.round((Date.now() - scannedAt) / 1000)}s`;
+      console.warn("scan hydrate note: snapshot age", Math.round((Date.now() - scannedAt) / 1000) + "s");
+      return;
+    }
+    // keySet is deliberately left empty: a hydrated snapshot answers the capacity counters,
+    // while the orphan audit needs a live listing and calls ensureR2Scan(true) for one.
+    r2ScanCache = {
+      totalObjects: Number(snap.totalObjects) || 0,
+      totalBytes: Number(snap.totalBytes) || 0,
+      byPrefix: Array.isArray(snap.byPrefix) ? snap.byPrefix : [],
+      keySet: new Map(),
+      scannedAt
+    };
+  } catch (e) {
+    scanHydrateNote += "/read-failed";
+    console.warn("scan hydrate note:", e && e.message);
+  }
+}
+
 async function ensureR2Scan(force = false) {
   const TTL_MS = 5 * 60 * 1000;
   if (!force && r2ScanCache.scannedAt > 0 && Date.now() - r2ScanCache.scannedAt < TTL_MS) return r2ScanCache;
-  try {
-    const keys = await listR2AllKeys();
-    let totalBytes = 0;
-    const prefixMap = new Map();
-    for (const [key, size] of keys.entries()) {
-      totalBytes += size;
-      const seg = key.includes("/") ? key.slice(0, key.indexOf("/")) : "(root)";
-      const cur = prefixMap.get(seg) || { fileCount: 0, sizeBytes: 0 };
-      cur.fileCount += 1;
-      cur.sizeBytes += size;
-      prefixMap.set(seg, cur);
+  // A dashboard opens several panels at once; without this each one would list the whole bucket.
+  if (scanInFlight) return await scanInFlight;
+  scanInFlight = (async () => {
+    try {
+      const keys = await listR2AllKeys();
+      let totalBytes = 0;
+      const prefixMap = new Map();
+      for (const [key, size] of keys.entries()) {
+        totalBytes += size;
+        const seg = key.includes("/") ? key.slice(0, key.indexOf("/")) : "(root)";
+        const cur = prefixMap.get(seg) || { fileCount: 0, sizeBytes: 0 };
+        cur.fileCount += 1;
+        cur.sizeBytes += size;
+        prefixMap.set(seg, cur);
+      }
+      const byPrefix = Array.from(prefixMap.entries())
+        .map(([name, v]) => ({ name, fileCount: v.fileCount, sizeBytes: v.sizeBytes, sizeFormatted: formatBytesSb(v.sizeBytes) }))
+        .sort((a, b) => b.sizeBytes - a.sizeBytes);
+      r2ScanCache = { totalObjects: keys.size, totalBytes, byPrefix, keySet: keys, scannedAt: Date.now() };
+      scanHydrateNote = "live-scan";
+      cachedR2Stats.totalObjects = keys.size;
+      cachedR2Stats.totalBytes = totalBytes;
+      cachedR2Stats.lastScanned = Date.now();
+      try {
+        await uploadToR2Bucket(R2_SCAN_SNAPSHOT_KEY, new TextEncoder().encode(JSON.stringify({
+          totalObjects: keys.size,
+          totalBytes,
+          byPrefix,
+          scannedAt: r2ScanCache.scannedAt
+        })), "application/json");
+      } catch (e) {}
+      try {
+        if (d1Ready(activeEnv)) {
+          await activeEnv.SB_D1.prepare(
+            "INSERT OR REPLACE INTO r2_scan_snapshot (scope, totalObjects, totalBytes, byPrefix, scannedAt) VALUES (?1, ?2, ?3, ?4, ?5)"
+          ).bind("bucket", keys.size, totalBytes, JSON.stringify(byPrefix), r2ScanCache.scannedAt).run();
+          scanSnapshotReadAttempted = true;
+        }
+      } catch (d1SnapErr) {}
+    } catch (e) {
+      console.warn("R2 scan notice:", e);
+    } finally {
+      scanInFlight = null;
     }
-    const byPrefix = Array.from(prefixMap.entries())
-      .map(([name, v]) => ({ name, fileCount: v.fileCount, sizeBytes: v.sizeBytes, sizeFormatted: formatBytesSb(v.sizeBytes) }))
-      .sort((a, b) => b.sizeBytes - a.sizeBytes);
-    r2ScanCache = { totalObjects: keys.size, totalBytes, byPrefix, keySet: keys, scannedAt: Date.now() };
-    cachedR2Stats.totalObjects = keys.size;
-    cachedR2Stats.totalBytes = totalBytes;
-    cachedR2Stats.lastScanned = Date.now();
-  } catch (e) {
-    console.warn("R2 scan notice:", e);
-  }
-  return r2ScanCache;
+    return r2ScanCache;
+  })();
+  return await scanInFlight;
 }
 
 // -----------------------------------------------------------------------------
@@ -5463,6 +5566,7 @@ export default {
         r2TotalObjects: scan.totalObjects,
         r2Bucket: R2_BUCKET,
         r2RealStorageVerified: scan.scannedAt > 0,
+        storageScanSource: scanHydrateNote,
         queryLatencyMs: Date.now() - statsStart
       }), {
         headers: { "Content-Type": "application/json", ...corsHeaders }
@@ -5483,6 +5587,7 @@ export default {
         totalGB: Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(3)),
         formatted: `${formatBytesSb(scan.totalBytes)} (${(scan.totalBytes / 1073741824).toFixed(2)} GB)`,
         verified: scan.scannedAt > 0,
+        storageScanSource: scanHydrateNote,
         byPrefix: scan.byPrefix,
         lastScanned: scan.scannedAt ? new Date(scan.scannedAt).toISOString() : null
       }), {

@@ -60,3 +60,7 @@ react-app/dist/
 # Cloudflare CLI local state (cache, D1/Miniflare state, deploy temp bundles)
 .wrangler/
 relay/.wrangler/
+
+# Pages project config pulled from the dashboard (holds live vars) - never commit
+wrangler.toml
+.cfgbak/
