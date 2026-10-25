@@ -372,6 +372,22 @@ function currentAccountId(): string {
   }
 }
 
+/**
+ * Whether a message on the bus was written by this station.
+ *
+ * The bus echoes a send straight back to the station that made it, and the same-window DOM event
+ * reaches the tab that published it, so any listener that reacts by writing again feeds itself:
+ * a permanent purge ran delete -> publish -> own echo -> delete, which locked the desk's browser
+ * and kept deleting the same row. A station never acts on its own message.
+ */
+function isOwnMessage(origin: string): boolean {
+  if (!origin) return false;
+  const station = syncStationId();
+  if (origin === station || origin.includes(station)) return true;
+  const account = currentAccountId();
+  return !!account && origin === account;
+}
+
 function reportAppliedReceipt(studentId: string, origin: string): void {
   const sid = (studentId || '').trim();
   const station = syncStationId();
@@ -738,6 +754,9 @@ export function subscribeToStudentSync(
   const handleDomEvent = (event: Event) => {
     if (!isSubscribed) return;
     const custom = event as CustomEvent<SyncPayload>;
+    // The tab that published is still subscribed to the event it published on. Acting on that echo
+    // means writing again, and the write echoes again.
+    if (custom.detail && isOwnMessage(custom.detail.originStation || '')) return;
     if (custom.detail) {
       if (custom.detail.action === 'UPSERT' && custom.detail.student) {
         onUpsert(custom.detail.student);
@@ -754,6 +773,9 @@ export function subscribeToStudentSync(
     eventSource = new EventSource(`${SYNC_BASE_URL}/sse`);
 
     const applyPayload = (payload: SyncPayload) => {
+      // ntfy hands a station's own send back to it; deleting or re-adding it here is the echo that
+      // turns one operator action into a loop.
+      if (isOwnMessage(payload.originStation || '')) return;
       if (payload.action === 'UPSERT' && payload.student) {
         onUpsert(payload.student);
         // Only the cloud path can be a remote station's send, so only it earns a receipt.

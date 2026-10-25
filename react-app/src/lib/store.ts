@@ -5,6 +5,10 @@ import { parseGradeAndSection, getBranchForSchool, getStudentBranch } from './gr
 export { getPhotoUrl, getPhotoCandidates, getPhotoEncodeClass, publishStudentSync, subscribeToStudentSync, getBranchForSchool, getStudentBranch, fetchDeliveryReceipts, syncStationId };
 export type { DeliveryReceipt } from './syncEngine';
 
+// The day a send belongs to is the day it happened at the school, not the day the browser's clock
+// calls it, and the row store buckets on this zone.
+const FLEET_TZ = 'Africa/Addis_Ababa';
+
 // Branch to School Mapping
 export const BRANCH_SCHOOL_MAP: Record<string, string[]> = {
   'Addis Ababa': [
@@ -535,6 +539,7 @@ function upsertStudentFromSync(incoming: Student): void {
   const existingIdx = memoryStudents.findIndex(s => s.studentId === incoming.studentId || s.id === incoming.id);
   if (existingIdx !== -1) {
     memoryStudents[existingIdx] = { ...memoryStudents[existingIdx], ...incoming };
+    invalidateStudentCaches();
   } else {
     memoryStudents.unshift(incoming);
   }
@@ -669,7 +674,130 @@ export async function fetchLiveDataset(sinceIso?: string): Promise<{ students: S
   return { students, total, complete: !lostPage && students.length >= total };
 }
 
-export async function initStore(): Promise<void> {
+// Continuous authoritative reconciliation lives at module scope on purpose. It used to be built
+// inside initStore(), which meant every caller that re-ran hydration got a fresh cursor and a fresh
+// walk of the whole registry: the directory's ten-second poll restarted the paginated read before
+// the previous pass had finished, the page stayed in its loading state, and it displayed zero
+// students that the row store holds in full. One cursor, at most one pass in flight, per station.
+const FULL_CONVERGENCE_MS = 15 * 60 * 1000;
+const DELTA_OVERLAP_MS = 60 * 1000;
+let lastFullSyncAt = 0;
+let lastSyncHealthy = false;
+let deltaCursorAt = Date.now();
+let reconcileFlight: Promise<void> | null = null;
+let hydrateFlight: Promise<void> | null = null;
+
+function localCustomStudentIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem('sb_custom_students');
+    const list = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(list) ? list.map((s: Student) => s?.studentId).filter(Boolean) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function mergeLiveRows(live: Student[], allowPrune: boolean) {
+  const delIds = getDeletedStudentIds();
+  const merged = new Map<string, Student>();
+  memoryStudents.forEach(s => { if (s.studentId) merged.set(s.studentId, s); });
+  let dirty = false;
+
+  const liveIds = new Set<string>();
+  live.forEach(s => {
+    if (!s || !s.studentId) return;
+    liveIds.add(s.studentId);
+    if (delIds.has(s.studentId) || delIds.has(s.studentId.toLowerCase()) || (s.id && delIds.has(s.id))) return;
+    const local = merged.get(s.studentId);
+    const localIsNewer = local && (local.updatedAt || '') > (s.updatedAt || '');
+    const eff = localIsNewer ? { ...s, ...local } : { ...(local || {}), ...s };
+    if (!local || (eff.updatedAt || '') !== (local.updatedAt || '')) dirty = true;
+    merged.set(s.studentId, eff);
+  });
+
+  // Drop server-side permanent deletions that the stale baseline still carries.
+  // Only trust removals when this response is provably the complete table.
+  if (allowPrune) {
+    const customIds = localCustomStudentIds();
+    memoryStudents.forEach(s => {
+      if (s.studentId && !liveIds.has(s.studentId) && !customIds.has(s.studentId)) {
+        merged.delete(s.studentId);
+        dirty = true;
+      }
+    });
+  }
+
+  const reconciled = Array.from(merged.values());
+  reconciled.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+  const changed = dirty || reconciled.length !== memoryStudents.length ||
+    reconciled[0]?.studentId !== memoryStudents[0]?.studentId;
+  if (changed) {
+    memoryStudents = reconciled;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
+    }
+  }
+}
+
+async function runReconcilePass(): Promise<void> {
+  const wantFull = !lastSyncHealthy || Date.now() - lastFullSyncAt >= FULL_CONVERGENCE_MS;
+  // The cursor is taken before the request so a record written while it was in flight is
+  // still caught by the next delta instead of falling into the gap.
+  const passStartedAt = Date.now();
+  const sinceIso = wantFull ? undefined : new Date(deltaCursorAt - DELTA_OVERLAP_MS).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  try {
+    const feed = await fetchLiveDataset(sinceIso);
+    serverApiOnline = true;
+    deltaCursorAt = passStartedAt;
+
+    if (feed.students.length > 0) mergeLiveRows(feed.students, wantFull && feed.complete);
+
+    if (wantFull) {
+      lastSyncHealthy = feed.complete;
+      lastFullSyncAt = Date.now();
+    } else {
+      lastSyncHealthy = true;
+    }
+  } catch (e) {
+    lastSyncHealthy = false;
+    console.warn('Student feed reconcile notice:', e);
+  }
+}
+
+// One pass in flight, and a caller that arrives mid-pass joins that pass instead of starting a
+// second read of the registry. This is what a station polls on a timer, and what wakes on reconnect.
+export async function refreshStudentFeed(): Promise<void> {
+  if (reconcileFlight) return reconcileFlight;
+  reconcileFlight = runReconcilePass().finally(() => { reconcileFlight = null; });
+  return reconcileFlight;
+}
+
+function startFeedReconcileTimer() {
+  if (typeof window === 'undefined' || (window as any).__sbFullSyncTimer) return;
+  // 60s tick: a cheap delta pass while healthy, a full paginated convergence while degraded.
+  (window as any).__sbFullSyncTimer = setInterval(() => { void refreshStudentFeed(); }, 60 * 1000);
+  window.addEventListener('online', () => { lastFullSyncAt = 0; void refreshStudentFeed(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void refreshStudentFeed();
+  });
+}
+
+// Hydration is single-flight too: two stations-opened-at-once pages get one walk of the registry,
+// not one each. forceFullFeed is the "Reload full registry" escape hatch, which has to ignore both
+// the freshness window and a pass that is already running.
+export function initStore(options?: { forceFullFeed?: boolean }): Promise<void> {
+  if (options?.forceFullFeed) {
+    lastFullSyncAt = 0;
+    lastSyncHealthy = false;
+    return runInitStore();
+  }
+  if (hydrateFlight) return hydrateFlight;
+  hydrateFlight = runInitStore().finally(() => { hydrateFlight = null; });
+  return hydrateFlight;
+}
+
+async function runInitStore(): Promise<void> {
   const deletedIds = getDeletedStudentIds();
 
   // 1. Authoritative source of truth: the FULL live dataset from the edge API, pulled one
@@ -678,16 +806,26 @@ export async function initStore(): Promise<void> {
   let baseStudents: Student[] = [];
   let liveServerStudents: Student[] = [];
   let feedComplete = false;
-  try {
-    const feed = await fetchLiveDataset();
-    serverApiOnline = true;
-    if (feed.students.length > 0) {
-      liveServerStudents = feed.students;
-      feedComplete = feed.complete;
+  // The paginated walk is the expensive hydration and only it can prune a local copy, so it runs
+  // once per convergence window. A station that already holds a healthy dataset asks the cursor for
+  // what moved instead of reading all 7,000+ rows again.
+  const feedIsFresh = memoryStudents.length > 0 && lastSyncHealthy && Date.now() - lastFullSyncAt < FULL_CONVERGENCE_MS;
+  if (feedIsFresh) {
+    liveServerStudents = memoryStudents;
+    feedComplete = true;
+    void refreshStudentFeed();
+  } else {
+    try {
+      const feed = await fetchLiveDataset();
+      serverApiOnline = true;
+      if (feed.students.length > 0) {
+        liveServerStudents = feed.students;
+        feedComplete = feed.complete;
+      }
+    } catch (apiErr) {
+      serverApiOnline = false;
+      console.warn('Live dataset page fetch warning:', apiErr);
     }
-  } catch (apiErr) {
-    serverApiOnline = false;
-    console.warn('Live dataset page fetch warning:', apiErr);
   }
 
   // 2. Degraded/offline path only: stale baseline + latest-500 overlay.
@@ -793,95 +931,16 @@ export async function initStore(): Promise<void> {
     window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
   }
 
-  // 3b. Continuous authoritative reconciliation with the live server dataset.
-  // A delta pass (rows changed since the last cursor) runs every 60 s and costs kilobytes; the
-  // full paginated convergence runs every 15 min, immediately while degraded, on reconnect and
-  // when the tab wakes. Only a full pass may remove records, because a delta is by definition
-  // not the whole registry.
-  const FULL_CONVERGENCE_MS = 15 * 60 * 1000;
-  const DELTA_OVERLAP_MS = 60 * 1000;
-  let lastFullSyncAt = datasetHealthy ? Date.now() : 0;
-  let lastSyncHealthy = datasetHealthy;
-  let deltaCursorAt = Date.now();
-
-  const mergeLiveRows = (live: Student[], allowPrune: boolean) => {
-    const delIds = getDeletedStudentIds();
-    const merged = new Map<string, Student>();
-    memoryStudents.forEach(s => { if (s.studentId) merged.set(s.studentId, s); });
-    let dirty = false;
-
-    const liveIds = new Set<string>();
-    live.forEach(s => {
-      if (!s || !s.studentId) return;
-      liveIds.add(s.studentId);
-      if (delIds.has(s.studentId) || delIds.has(s.studentId.toLowerCase()) || (s.id && delIds.has(s.id))) return;
-      const local = merged.get(s.studentId);
-      const localIsNewer = local && (local.updatedAt || '') > (s.updatedAt || '');
-      const eff = localIsNewer ? { ...s, ...local } : { ...(local || {}), ...s };
-      if (!local || (eff.updatedAt || '') !== (local.updatedAt || '')) dirty = true;
-      merged.set(s.studentId, eff);
-    });
-
-    // Drop server-side permanent deletions that the stale baseline still carries.
-    // Only trust removals when this response is provably the complete table.
-    if (allowPrune) {
-      memoryStudents.forEach(s => {
-        if (s.studentId && !liveIds.has(s.studentId) &&
-            !localCustomStudents.some(cs => cs.studentId === s.studentId)) {
-          merged.delete(s.studentId);
-          dirty = true;
-        }
-      });
-    }
-
-    const reconciled = Array.from(merged.values());
-    reconciled.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-
-    const changed = dirty || reconciled.length !== memoryStudents.length ||
-      reconciled[0]?.studentId !== memoryStudents[0]?.studentId;
-    if (changed) {
-      memoryStudents = reconciled;
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
-      }
-    }
-  };
-
-  const runFullStudentSync = async () => {
-    const wantFull = !lastSyncHealthy || Date.now() - lastFullSyncAt >= FULL_CONVERGENCE_MS;
-    // The cursor is taken before the request so a record written while it was in flight is
-    // still caught by the next delta instead of falling into the gap.
-    const passStartedAt = Date.now();
-    const sinceIso = wantFull ? undefined : new Date(deltaCursorAt - DELTA_OVERLAP_MS).toISOString().replace(/\.\d{3}Z$/, 'Z');
-    try {
-      const feed = await fetchLiveDataset(sinceIso);
-      serverApiOnline = true;
-      deltaCursorAt = passStartedAt;
-
-      if (feed.students.length > 0) mergeLiveRows(feed.students, wantFull && feed.complete);
-
-      if (wantFull) {
-        lastSyncHealthy = feed.complete;
-        lastFullSyncAt = Date.now();
-      } else {
-        lastSyncHealthy = true;
-      }
-    } catch (e) {
-      lastSyncHealthy = false;
-      console.warn('Student feed reconcile notice:', e);
-    }
-  };
-
-  if (!datasetHealthy) runFullStudentSync();
-  if (typeof window !== 'undefined' && !(window as any).__sbFullSyncTimer) {
-    // 60s tick: a cheap delta pass while healthy, a full paginated convergence while degraded,
-    // and immediately on reconnect or when the tab becomes visible again.
-    (window as any).__sbFullSyncTimer = setInterval(runFullStudentSync, 60 * 1000);
-    window.addEventListener('online', () => { lastFullSyncAt = 0; runFullStudentSync(); });
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') runFullStudentSync();
-    });
-  }
+  // 3b. Hand the dataset to the module-scope reconcile loop, which owns the cursor, the timer and
+  // the single flight. A delta pass (rows changed since the last cursor) runs every 60 s and costs
+  // kilobytes; the full paginated convergence runs every 15 min, immediately while degraded, on
+  // reconnect and when the tab wakes. Only a full pass may remove records, because a delta is by
+  // definition not the whole registry.
+  lastSyncHealthy = datasetHealthy;
+  deltaCursorAt = Date.now();
+  if (datasetHealthy) lastFullSyncAt = Date.now();
+  if (!datasetHealthy) void refreshStudentFeed();
+  startFeedReconcileTimer();
 
   // 3. Fetch live users from server / Supabase PostgreSQL
   try {
@@ -1016,7 +1075,40 @@ export function normalizeStudentData(s: Student): Student {
 }
 
 export function getStudents(): Student[] {
-  return memoryStudents.map(normalizeStudentData);
+  // The array identity matters as much as the work: every screen holds this array in React state and
+  // every memo downstream re-keys on it. Handing out a fresh array on each call made each bus event,
+  // poll and hydrate re-derive the whole 6,000-record directory - seconds of blocked main thread, and
+  // the reason a station looked frozen when an operator opened the directory. The normalized array is
+  // reused while the registry it came from is unchanged, and every write path invalidates it, so a
+  // genuine edit or delete always produces a new array. No caller mutates what is handed back.
+  if (normalizedArray && normalizedArray.src === memoryStudents && normalizedArray.len === memoryStudents.length) {
+    return normalizedArray.out;
+  }
+  const out = memoryStudents.map(normalizedStudentRecord);
+  normalizedArray = { src: memoryStudents, len: memoryStudents.length, out };
+  return out;
+}
+
+// Called on every bus event, every poll and every hydrate, and it used to re-derive all 6,000+
+// normalized records from scratch each time. Normalization is deterministic and reads nothing
+// mutable, so each record's result is cached against the record object; adds and edits replace the
+// record (a new key), and the only in-place writers are the hide/unhide paths below, which drop the
+// cache so a record an operator hid can never reappear from a stale entry.
+let normalizedRecords = new WeakMap<Student, Student>();
+let normalizedArray: { src: Student[]; len: number; out: Student[] } | null = null;
+
+function normalizedStudentRecord(s: Student): Student {
+  const hit = normalizedRecords.get(s);
+  if (hit !== undefined) return hit;
+  const out = normalizeStudentData(s);
+  normalizedRecords.set(s, out);
+  return out;
+}
+
+export function invalidateStudentCaches(): void {
+  normalizedRecords = new WeakMap();
+  normalizedArray = null;
+  bucketsCache = null;
 }
 
 export function addStudent(newStudent: Student): void {
@@ -1058,6 +1150,7 @@ export function addStudent(newStudent: Student): void {
   const existingIdx = memoryStudents.findIndex(s => s.studentId === newStudent.studentId || s.id === newStudent.id);
   if (existingIdx !== -1) {
     memoryStudents[existingIdx] = { ...memoryStudents[existingIdx], ...newStudent };
+    invalidateStudentCaches();
   } else {
     memoryStudents.unshift(newStudent);
   }
@@ -1100,7 +1193,31 @@ export function addStudent(newStudent: Student): void {
   publishStudentSync('UPSERT', newStudent);
 }
 
-export function updateStudent(id: string, updates: Partial<Student>): void {
+// An edit the cloud never answered is not an edit that happened. The station's own copy is kept, the
+// PATCH is retried by the outbox until the row store confirms it, and the caller gets the honest
+// answer so a save can never be reported on the strength of a local write alone.
+async function pushStudentEdit(updated: Student): Promise<boolean> {
+  const { queueOfflineOperation, cloudJsonResponse } = await import('@/lib/offlineQueue');
+  try {
+    const res = await fetch('/api/students', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders()
+      },
+      body: JSON.stringify(updated)
+    });
+    const body = await cloudJsonResponse(res);
+    if (res.ok && body) return true;
+    console.warn('Edit not confirmed by the cloud, queued for retry:', res.status);
+  } catch (err) {
+    console.warn('Could not sync update to server, queued offline:', err);
+  }
+  await queueOfflineOperation('UPDATE_STUDENT', updated).catch(() => {});
+  return false;
+}
+
+export async function updateStudent(id: string, updates: Partial<Student>): Promise<boolean> {
   const index = memoryStudents.findIndex(s => s.id === id || s.studentId === id);
   if (index !== -1) {
     const existing = memoryStudents[index];
@@ -1153,6 +1270,7 @@ export function updateStudent(id: string, updates: Partial<Student>): void {
     };
 
     memoryStudents[index] = updatedStudent;
+    invalidateStudentCaches();
 
     // Remote stations must learn about a photo that only just arrived, an update to a record
     // they already hold, or the directory keeps the stale copy until it is reloaded.
@@ -1173,21 +1291,6 @@ export function updateStudent(id: string, updates: Partial<Student>): void {
       safeSetItem('sb_custom_students', JSON.stringify(capped));
     } catch (e) {}
 
-    // Persist update to Supabase PostgreSQL in background
-    fetch('/api/students', {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        ...getAuthHeaders()
-      },
-      body: JSON.stringify(updatedStudent)
-    }).catch(err => {
-      console.warn('Could not sync update to server, queued offline:', err);
-      import('@/lib/offlineQueue').then(({ queueOfflineOperation }) => {
-        queueOfflineOperation('UPDATE_STUDENT', updatedStudent);
-      });
-    });
-
     addAuditLog({
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
       user: getCurrentUser()?.username || 'Receiver',
@@ -1201,9 +1304,10 @@ export function updateStudent(id: string, updates: Partial<Student>): void {
       window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
     }
 
-    // Broadcast across all connected stations and open tabs in real-time
-    publishStudentSync('UPSERT', memoryStudents[index]);
+    // Persist the edit to the authoritative row store, and never let a failed write pass as saved.
+    return await pushStudentEdit(updatedStudent);
   }
+  return false;
 }
 
 export async function deleteStudent(id: string, permanent: boolean = false): Promise<boolean> {
@@ -1212,10 +1316,17 @@ export async function deleteStudent(id: string, permanent: boolean = false): Pro
   const targetId = student?.studentId || id;
   const targetDbId = student?.id || id;
 
+  const alreadyRemoved = getDeletedStudentIds().has(targetId) || getDeletedStudentIds().has(targetDbId);
+
   // Immediately blacklist deleted IDs so local merges or syncs never resurrect them
   recordDeletedStudentId(targetId);
   recordDeletedStudentId(targetDbId);
   recordDeletedStudentId(id);
+
+  // Nothing held here and the id is already on the blacklist means this station applied the delete
+  // once. A remote station's echo of the same removal must not write and publish again, or the two
+  // desks bounce one operator action back and forth.
+  if (index === -1 && alreadyRemoved) return true;
 
   if (permanent) {
     // 1. PERMANENT PURGE: Remove completely from memory and local storage
@@ -1231,14 +1342,19 @@ export async function deleteStudent(id: string, permanent: boolean = false): Pro
       safeSetItem('sb_custom_students', JSON.stringify(filtered.slice(0, 25)));
     } catch (e) {}
 
-    // Persist permanent purge to Cloudflare (R2 photo deletion & Supabase PostgreSQL delete)
+    // Purge the row from the authoritative store before believing the deletion. The edge answers 500
+    // while the record is still in D1, and a delete that only reached this browser would leave every
+    // other station serving the student the operator just removed.
     try {
+      const { queueOfflineOperation, cloudJsonResponse } = await import('@/lib/offlineQueue');
       const res = await fetch(`/api/students?id=${encodeURIComponent(targetId)}&permanent=true`, {
         method: 'DELETE',
         headers: getAuthHeaders()
       });
-      if (!res.ok) {
-        console.warn('Server delete response status:', res.status);
+      const body = await cloudJsonResponse(res);
+      if (!res.ok || !body?.rowGone) {
+        console.warn('Permanent purge not confirmed by the cloud, queued for retry:', res.status, body?.error || '');
+        await queueOfflineOperation('DELETE_STUDENT', { id: targetDbId, studentId: targetId, permanent: true });
       }
     } catch (err) {
       console.warn('Could not sync permanent delete to server, queued offline:', err);
@@ -1275,6 +1391,7 @@ export async function deleteStudent(id: string, permanent: boolean = false): Pro
         s.hiddenAt = new Date().toISOString();
       }
     });
+    invalidateStudentCaches();
 
     try {
       const raw = localStorage.getItem('sb_custom_students');
@@ -1287,17 +1404,24 @@ export async function deleteStudent(id: string, permanent: boolean = false): Pro
       }
     } catch (e) {}
 
-    // Sync soft delete to server
+    // Sync soft delete to server, and keep it in the outbox until the edge confirms the hide.
     try {
+      const { queueOfflineOperation, cloudJsonResponse } = await import('@/lib/offlineQueue');
       const res = await fetch(`/api/students?id=${encodeURIComponent(targetId)}&permanent=false`, {
         method: 'DELETE',
         headers: getAuthHeaders()
       });
-      if (!res.ok) {
-        console.warn('Server temporary delete status:', res.status);
+      const body = await cloudJsonResponse(res);
+      if (!res.ok || !body) {
+        console.warn('Temporary delete not confirmed by the cloud, queued for retry:', res.status);
+        await queueOfflineOperation('DELETE_STUDENT', { id: targetDbId, studentId: targetId, permanent: false });
       }
     } catch (err) {
       console.warn('Could not sync soft delete to server:', err);
+      try {
+        const { queueOfflineOperation } = await import('@/lib/offlineQueue');
+        queueOfflineOperation('DELETE_STUDENT', { id: targetDbId, studentId: targetId, permanent: false });
+      } catch (qErr) {}
     }
 
     addAuditLog({
@@ -1337,6 +1461,7 @@ export async function restoreStudent(id: string): Promise<boolean> {
       s.hiddenAt = null as any;
     }
   });
+  invalidateStudentCaches();
 
   try {
     const raw = localStorage.getItem('sb_custom_students');
@@ -2350,6 +2475,37 @@ function findFleetSender(norm: string): FleetSenderRow | null {
   ) || null;
 }
 
+/**
+ * Re-read one sender's own today/week/month/total from the payroll report and lay it over the fleet
+ * snapshot the counters are read from.
+ *
+ * The fleet rollup is a cached server-side scan, so a station that has just sent a record can still be
+ * shown the number from before it landed. The payroll endpoint recomputes from the row store on every
+ * call and is the answer the salary is paid from, so it is the one this station trusts for its own
+ * figures. The range is the whole table because "total" on the station card is the all-time count the
+ * fleet reader produces - asking for a shorter window would print a smaller total for the same label.
+ */
+export async function refreshSenderTotalsFromPayroll(senderIdentifier: string): Promise<boolean> {
+  const norm = (senderIdentifier || '').toLowerCase().trim();
+  const snap = fleetTelemetrySnapshot;
+  if (!norm || !snap || !snap.todayKey) return false;
+  try {
+    const res = await fetch(`/api/senders/payroll?from=1970-01-01&to=${snap.todayKey}`, { headers: getAuthHeaders(), cache: 'no-store' });
+    const body = await res.json().catch(() => null);
+    if (!body || !body.success) return false;
+    const row = (body.senders || []).find(s => String(s.label || '').toLowerCase() === norm);
+    const target = findFleetSender(norm);
+    if (!row || !target) return false;
+    target.today = Number(row.today) || 0;
+    target.week = Number(row.week) || 0;
+    target.month = Number(row.month) || 0;
+    target.total = Number(row.rangeTotal) || 0;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // PLATFORM SETTINGS + EXPORT PATH TEMPLATES (@photo / @qr in CSV/Excel)
 // ---------------------------------------------------------------------------
@@ -2435,14 +2591,173 @@ export function buildExportQrPath(s: Student): string {
   return joinExportPath(settings.exportBaseFolderQr, rel);
 }
 
+// Every per-sender total used to be produced by walking the whole registry once for that sender. With
+// ~110 senders on the payroll list and 6,000+ records, one dashboard refresh cost 1.3M lowercasings and
+// blocked the main thread for 10-20 seconds — every 10 second poll, on every screen. The registry is now
+// indexed once per refresh and each sender reads only its own buckets, so the work stops multiplying by
+// the number of senders.
+// The fleet day is a fixed UTC+3 calendar day, so it is integer maths against one derived offset rather
+// than an Intl locale format per record. The old version cost a locale formatter call for every student
+// in every walk - measured at 180k date parses and 112k Date allocations for a single directory mount,
+// which is where the multi-second freeze came from. The offset is read from the platform's own tz database
+// once, so a zone change is picked up instead of being hardcoded.
+const DAY_MS = 86400000;
+let fleetOffsetMs: number | null = null;
+
+function addisOffsetMs(): number {
+  if (fleetOffsetMs === null) {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: FLEET_TZ,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).formatToParts(new Date(Date.UTC(2026, 0, 15, 12, 0, 0)));
+    const pick = (type: string) => Number(parts.find(p => p.type === type)?.value || '0');
+    const localMs = Date.UTC(pick('year'), pick('month') - 1, pick('day'), pick('hour') % 24, pick('minute'), pick('second'));
+    fleetOffsetMs = Math.round((localMs - Date.UTC(2026, 0, 15, 12, 0, 0)) / 60000) * 60000;
+  }
+  return fleetOffsetMs;
+}
+
+function addisDayKey(ms: number): string {
+  return new Date(ms + addisOffsetMs()).toISOString().substring(0, 10);
+}
+
+function shiftDayKey(key: string, days: number): string {
+  const d = new Date(`${key}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().substring(0, 10);
+}
+
+function weekdayMonday0(key: string): number {
+  return (new Date(`${key}T12:00:00Z`).getUTCDay() + 6) % 7;
+}
+
+type SenderDayKeys = { todayStr: string; weekFromKey: string; weekToKey: string; monthFromKey: string };
+
+function senderDayKeys(): SenderDayKeys {
+  const todayStr = addisDayKey(Date.now());
+  const weekFromKey = shiftDayKey(todayStr, -weekdayMonday0(todayStr));
+  return {
+    todayStr,
+    weekFromKey,
+    weekToKey: shiftDayKey(weekFromKey, 6),
+    monthFromKey: `${todayStr.substring(0, 8)}01`
+  };
+}
+
+function registryWithLocalCopies(): Student[] {
+  try {
+    const custom: Student[] = JSON.parse(localStorage.getItem('sb_custom_students') || '[]');
+    if (!Array.isArray(custom) || custom.length === 0) return memoryStudents;
+    const byStudentId = new Map(memoryStudents.map(s => [s.studentId, s]));
+    let added = 0;
+    for (const cs of custom) {
+      if (cs && !byStudentId.has(cs.studentId)) {
+        byStudentId.set(cs.studentId, cs);
+        added++;
+      }
+    }
+    return added === 0 ? memoryStudents : Array.from(byStudentId.values());
+  } catch (e) {
+    return memoryStudents;
+  }
+}
+
+type SenderRowBuckets = {
+  byName: Map<string, Student[]>;
+  byId: Map<string, Student[]>;
+  anonymous: Student[];
+};
+
+type SenderRowIndex = SenderRowBuckets & { day: SenderDayKeys };
+
+// The buckets only change when the registry changes, so they are reused for every sender on a refresh and
+// across refreshes while the registry is untouched. Without this the full walk ran ~29 times per directory
+// mount. The day windows are deliberately not cached - they roll over at Addis midnight, and a payroll
+// number must never lag a day behind the clock.
+let bucketsCache: { src: Student[]; len: number; custom: string | null; out: SenderRowBuckets } | null = null;
+
+function senderRowBuckets(): SenderRowBuckets {
+  const custom = typeof window === 'undefined' ? null : localStorage.getItem('sb_custom_students');
+  if (bucketsCache && bucketsCache.src === memoryStudents && bucketsCache.len === memoryStudents.length && bucketsCache.custom === custom) {
+    return bucketsCache.out;
+  }
+  const byName = new Map<string, Student[]>();
+  const byId = new Map<string, Student[]>();
+  const anonymous: Student[] = [];
+  for (const s of registryWithLocalCopies()) {
+    if (!s || s.receiverHidden) continue;
+    const sn = (s.senderName || '').toLowerCase().trim();
+    const sid = (s.senderId || '').toLowerCase().trim();
+    if (sn) {
+      const bucket = byName.get(sn);
+      if (bucket) bucket.push(s); else byName.set(sn, [s]);
+    }
+    if (sid) {
+      const bucket = byId.get(sid);
+      if (bucket) bucket.push(s); else byId.set(sid, [s]);
+    }
+    if (!sn && !sid) anonymous.push(s);
+  }
+  const out = { byName, byId, anonymous };
+  bucketsCache = { src: memoryStudents, len: memoryStudents.length, custom, out };
+  return out;
+}
+
+function buildSenderRowIndex(): SenderRowIndex {
+  return { ...senderRowBuckets(), day: senderDayKeys() };
+}
+
+function recordDayKey(s: Student): string {
+  const rawDate = s.createdAt || (s as any).registrationDate || s.recordHistory?.[0]?.date || '';
+  const ms = rawDate ? Date.parse(String(rawDate).replace(' ', 'T')) : 0;
+  return ms ? addisDayKey(ms) : '';
+}
+
+function totalsForSender(
+  index: SenderRowIndex,
+  nameKeys: Set<string>,
+  idKeys: Set<string>,
+  anonymousEligible: boolean
+): { total: number; today: number; week: number; month: number } {
+  const out = { total: 0, today: 0, week: 0, month: 0 };
+  const counted = new Set<Student>();
+  const visit = (rows: Student[] | undefined) => {
+    if (!rows) return;
+    for (const s of rows) {
+      if (counted.has(s)) continue;
+      counted.add(s);
+      out.total++;
+      const dayKey = recordDayKey(s);
+      if (!dayKey) continue;
+      if (dayKey === index.day.todayStr) out.today++;
+      if (dayKey >= index.day.weekFromKey && dayKey <= index.day.weekToKey) out.week++;
+      if (dayKey >= index.day.monthFromKey && dayKey <= index.day.todayStr) out.month++;
+    }
+  };
+  for (const k of nameKeys) visit(index.byName.get(k));
+  for (const k of idKeys) visit(index.byId.get(k));
+  if (anonymousEligible) visit(index.anonymous);
+  return out;
+}
+
 export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
+  return senderMetricsFor(senderIdentifier, buildSenderRowIndex());
+}
+
+function senderMetricsFor(senderIdentifier: string, index: SenderRowIndex): SenderMetrics {
   const norm = (senderIdentifier || '').toLowerCase().trim();
   const curUser = getCurrentUser();
   const user = memoryUsers.find(
     u => u.username.toLowerCase() === norm || u.email.toLowerCase() === norm || (curUser && curUser.id === u.id)
   ) || curUser;
 
-  const todayStr = new Date().toISOString().substring(0, 10);
+  // Day buckets use the same calendar boundaries as the server: the Addis Ababa day the record was
+  // created in, a Monday-first week, and the month itself. A rolling 7/30-day window prints a
+  // different number from the one the payroll table shows for the same label, and two numbers for
+  // one label is exactly how station totals come to look like they move on their own.
+  const { todayStr, weekFromKey, weekToKey, monthFromKey } = index.day;
+
   if (!liveSenderSessionCaptures[norm]) {
     liveSenderSessionCaptures[norm] = getStoredSenderTelemetry(norm);
   }
@@ -2452,64 +2767,23 @@ export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
     live.todayDateStr = todayStr;
   }
 
-  // Authoritative calendar boundary calculation
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
-  const weekStart = todayStart - 7 * 86400000;
-  const monthStart = todayStart - 30 * 86400000;
-
-  let realTotal = 0;
-  let realToday = 0;
-  let realWeek = 0;
-  let realMonth = 0;
-
   const uName = (user?.username || '').toLowerCase().trim();
   const uEmail = (user?.email || '').toLowerCase().trim();
   const uId = (user?.id || '').toLowerCase().trim();
 
-  // Combine memoryStudents and any custom students from localStorage to guarantee no drops
-  let allStudentsToCheck = memoryStudents;
-  try {
-    const custom: Student[] = JSON.parse(localStorage.getItem('sb_custom_students') || '[]');
-    if (custom.length > 0) {
-      const existingMap = new Map(allStudentsToCheck.map(s => [s.studentId, s]));
-      custom.forEach(cs => {
-        if (!existingMap.has(cs.studentId)) {
-          existingMap.set(cs.studentId, cs);
-        }
-      });
-      allStudentsToCheck = Array.from(existingMap.values());
-    }
-  } catch (e) {}
-
-  const localTodayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  const utcTodayStr = now.toISOString().substring(0, 10);
-
-  // Degraded-mode attribution matches the server rule exactly: a record counts for a
-  // sender only when it carries that sender's identity. Records with no sender name are
-  // left out of personal totals instead of being folded into the viewer's count, which
-  // previously made every operator (and every row of the sender table) claim the same
-  // anonymous legacy imports as their own work.
-  allStudentsToCheck.forEach(s => {
-    if (!s || s.receiverHidden) return;
-    const sn = (s.senderName || '').toLowerCase().trim();
-    const sid = (s.senderId || '').toLowerCase().trim();
-    const match =
-      (sn && (sn === norm || sn === uName || sn === uEmail)) ||
-      (sid && (sid === norm || sid === uId || sid === uName)) ||
-      (!sn && !sid && (norm === 'field operator' || norm === 'sender'));
-
-    if (match) {
-      realTotal++;
-      const rawDate = s.createdAt || (s as any).registrationDate || s.recordHistory?.[0]?.date || '';
-      const datePrefix = rawDate.replace('T', ' ').substring(0, 10);
-      const isToday = datePrefix === localTodayStr || datePrefix === utcTodayStr || rawDate.startsWith(localTodayStr) || rawDate.startsWith(utcTodayStr);
-      const sTime = rawDate ? new Date(rawDate.replace(' ', 'T')).getTime() : 0;
-      if (isToday || (sTime && sTime >= todayStart)) realToday++;
-      if (isToday || (sTime && sTime >= weekStart)) realWeek++;
-      if (isToday || (sTime && sTime >= monthStart)) realMonth++;
-    }
-  });
+  // A record counts for a sender only when it carries that sender's identity. Records with no sender
+  // are left out of personal totals instead of being folded into the viewer's count, which previously
+  // made every operator claim the same anonymous legacy imports as their own work.
+  const derived = totalsForSender(
+    index,
+    new Set([norm, uName, uEmail].filter(Boolean)),
+    new Set([norm, uId, uName].filter(Boolean)),
+    norm === 'field operator' || norm === 'sender'
+  );
+  const realTotal = derived.total;
+  const realToday = derived.today;
+  const realWeek = derived.week;
+  const realMonth = derived.month;
 
   const fleetRow = findFleetSender(norm);
   let today: number;
@@ -2518,13 +2792,13 @@ export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
   let total: number;
 
   if (fleetRow) {
-    // Server-authoritative historical totals: computed from the durable Supabase
-    // dataset, deduplicated by unique studentId. Immune to page refreshes,
-    // re-renders, retries and browser-local counter drift.
+    // Server-authoritative counts, taken exactly as the row store computed them. Clamping one period
+    // to another with Math.max used to hide a bad read by inventing a number that reconciled with
+    // nothing, and the payroll a sender is paid from has to be the number the store holds.
     today = fleetRow.today;
-    week = Math.max(fleetRow.week, today);
-    month = Math.max(fleetRow.month, week);
-    total = Math.max(fleetRow.total, month);
+    week = fleetRow.week;
+    month = fleetRow.month;
+    total = fleetRow.total;
     live.today = today;
     live.week = week;
     live.month = month;
@@ -2532,11 +2806,13 @@ export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
     live.todayDateStr = todayStr;
     saveStoredSenderTelemetry(norm, live);
   } else {
-    // Degraded (no fleet snapshot): fall back to record-derived local counts.
-    today = Math.max(realToday, live.today);
-    week = Math.max(realWeek, live.week, today);
-    month = Math.max(realMonth, live.month, week);
-    total = Math.max(realTotal, live.total, user?.recordsSentSingle || 0, month);
+    // Degraded (no fleet snapshot): the record-derived counts are the answer. The browser's session
+    // counter is not merged into it, because a refreshed page would otherwise carry an old tally
+    // forward into today's number.
+    today = realToday;
+    week = realWeek;
+    month = realMonth;
+    total = realTotal;
     live.today = today;
     live.week = week;
     live.month = month;
@@ -2609,15 +2885,17 @@ export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
 }
 
 export function getAllSendersMetrics(): SenderMetrics[] {
+  // One index for the whole list. Building it per sender is what froze the station.
+  const index = buildSenderRowIndex();
   const senders = memoryUsers.filter(u => u.role === 'SENDER');
-  const metrics = senders.map(u => getSenderMetrics(u.username));
+  const metrics = senders.map(u => senderMetricsFor(u.username, index));
   const snapshot = fleetTelemetrySnapshot;
   if (snapshot) {
     const covered = new Set(senders.map(u => u.username.toLowerCase().trim()));
     snapshot.senders.forEach(s => {
       const k = String(s.username || '').toLowerCase().trim();
       if (k && !covered.has(k) && !covered.has(s.key)) {
-        metrics.push(getSenderMetrics(s.username));
+        metrics.push(senderMetricsFor(s.username, index));
         covered.add(k);
       }
     });

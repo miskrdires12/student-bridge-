@@ -3,7 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   Users, Layers, Settings,
   UserPlus, LayoutGrid, CheckSquare, BarChart2,
-  Smartphone, Activity, AlertTriangle,
+  Smartphone, Activity, AlertTriangle, TrendingUp,
   LogOut, Database, X, Shield, HardDrive
 } from 'lucide-react';
 import { getCurrentUser, setCurrentUser } from '@/lib/store';
@@ -68,6 +68,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       showShield: false,
       items: [
         { to: '/super-admin/users', label: 'Provision Operators & RBAC', icon: Shield, iconColor: 'text-amber-500' },
+        { to: '/admin/payroll', label: 'Sender Payroll Report', icon: TrendingUp, iconColor: 'text-[#4D8A07]' },
         { to: '/super-admin/database', label: 'Database & Audit Logs', icon: Database, iconColor: 'text-blue-500' },
         { to: '/super-admin/storage', label: 'Storage Capacity & Zero-Egress Command', icon: HardDrive, iconColor: 'text-cyan-500' },
         { to: '/super-admin/settings', label: 'Admin System Settings', icon: Settings, iconColor: 'text-emerald-500' },
@@ -114,6 +115,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { to: '/admin/dashboard', label: 'Live Dashboard & Metrics', icon: LayoutGrid, iconColor: 'text-slate-500' },
         { to: '/admin/telemetric-velocity', label: 'Telemetric Velocity & Fleet', icon: Activity, iconColor: 'text-[#85E510]' },
         { to: '/admin/senders', label: 'Provision Operators & RBAC', icon: Shield, iconColor: 'text-amber-500' },
+        { to: '/admin/payroll', label: 'Sender Payroll Report', icon: TrendingUp, iconColor: 'text-[#4D8A07]' },
         { to: '/admin/storage', label: 'Storage Capacity & Zero-Egress Command', icon: HardDrive, iconColor: 'text-cyan-500' },
         { to: '/admin/database', label: 'Database & PostgreSQL Ledger', icon: Database, iconColor: 'text-blue-500' },
         { to: '/admin/quality-control', label: 'Data Quality & Correction', icon: AlertTriangle, iconColor: 'text-rose-500' },

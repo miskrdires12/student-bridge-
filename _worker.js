@@ -212,7 +212,12 @@ const D1_COLUMNS = [
   "nationalId", "photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "qrCodeData",
   "senderId", "senderName", "originStation", "photoIntegrityStatus", "storageKey", "storageSyncAt",
   "status", "receiverHidden", "hiddenAt", "batchId", "organizationId", "createdAt", "updatedAt",
-  "receiverNote", "hasMistake", "parentPhone", "emergency_contact_phone", "guardianPhone"
+  "receiverNote", "hasMistake", "parentPhone", "emergency_contact_phone", "guardianPhone",
+  // The directory's edit form writes branch/section/location and the feed filters on section, but
+  // the row store had no column for them, so an operator could change a branch or a section, get a
+  // 200 back, and see the old value on the next reload - the write went to Postgres and the read
+  // came from here.
+  "branch", "section", "location"
 ];
 
 const D1_TIME_COLS = new Set(["createdAt", "updatedAt", "hiddenAt", "storageSyncAt"]);
@@ -495,15 +500,17 @@ async function readFleetRowsFromD1(env) {
   const PAGE = 1000;
   const MAX_PAGES = 30;
   const out = [];
+  out.truncated = false;
   try {
     for (let i = 0; i < MAX_PAGES; i++) {
       const res = await env.SB_D1.prepare(
-        `SELECT id, studentId, senderName, senderId, createdAt, school FROM students
+        `SELECT id, studentId, senderName, senderId, createdAt, school, branch FROM students
           ORDER BY createdAt DESC, studentId ASC LIMIT ${PAGE} OFFSET ${i * PAGE}`
       ).all();
       const rows = (res && res.results) || [];
       out.push(...rows);
       if (rows.length < PAGE) break;
+      if (i === MAX_PAGES - 1) out.truncated = true;
     }
     return out;
   } catch (d1FleetErr) {
@@ -511,6 +518,84 @@ async function readFleetRowsFromD1(env) {
     return null;
   }
 }
+
+// -----------------------------------------------------------------------------
+// SENDER ATTRIBUTION — the grouping a salary is read off
+// -----------------------------------------------------------------------------
+//
+// A row names its sender twice: senderId from the login that posted it, senderName as the station
+// typed it. Neither one alone identifies a person. Measured on the live table, "adoni" holds 699 rows
+// with an account id and 164 with none, "biruk" and "biruk1" are two spellings that may or may not be
+// two people, and 222 rows carry no sender at all. Grouping by name pays one operator for another's
+// work; grouping by id splits every account whose older rows predate one. So: an id wins, a name that
+// leads to exactly one id folds into that id, and anything the data cannot decide stays separate and
+// is flagged for review - a payroll number that is quietly wrong is worse than one marked uncertain.
+function normSenderName(v) { return String(v == null ? "" : v).trim().toLowerCase(); }
+function normSenderId(v) { return String(v == null ? "" : v).trim(); }
+
+function buildSenderAttribution(rawRows) {
+  const nameToIds = new Map();
+  const idToNames = new Map();
+  for (const r of rawRows || []) {
+    const n = normSenderName(r.senderName);
+    const i = normSenderId(r.senderId);
+    if (!n || !i) continue;
+    if (!nameToIds.has(n)) nameToIds.set(n, new Set());
+    nameToIds.get(n).add(i);
+    if (!idToNames.has(i)) idToNames.set(i, new Set());
+    idToNames.get(i).add(n);
+  }
+  return {
+    nameToIds,
+    idToNames,
+    // A group is one payable person. `id:` groups are decided; `name:` groups are a handle the data
+    // could not attach to a single account; `unattributed` is a row that names nobody.
+    groupOf(row) {
+      const n = normSenderName(row && row.senderName);
+      const i = normSenderId(row && row.senderId);
+      if (i) return { key: `id:${i}`, kind: "id", id: i, name: n };
+      if (n) {
+        const ids = nameToIds.get(n);
+        if (ids && ids.size === 1) {
+          const only = [...ids][0];
+          return { key: `id:${only}`, kind: "id", id: only, name: n };
+        }
+        return { key: `name:${n}`, kind: "name", id: "", name: n };
+      }
+      return { key: "unattributed", kind: "unattributed", id: "", name: "" };
+    }
+  };
+}
+
+// Day keys for the whole table, bucketed in the timezone the stations actually work in. createdAt
+// holds UTC with a trailing Z, so the offset is applied here rather than trusting a browser clock:
+// a station three hours ahead would otherwise bill yesterday's late-evening sends to today.
+const FLEET_LOCAL_DAY_MODIFIER = "+3 hours";
+
+// One aggregate query instead of a walk: D1 answers the whole (sender, day) grid in milliseconds and
+// cannot be truncated by a page budget, which is what makes the payroll total trustworthy as the table
+// grows past any row limit written into a reader.
+async function readSenderDayRowsFromD1(env, fromDay, toDay) {
+  if (!d1Ready(env)) return null;
+  const clauses = [];
+  const binds = [];
+  if (fromDay) { clauses.push(`date(createdAt, '${FLEET_LOCAL_DAY_MODIFIER}') >= ?`); binds.push(fromDay); }
+  if (toDay) { clauses.push(`date(createdAt, '${FLEET_LOCAL_DAY_MODIFIER}') <= ?`); binds.push(toDay); }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  try {
+    const res = await env.SB_D1.prepare(
+      `SELECT senderId, senderName,
+              date(createdAt, '${FLEET_LOCAL_DAY_MODIFIER}') AS day,
+              COUNT(*) AS n
+       FROM students ${where}
+       GROUP BY senderId, senderName, day`).bind(...binds).all();
+    return (res && res.results) || [];
+  } catch (d1PayrollErr) {
+    console.warn("D1 payroll aggregate note:", d1PayrollErr);
+    return null;
+  }
+}
+
 
 // -----------------------------------------------------------------------------
 // STATION RELAY — the connection that turns a poll into a push
@@ -2178,14 +2263,42 @@ function sumDailyKeys(dailyMap, dayKeys) {
   return sum;
 }
 
-async function buildSenderFleetTelemetry(env) {
+// Calendar arithmetic on plain YYYY-MM-DD strings, so a period boundary is the same in Addis Ababa
+// no matter which Cloudflare colo ran the request. A day key is treated as a UTC midnight anchor and
+// only ever converted back to a date, never to a local time, so nothing here depends on a clock.
+function shiftDayKey(dayKey, days) {
+  const ms = Date.parse(`${dayKey}T00:00:00Z`) + days * 86400000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+// Monday-first: the working week a supervisor counts, not the Sunday-first one a locale default gives.
+function weekdayIndexMonday0(dayKey) {
+  return (new Date(`${dayKey}T00:00:00Z`).getUTCDay() + 6) % 7;
+}
+function monthStartKey(dayKey) { return `${dayKey.slice(0, 7)}-01`; }
+function daysInMonth(dayKey) {
+  return new Date(Date.UTC(Number(dayKey.slice(0, 4)), Number(dayKey.slice(5, 7)), 0)).getUTCDate();
+}
+function sumDailyRange(dailyMap, fromDay, toDay) {
+  let sum = 0;
+  for (const [day, n] of Object.entries(dailyMap || {})) {
+    if (day >= fromDay && day <= toDay) sum += n;
+  }
+  return sum;
+}
+// Day keys are YYYY-MM-DD text, and that ordering is what makes the range test above work. Math.min
+// would coerce them to numbers and answer NaN, silently making every period bucket zero.
+function earlierDayKey(a, b) { return a < b ? a : b; }
+
+async function buildSenderFleetTelemetry(env, originUrl) {
   if (fleetTelemetryCache && Date.now() - fleetTelemetryCache.at < 60000) {
     return fleetTelemetryCache.payload;
   }
 
-  const [d1FleetRows, usersRes, sbFleetRows] = await Promise.all([
+  const [d1FleetRows, userRows, sbFleetRows] = await Promise.all([
     readFleetRowsFromD1(env),
-    fetchSupabaseAllRows("users", "select=*"),
+    // The same authoritative account list the payroll report resolves senders from, or the two screens
+    // merge a handle into an account differently and disagree about who posted what.
+    getUnifiedUsersList(env, originUrl),
     d1Ready(env) ? Promise.resolve(null) : fetchSupabaseAllRows(
       "students", "select=id,studentId,senderName,senderId,createdAt,school&order=createdAt.desc,id.desc")
   ]);
@@ -2196,8 +2309,14 @@ async function buildSenderFleetTelemetry(env) {
   const dayKeys = fleetDayWindow(now, FLEET_WINDOW_DAYS);
   const dayKeySet = new Set(dayKeys);
   const todayKey = dayKeys[dayKeys.length - 1];
-  const weekKeys = dayKeys.slice(-7);
-  const monthKeys = dayKeys.slice(-30);
+  // Calendar periods, identical to the payroll report's: a rolling "last seven days" and a
+  // calendar "this week" cannot both be called week on two screens that a salary is read from.
+  const weekFrom = shiftDayKey(todayKey, -weekdayIndexMonday0(todayKey));
+  const weekTo = shiftDayKey(weekFrom, 6);
+  const monthFrom = monthStartKey(todayKey);
+  const monthTo = shiftDayKey(monthFrom, daysInMonth(todayKey) - 1);
+  const weekKeys = dayKeys.filter(d => d >= weekFrom && d <= weekTo);
+  const monthKeys = dayKeys.filter(d => d >= monthFrom && d <= monthTo);
 
   const bySender = new Map();
   const seenStudentIds = new Set();
@@ -2206,6 +2325,9 @@ async function buildSenderFleetTelemetry(env) {
   let totalRecords = 0;
   let unattributedRecords = 0;
   let untimestampedRecords = 0;
+  // Resolved the same way the payroll report resolves it, so the live view and the salary view never
+  // hand an operator two different numbers for one sender.
+  const fleetAttribution = buildSenderAttribution(studentRows);
 
   for (const r of studentRows) {
     const sid = String(r.studentId || r.id || "").trim().toLowerCase();
@@ -2233,12 +2355,13 @@ async function buildSenderFleetTelemetry(env) {
     if (validTs) totalVerified++;
     else untimestampedRecords++;
 
-    const key = name.toLowerCase();
+    const key = fleetAttribution.groupOf(r).key;
     let e = bySender.get(key);
     if (!e) {
-      e = { rawName: name, total: 0, today: 0, week: 0, month: 0, daily: {}, stamps: [], lastTs: 0, branch: "", school: "" };
+      e = { rawName: name, total: 0, today: 0, week: 0, month: 0, daily: {}, stamps: [], lastTs: 0, branch: "", school: "", names: new Set(), senderId: fleetAttribution.groupOf(r).id || "" };
       bySender.set(key, e);
     }
+    if (name) e.names.add(name.toLowerCase());
     e.total++;
     if (!validTs) continue;
     e.stamps.push(validTs);
@@ -2252,20 +2375,63 @@ async function buildSenderFleetTelemetry(env) {
     if (!e.school && r.school) e.school = String(r.school);
   }
 
-  for (const e of bySender.values()) {
+  const indexes = { byName: new Map(), byId: new Map() };
+  for (const u of userRows || []) {
+    if (u.username) {
+      indexes.byName.set(String(u.username).toLowerCase(), u);
+      // A session token carries `usr-<username>` as its subject when the account has no id, and that
+      // subject is what lands in senderId - index it or every such sender looks like an unknown person.
+      indexes.byId.set(`usr-${String(u.username).toLowerCase()}`, u);
+    }
+    if (u.email) indexes.byName.set(String(u.email).toLowerCase(), u);
+    if (u.id) indexes.byId.set(String(u.id).toLowerCase(), u);
+  }
+
+  // A device id that names an account and that same account's handle posted without any id are one
+  // operator's work. Kept apart they put one person on two lines of the fleet table, and the line the
+  // payroll report pays from stops matching the line this screen shows.
+  const accountKeyFor = (key, agg) => {
+    const byId = agg.senderId && indexes.byId.get(String(agg.senderId).toLowerCase());
+    if (byId && byId.username) return `acct:${String(byId.username).toLowerCase()}`;
+    const stripped = indexes.byName.get(String(key).replace(/^(?:id|name):/, ""));
+    if (stripped && stripped.username) return `acct:${String(stripped.username).toLowerCase()}`;
+    const firstName = [...(agg.names || [])][0];
+    const byName = firstName && indexes.byName.get(firstName);
+    if (byName && byName.username) return `acct:${String(byName.username).toLowerCase()}`;
+    return key;
+  };
+  const byAccount = new Map();
+  for (const [key, agg] of bySender) {
+    const k = accountKeyFor(key, agg);
+    let m = byAccount.get(k);
+    if (!m) {
+      m = { rawName: agg.rawName, total: 0, today: 0, week: 0, month: 0, daily: {}, stamps: [], branch: "", school: "", names: new Set(), senderId: agg.senderId, idlessTotal: 0, groups: new Set() };
+      byAccount.set(k, m);
+    }
+    m.total += agg.total;
+    m.idlessTotal += String(key).startsWith("name:") ? agg.total : 0;
+    m.groups.add(String(key));
+    for (const [d, c] of Object.entries(agg.daily)) m.daily[d] = (m.daily[d] || 0) + c;
+    for (const t of agg.stamps) m.stamps.push(t);
+    for (const n of agg.names) m.names.add(n);
+    if (!m.branch && agg.branch) m.branch = agg.branch;
+    if (!m.school && agg.school) m.school = agg.school;
+    // Keep an id that names an account, so the merged line reports the account rather than whichever
+    // device happened to be seen first.
+    if (!m.senderId || !indexes.byId.get(String(m.senderId).toLowerCase())) m.senderId = agg.senderId || m.senderId;
+  }
+
+  for (const e of byAccount.values()) {
     e.today = sumDailyKeys(e.daily, [todayKey]);
     e.week = sumDailyKeys(e.daily, weekKeys);
     e.month = sumDailyKeys(e.daily, monthKeys);
   }
 
-  const userIndex = new Map();
-  for (const u of usersRes.rows) {
-    if (u.username) userIndex.set(String(u.username).toLowerCase(), u);
-    if (u.email) userIndex.set(String(u.email).toLowerCase(), u);
-    if (u.id) userIndex.set(String(u.id).toLowerCase(), u);
-  }
-
-  const buildEntry = (key, agg, user) => {
+  const buildEntry = (key, agg) => {
+    const bare = String(key).replace(/^(?:id|name|acct):/, "");
+    const user = (agg.senderId && indexes.byId.get(String(agg.senderId).toLowerCase())) ||
+      indexes.byName.get(bare) ||
+      (agg.rawName && indexes.byName.get(String(agg.rawName).toLowerCase())) || null;
     const stamps = (agg.stamps || []).slice().sort((a, b) => a - b);
     let sessionCount = 0;
     let sessionStart = 0;
@@ -2291,12 +2457,18 @@ async function buildSenderFleetTelemetry(env) {
     if (statusU === "LOCKED" || statusU === "SUSPENDED" || statusU === "DISABLED" || statusU === "INACTIVE") {
       terminalStatus = "LOCKED";
     }
+    const namesSeen = [...(agg.names || [])];
+    const reviewReasons = [];
+    if (agg.idlessTotal > 0) reviewReasons.push(`${agg.idlessTotal} row${agg.idlessTotal === 1 ? "" : "s"} posted with no account id`);
+    if ((agg.groups ? agg.groups.size : 1) > 1) reviewReasons.push(`${agg.groups.size} sender ids merged into this account`);
+    if (namesSeen.length > 1) reviewReasons.push(`seen as ${namesSeen.join(" / ")}`);
     return {
       key,
-      username: (user && user.username) || agg.rawName || key,
-      fullName: (user && user.fullName) || agg.rawName || key,
+      mergedGroups: [...(agg.groups || [key])],
+      username: (user && user.username) || agg.rawName || bare,
+      fullName: (user && user.fullName) || agg.rawName || bare,
       email: (user && user.email) || null,
-      userId: (user && user.id) || null,
+      userId: (user && user.id) || agg.senderId || null,
       role: (user && user.role) || "SENDER",
       branch: (user && user.branch) || agg.branch || agg.school || "",
       userStatus: (user && user.status) || null,
@@ -2306,6 +2478,9 @@ async function buildSenderFleetTelemetry(env) {
       week: agg.week || 0,
       month: agg.month || 0,
       daily: agg.daily || {},
+      namesSeen,
+      needsReview: reviewReasons.length > 0,
+      reviewReasons,
       sessionCount,
       sessionStart: sessionStart || null,
       lastActivity: lastActivity || null,
@@ -2315,18 +2490,20 @@ async function buildSenderFleetTelemetry(env) {
   };
 
   const senders = [];
-  const covered = new Set();
-  for (const [key, agg] of bySender) {
-    senders.push(buildEntry(key, agg, userIndex.get(key)));
-    covered.add(key);
+  for (const [key, agg] of byAccount) {
+    senders.push(buildEntry(key, agg));
   }
-  // Registered SENDER accounts with zero records still appear in the fleet
-  for (const u of usersRes.rows) {
+  // Registered SENDER accounts with zero records still appear in the fleet - unless the row store
+  // already produced a group for that same account, which would show one person twice.
+  for (const u of userRows || []) {
     if (String(u.role || "").toUpperCase() !== "SENDER") continue;
     const uname = String(u.username || "").toLowerCase();
-    if (!uname || covered.has(uname)) continue;
-    senders.push(buildEntry(uname, { total: 0, today: 0, week: 0, month: 0, daily: {}, stamps: [] }, u));
-    covered.add(uname);
+    if (!uname) continue;
+    if (senders.some(s => (u.id && s.userId === u.id) || String(s.username).toLowerCase() === uname)) continue;
+    senders.push(buildEntry(`name:${uname}`, {
+      rawName: uname, names: new Set([uname]), senderId: u.id || `usr-${uname}`,
+      total: 0, today: 0, week: 0, month: 0, daily: {}, stamps: []
+    }));
   }
   senders.sort((a, b) => b.total - a.total);
 
@@ -2337,6 +2514,13 @@ async function buildSenderFleetTelemetry(env) {
     timezone: FLEET_TZ,
     windowDays: FLEET_WINDOW_DAYS,
     todayKey,
+    periods: {
+      today: todayKey,
+      week: { from: weekFrom, to: weekTo },
+      month: { from: monthFrom, to: monthTo }
+    },
+    // A reader that stopped early must never present its partial walk as the whole table.
+    rowsReadTruncated: !!(d1FleetRows && d1FleetRows.truncated),
     totals: {
       totalRecords,
       totalVerified,
@@ -2469,7 +2653,195 @@ async function saveR2ProvisionedUsers(usersList) {
   }
 }
 
+// -----------------------------------------------------------------------------
+// PROVISIONED STATIONS IN D1
+// -----------------------------------------------------------------------------
+//
+// A station account used to be durable only as long as one R2 object could be read: the list lived in
+// data/provisioned_users.json (which the public bucket URL serves to anyone who guesses the key, with
+// every password in it), the deleted-account list lived in one isolate's memory, and the static file
+// shipped inside the bundle held the rest. A provisioned sender that the R2 read could not reach could
+// not log in, and a delete that one isolate forgot came back in the next one. The row store is the
+// answer for both: strongly consistent across isolates, private to this worker, and written before the
+// caller is told the account exists.
+//
+// The read stays an overlay rather than a replacement. Accounts that have never been written through
+// this path keep resolving from the lists below them, so nothing here can lock an existing station out.
+
+async function readUsersFromD1(env) {
+  if (!d1Ready(env)) return null;
+  try {
+    const res = await env.SB_D1.prepare("SELECT * FROM users").all();
+    const rows = (res && res.results) || [];
+    return rows.map(r => {
+      let rec = null;
+      try { rec = JSON.parse(r.record); } catch (e) { rec = null; }
+      if (!rec || typeof rec !== "object") {
+        rec = { id: r.id, username: r.username, email: r.email, role: r.role, branch: r.branch, school: r.school };
+      }
+      rec.__d1Deleted = r.deleted === 1 || r.deleted === true;
+      return rec;
+    });
+  } catch (d1UsersErr) {
+    console.warn("D1 users read note:", d1UsersErr);
+    return null;
+  }
+}
+
+function d1UserValues(user) {
+  const username = String(user.username || "").trim().toLowerCase();
+  if (!username) return null;
+  return [
+    username,
+    user.id ? String(user.id) : null,
+    user.email ? String(user.email).toLowerCase() : null,
+    user.role ? String(user.role) : null,
+    user.branch || null,
+    user.school || null,
+    user.boundDeviceId ? String(user.boundDeviceId) : null,
+    JSON.stringify(user),
+    user.__d1Deleted ? 1 : 0,
+    user.updatedAt || new Date().toISOString()
+  ];
+}
+
+const D1_USER_UPSERT_SQL = "INSERT OR REPLACE INTO users (username, id, email, role, branch, school, boundDeviceId, record, deleted, updatedAt) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)";
+
+async function writeUserToD1(env, user) {
+  if (!d1Ready(env)) return false;
+  const values = d1UserValues(user || {});
+  if (!values) return false;
+  try {
+    const statements = [env.SB_D1.prepare(D1_USER_UPSERT_SQL).bind(...values)];
+    // A renamed handle must not leave the same person under two usernames, or the next login resolves
+    // the older one and the account appears twice in the directory.
+    if (user.id) {
+      statements.push(env.SB_D1.prepare("DELETE FROM users WHERE id = ? AND lower(username) <> ?").bind(String(user.id), values[0]));
+    }
+    await env.SB_D1.batch(statements);
+    return true;
+  } catch (d1UserWriteErr) {
+    console.warn("D1 user write note:", d1UserWriteErr);
+    return false;
+  }
+}
+
+// A tombstone rather than a removal: the row has to stay so a deleted account cannot reappear from a
+// lower-priority list the next time a different isolate answers.
+async function markUserDeletedInD1(env, matchKeys) {
+  if (!d1Ready(env)) return false;
+  const keys = (matchKeys || []).map(k => String(k || "").trim().toLowerCase()).filter(Boolean);
+  if (!keys.length) return false;
+  let changed = 0;
+  try {
+    for (const k of keys) {
+      const res = await env.SB_D1.prepare(
+        "UPDATE users SET deleted = 1, updatedAt = ?2 WHERE username = ?1 OR lower(COALESCE(email,'')) = ?1 OR id = ?1"
+      ).bind(k, new Date().toISOString()).run();
+      const n = (res && res.meta && res.meta.changes) || 0;
+      changed += n;
+      if (n === 0) {
+        // Nothing held this handle in D1, which usually means it came from the list shipped inside the
+        // bundle. Inserting the tombstone is the only way the delete outlives the isolate that made it.
+        await env.SB_D1.prepare(D1_USER_UPSERT_SQL)
+          .bind(k, null, null, null, null, null, null, JSON.stringify({ username: k, __d1Deleted: true }), 1, new Date().toISOString())
+          .run();
+        changed += 1;
+      }
+    }
+    return changed > 0;
+  } catch (d1TombErr) {
+    console.warn("D1 user tombstone note:", d1TombErr);
+    return false;
+  }
+}
+
+let usersBackfillState = { attempted: false, running: false, done: false };
+
+// The first time the table is found empty, copy what the older lists hold into it in the background,
+// so the accounts that exist today are durable today without anyone re-entering them.
+async function backfillUsersIntoD1(env, originUrl) {
+  if (!d1Ready(env) || usersBackfillState.done || usersBackfillState.running) return 0;
+  usersBackfillState.running = true;
+  try {
+    // A tombstone is a decision, not a gap. Whatever the older lists still hold for an account D1 has
+    // already answered on must not be copied back over it.
+    const existing = await env.SB_D1.prepare("SELECT username, id, email FROM users").all();
+    const already = new Set();
+    for (const row of ((existing && existing.results) || [])) {
+      if (row.username) already.add(String(row.username).toLowerCase());
+      if (row.id) already.add(String(row.id).toLowerCase());
+      if (row.email) already.add(String(row.email).toLowerCase());
+    }
+    const base = await collectUsersWithoutD1(env, originUrl);
+    let written = 0;
+    const statements = [];
+    for (const u of base) {
+      const keys = [u.username && String(u.username).toLowerCase(), u.email && String(u.email).toLowerCase(), u.id && String(u.id).toLowerCase()].filter(Boolean);
+      if (keys.some(k => already.has(k))) continue;
+      const values = d1UserValues(u);
+      if (!values) continue;
+      statements.push(env.SB_D1.prepare(D1_USER_UPSERT_SQL).bind(...values));
+      if (statements.length >= 20) {
+        try { await env.SB_D1.batch(statements.splice(0, statements.length)); written += 20; } catch (e) { statements.length = 0; }
+      }
+    }
+    if (statements.length) {
+      try { await env.SB_D1.batch(statements); written += statements.length; } catch (e) { }
+    }
+    if (written > 0) usersBackfillState.done = true;
+    console.log(`Provisioned stations copied into D1: ${written}`);
+    return written;
+  } catch (bfErr) {
+    console.warn("D1 users backfill note:", bfErr);
+    return 0;
+  } finally {
+    usersBackfillState.running = false;
+  }
+}
+
+// Merge a D1 account list over the older lists. D1 wins wherever the two describe the same person, and
+// a D1 tombstone removes an entry no matter which list still carries it.
+function mergeD1UsersOver(baseList, d1Users) {
+  if (!Array.isArray(d1Users) || d1Users.length === 0) return baseList;
+  const keyOf = (u) => [
+    u.username ? String(u.username).toLowerCase() : "",
+    u.email ? String(u.email).toLowerCase() : "",
+    u.id ? String(u.id).toLowerCase() : ""
+  ].filter(Boolean);
+  const out = (baseList || []).slice();
+  for (const d1User of d1Users) {
+    const dKeys = keyOf(d1User);
+    const at = out.findIndex(u => {
+      const bKeys = keyOf(u);
+      return dKeys.some(k => bKeys.includes(k));
+    });
+    if (d1User.__d1Deleted) {
+      if (at !== -1) out.splice(at, 1);
+      continue;
+    }
+    if (at !== -1) out[at] = Object.assign({}, out[at], d1User);
+    else out.push(Object.assign({}, d1User));
+  }
+  return out;
+}
+
 async function getUnifiedUsersList(env, originUrl) {
+  const base = await collectUsersWithoutD1(env, originUrl);
+  if (!d1Ready(env)) return base;
+  const d1Users = await readUsersFromD1(env);
+  if (d1Users === null) return base;
+  if (d1Users.length === 0) {
+    if (!usersBackfillState.attempted) {
+      usersBackfillState.attempted = true;
+      backfillUsersIntoD1(env, originUrl).catch(() => { });
+    }
+    return base;
+  }
+  return mergeD1UsersOver(base, d1Users);
+}
+
+async function collectUsersWithoutD1(env, originUrl) {
   await ensureLocalFallbackLoaded(env, originUrl);
   const baseUsers = cachedUsers || [];
   const r2Users = await loadR2ProvisionedUsers();
@@ -2695,30 +3067,275 @@ export default {
       const teleAuthErr = requireAuthorization(teleUser, ["SENDER", "RECEIVER", "ADMIN", "SUPER_ADMIN"]);
       if (teleAuthErr) return teleAuthErr;
       try {
-        const payload = await buildSenderFleetTelemetry(env);
+        const payload = await buildSenderFleetTelemetry(env, request.url);
+        const isSelfScope = String(teleUser.role || "").toUpperCase() === "SENDER";
         let senders = payload.senders;
-        if (String(teleUser.role || "").toUpperCase() === "SENDER") {
+        if (isSelfScope) {
           const me = String(teleUser.username || "").toLowerCase();
           const myId = String(teleUser.id || "").toLowerCase();
           senders = senders.filter(s =>
             (me && String(s.username).toLowerCase() === me) ||
             (myId && s.userId && String(s.userId).toLowerCase() === myId));
         }
+        // A sender is given its own totals. The fleet figures used to ride along with the filtered
+        // list, so the screen showed one line of work and a header counting everyone's, and any sender
+        // token could read the whole fleet's volume.
+        const ownDaily = {};
+        for (const s of senders) {
+          for (const [d, c] of Object.entries(s.daily || {})) ownDaily[d] = (ownDaily[d] || 0) + c;
+        }
+        const totals = isSelfScope ? {
+          totalRecords: senders.reduce((a, s) => a + (s.total || 0), 0),
+          activeSenders: senders.filter(s => s.terminalStatus === "ACTIVE").length,
+          recentlyActiveSenders: senders.filter(s => s.terminalStatus === "ACTIVE" || s.terminalStatus === "IDLE").length,
+          todayTotal: ownDaily[payload.todayKey] || 0,
+          weekTotal: sumDailyKeys(ownDaily, Object.keys(ownDaily).filter(d => d >= payload.periods.week.from && d <= payload.periods.week.to)),
+          monthTotal: sumDailyKeys(ownDaily, Object.keys(ownDaily).filter(d => d >= payload.periods.month.from && d <= payload.periods.month.to)),
+          daily: payload.totals.daily.map(row => ({ date: row.date, count: ownDaily[row.date] || 0 }))
+        } : payload.totals;
         return new Response(JSON.stringify({
           success: true,
           updatedAt: payload.updatedAt,
           timezone: payload.timezone,
           windowDays: payload.windowDays,
           todayKey: payload.todayKey,
-          totals: payload.totals,
+          periods: payload.periods,
+          rowsReadTruncated: payload.rowsReadTruncated,
+          totals,
           senderDailyTarget: payload.senderDailyTarget,
-          scope: String(teleUser.role || "").toUpperCase() === "SENDER" ? "SELF" : "ALL",
+          scope: isSelfScope ? "SELF" : "ALL",
           senders
         }), {
           headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders }
         });
       } catch (e) {
         return new Response(JSON.stringify({ success: false, error: e.message }), {
+          status: 500, headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 3b. SENDER PAYROLL REPORT — per sender, by calendar day, week and month
+    // -------------------------------------------------------------------------
+    //
+    // Salary is read off this answer, so it is built differently from the live telemetry view: one
+    // aggregate query against the row store rather than a walk of the table (no page budget can cut
+    // it short), calendar periods in the timezone the stations work in rather than a rolling
+    // seven-or-thirty-day window, and senders resolved to accounts instead of to whatever string a
+    // station typed. It also proves its own arithmetic before answering: every row in the range is
+    // placed in exactly one bucket, and if the buckets do not add up to the table the response says
+    // so instead of publishing a number that pays someone the wrong amount.
+    if (url.pathname === "/api/senders/payroll" && request.method === "GET") {
+      const payUser = await authenticateRequest(request);
+      const payAuthErr = requireAuthorization(payUser, ["SENDER", "RECEIVER", "ADMIN", "SUPER_ADMIN"]);
+      if (payAuthErr) return payAuthErr;
+
+      if (!d1Ready(env)) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "NO_ROW_STORE",
+          message: "The payroll report only reads the authoritative row store, and this deployment has no D1 binding. Nothing was estimated."
+        }), { status: 503, headers: { "Content-Type": "application/json", ...corsHeaders } });
+      }
+
+      try {
+        const todayKey = fleetDayKey(Date.now());
+        const requestedFrom = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get("from") || "") ? url.searchParams.get("from") : shiftDayKey(todayKey, -92);
+        const requestedTo = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get("to") || "") ? url.searchParams.get("to") : todayKey;
+        const monthFrom = monthStartKey(todayKey);
+        const weekFrom = shiftDayKey(todayKey, -weekdayIndexMonday0(todayKey));
+        const weekTo = shiftDayKey(weekFrom, 6);
+        // The requested range can be narrower than the current month, but the month column always
+        // means the whole calendar month so far, so the query reads the wider of the two.
+        const readFrom = requestedFrom < monthFrom ? requestedFrom : monthFrom;
+        const readTo = requestedTo > todayKey ? requestedTo : todayKey;
+
+        const [dayRows, users] = await Promise.all([
+          readSenderDayRowsFromD1(env, readFrom, readTo),
+          getUnifiedUsersList(env, request.url)
+        ]);
+        if (dayRows === null) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: "ROW_STORE_READ_FAILED",
+            message: "The row store did not answer the payroll aggregate. No figure is being substituted."
+          }), { status: 502, headers: { "Content-Type": "application/json", ...corsHeaders } });
+        }
+
+        const attribution = buildSenderAttribution(dayRows);
+        const userById = new Map();
+        const userByName = new Map();
+        for (const u of users || []) {
+          if (u && u.id) userById.set(String(u.id).toLowerCase(), u);
+          if (u && u.username) userByName.set(String(u.username).toLowerCase(), u);
+          if (u && u.email) userByName.set(String(u.email).toLowerCase(), u);
+        }
+
+        const groups = new Map();
+        let rowsInRange = 0;
+        let undatedRows = 0;
+        for (const r of dayRows) {
+          const n = Number(r.n) || 0;
+          const day = String(r.day || "");
+          const g = attribution.groupOf(r);
+          let e = groups.get(g.key);
+          if (!e) {
+            e = { key: g.key, kind: g.kind, id: g.id, names: new Map(), ids: new Set(), daily: {}, undated: 0 };
+            groups.set(g.key, e);
+          }
+          if (normSenderId(r.senderId)) e.ids.add(String(r.senderId).trim());
+          const nm = normSenderName(r.senderName);
+          if (nm) e.names.set(nm, (e.names.get(nm) || 0) + n);
+          if (!day) {
+            // A row the store could not place on any day is reported as its own number rather than
+            // dropped, because dropping it would make the buckets add up to less than the table.
+            undatedRows += n;
+            e.undated += n;
+            continue;
+          }
+          e.daily[day] = (e.daily[day] || 0) + n;
+          if (day >= requestedFrom && day <= requestedTo) rowsInRange += n;
+        }
+
+        // One operator must not become two salary lines. A device id that names an account and the
+        // same account's handle posted with no id at all are merged into one bucket, which is also what
+        // the live fleet table does, so the two screens pay the same number. What cannot be resolved to
+        // an account stays on its own line and is flagged instead of being guessed at.
+        const accountKeyFor = (e) => {
+          const byId = e.id && userById.get(String(e.id).toLowerCase());
+          if (byId && byId.username) return `acct:${String(byId.username).toLowerCase()}`;
+          const stripped = userByName.get(String(e.key).replace(/^(?:id|name):/, ""));
+          if (stripped && stripped.username) return `acct:${String(stripped.username).toLowerCase()}`;
+          const dominant = [...e.names.entries()].sort((a, b2) => b2[1] - a[1])[0];
+          const byName = dominant && userByName.get(dominant[0]);
+          if (byName && byName.username) return `acct:${String(byName.username).toLowerCase()}`;
+          return e.key;
+        };
+
+        const buckets = new Map();
+        for (const e of groups.values()) {
+          const key = accountKeyFor(e);
+          let b = buckets.get(key);
+          if (!b) {
+            b = { key, id: "", ids: new Set(), names: new Map(), daily: {}, undated: 0, idlessRows: 0, groups: new Set() };
+            buckets.set(key, b);
+          }
+          b.groups.add(e.key);
+          if (e.kind === "name") b.idlessRows += Object.values(e.daily).reduce((s, c) => s + c, 0) + e.undated;
+          for (const i of e.ids) b.ids.add(i);
+          for (const [nm, c] of e.names) b.names.set(nm, (b.names.get(nm) || 0) + c);
+          for (const [d, c] of Object.entries(e.daily)) b.daily[d] = (b.daily[d] || 0) + c;
+          b.undated += e.undated;
+          // Prefer an id that names an account over whichever device was seen first.
+          if (!(b.id && userById.get(String(b.id).toLowerCase())) && e.id) b.id = e.id;
+        }
+
+        const senders = [];
+        let attributedRange = 0;
+        let unattributedRange = 0;
+        for (const b of buckets.values()) {
+          const isUnattributed = b.key === "unattributed";
+          const bare = String(b.key).replace(/^(?:id|name|acct):/, "");
+          const known = (b.id && userById.get(String(b.id).toLowerCase())) || userByName.get(bare) || null;
+          const spellings = [...b.names.entries()].sort((a, b2) => b2[1] - a[1]);
+          const label = (known && known.username) || spellings[0]?.[0] || "No sender on the row";
+          let rangeTotal = 0;
+          for (const [day, c] of Object.entries(b.daily)) {
+            if (day >= requestedFrom && day <= requestedTo) rangeTotal += c;
+          }
+          const review = [];
+          if (isUnattributed) review.push("no sender recorded on these rows");
+          if (b.idlessRows > 0) review.push(`${b.idlessRows} row${b.idlessRows === 1 ? "" : "s"} posted with no account id`);
+          if (b.groups.size > 1) review.push(`${b.groups.size} sender groups merged into this account`);
+          if (b.ids.size > 1) review.push(`${b.ids.size} different sender ids posted under it`);
+          if (spellings.length > 1) review.push(`posted as ${spellings.map(s => s[0]).join(" / ")}`);
+          if (isUnattributed) unattributedRange += rangeTotal;
+          else attributedRange += rangeTotal;
+          senders.push({
+            key: b.key,
+            kind: isUnattributed ? "unattributed" : (known ? "account" : (b.id ? "id" : "name")),
+            label,
+            userId: (known && known.id) || b.id || null,
+            accountFound: !!known,
+            role: (known && known.role) || (isUnattributed ? null : "SENDER"),
+            branch: (known && known.branch) || null,
+            school: (known && known.school) || null,
+            today: b.daily[todayKey] || 0,
+            week: sumDailyRange(b.daily, weekFrom, earlierDayKey(weekTo, todayKey)),
+            month: sumDailyRange(b.daily, monthFrom, todayKey),
+            rangeTotal,
+            undated: b.undated,
+            daily: b.daily,
+            namesSeen: spellings.map(s => s[0]),
+            senderIds: [...b.ids],
+            mergedFrom: [...b.groups],
+            needsReview: review.length > 0,
+            reviewReasons: review
+          });
+        }
+        senders.sort((a, b) => b.month - a.month || b.rangeTotal - a.rangeTotal || a.label.localeCompare(b.label));
+
+        // The report checks its own arithmetic before anyone is paid from it.
+        const bucketSum = senders.reduce((s, x) => s + x.rangeTotal, 0);
+        const reconciles = bucketSum === rowsInRange;
+
+        let scoped = senders;
+        const isSelfScope = String(payUser.role || "").toUpperCase() === "SENDER";
+        if (isSelfScope) {
+          const me = String(payUser.username || "").toLowerCase();
+          const myId = String(payUser.id || "").toLowerCase();
+          scoped = senders.filter(s =>
+            (myId && s.userId && String(s.userId).toLowerCase() === myId) ||
+            (me && String(s.label).toLowerCase() === me));
+        }
+
+        // A sender's report must carry its own numbers. The fleet totals used to be sent down with the
+        // scoped list, so the station's banner said one thing while its table held another, and the
+        // whole fleet's record count was readable by any sender token.
+        const totals = isSelfScope ? {
+          rowsInRange: scoped.reduce((s, x) => s + x.rangeTotal, 0),
+          bucketSum: scoped.reduce((s, x) => s + x.rangeTotal, 0),
+          attributedRows: scoped.reduce((s, x) => s + (x.kind === "unattributed" ? 0 : x.rangeTotal), 0),
+          unattributedRows: scoped.reduce((s, x) => s + (x.kind === "unattributed" ? x.rangeTotal : 0), 0),
+          undatedRows: scoped.reduce((s, x) => s + (x.undated || 0), 0),
+          reconciles: true,
+          senderCount: scoped.length
+        } : {
+          rowsInRange,
+          bucketSum,
+          attributedRows: attributedRange,
+          unattributedRows: unattributedRange,
+          undatedRows,
+          reconciles,
+          senderCount: scoped.length
+        };
+
+        const settings = await getPlatformSettings();
+        return new Response(JSON.stringify({
+          success: true,
+          timezone: FLEET_TZ,
+          generatedAt: new Date().toISOString(),
+          range: { from: requestedFrom, to: requestedTo },
+          periods: {
+            today: todayKey,
+            week: { from: weekFrom, to: weekTo },
+            month: { from: monthFrom, to: shiftDayKey(monthFrom, daysInMonth(todayKey) - 1) }
+          },
+          senderDailyTarget: Number(settings.senderDailyTarget) || 50,
+          scope: isSelfScope ? "SELF" : "ALL",
+          senders: scoped,
+          totals,
+          note: isSelfScope
+            ? "These figures count only the rows this station posted."
+            : (reconciles
+              ? "Every dated row in the range sits in exactly one sender bucket."
+              : `The buckets add to ${bucketSum} but the range holds ${rowsInRange} rows - do not pay from this report.`)
+        }), {
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders }
+        });
+      } catch (payErr) {
+        return new Response(JSON.stringify({ success: false, error: payErr.message }), {
           status: 500, headers: { "Content-Type": "application/json", ...corsHeaders }
         });
       }
@@ -3373,7 +3990,9 @@ export default {
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/students" && request.method === "POST") {
       const authUser = await authenticateRequest(request);
-      const authErr = requireAuthorization(authUser, ["SENDER", "ADMIN", "SUPER_ADMIN"]);
+      // The desk already edits and purges these rows from the receiver station; creating one it missed
+      // is the same authority over the same table, and refusing it left the directory unable to add.
+      const authErr = requireAuthorization(authUser, ["SENDER", "RECEIVER", "ADMIN", "SUPER_ADMIN"]);
       if (authErr) return authErr;
 
       try {
@@ -4585,15 +5204,20 @@ export default {
 
         // D1 takes the same merged record the R2 artifact holds, ahead of the ocean round trip, so
         // an edit is visible on the next feed page even when Supabase answers slowly.
-        await patchStudentInD1(env, mergedStudent.studentId || studentId, mergedStudent);
+        const d1PatchOk = await patchStudentInD1(env, mergedStudent.studentId || studentId, mergedStudent);
 
-        // An edit is a send too: every station still showing the record as it was has to be told,
-        // and the row it reads back is the merged one rather than the patch.
+        // An edit is a send too: every station still showing the record as it was has to be told.
+        // The frame carries the row read back from the authoritative store rather than the patch,
+        // because a station that applies a partial object over a whole one loses the fields the patch
+        // never mentioned - and a caller that edits only the phone number sends only the phone number.
+        const editedId = mergedStudent.studentId || studentId;
+        const authoritativeEdit = (await readStudentFromD1(env, editedId)) || mergedStudent;
         relayAnnounce(ctx, env, {
           type: "UPSERT",
-          studentId: mergedStudent.studentId || studentId,
+          studentId: editedId,
+          student: relayStudentRecord(authoritativeEdit),
           origin: relayOrigin(request),
-          at: mergedStudent.updatedAt
+          at: authoritativeEdit.updatedAt || mergedStudent.updatedAt
         });
 
         // Authoritative write to Supabase cloudflare.students
@@ -4658,7 +5282,18 @@ export default {
           ipAddress: request.headers.get("cf-connecting-ip") || null
         }, ctx);
 
-        return new Response(JSON.stringify(mergedStudent || updates), {
+        // A 200 that the row store never accepted is the worst answer this endpoint can give: the
+        // station marks the edit applied, the operator sees the new value until the next reload, and
+        // nothing anywhere queues a retry. When D1 is bound and the write failed, say so with a status
+        // the client treats as a failure, and let it keep the operation in its outbox.
+        if (d1Ready(env) && !d1PatchOk) {
+          return new Response(JSON.stringify({ error: "D1_WRITE_FAILED", studentId, message: "The edit did not reach the row store; retry it." }), {
+            status: 500,
+            headers: { "Content-Type": "application/json", ...corsHeaders }
+          });
+        }
+
+        return new Response(JSON.stringify(authoritativeEdit), {
           headers: { "Content-Type": "application/json", ...corsHeaders }
         });
       } catch (e) {
@@ -4719,10 +5354,12 @@ export default {
           }
 
           // 2. Update D1, then Supabase
-          await patchStudentInD1(env, targetId, {
+          const restorePatchOk = await patchStudentInD1(env, targetId, {
             receiverHidden: false, hiddenAt: null, updatedAt: new Date().toISOString()
           });
-          relayAnnounce(ctx, env, { type: "RESTORE", studentId: targetId, origin: relayOrigin(request) });
+          if (restorePatchOk) {
+            relayAnnounce(ctx, env, { type: "RESTORE", studentId: targetId, origin: relayOrigin(request) });
+          }
           try {
             await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
               method: "PATCH",
@@ -4766,6 +5403,13 @@ export default {
             user: authUser,
             ipAddress: request.headers.get("cf-connecting-ip") || null
           }, ctx);
+
+          if (d1Ready(env) && !restorePatchOk) {
+            return new Response(JSON.stringify({ error: "D1_WRITE_FAILED", studentId: targetId, message: "The restore did not reach the row store; retry it." }), {
+              status: 500,
+              headers: { "Content-Type": "application/json", ...corsHeaders }
+            });
+          }
 
           return new Response(JSON.stringify({ success: true, restored: true, studentId: targetId }), {
             headers: { "Content-Type": "application/json", ...corsHeaders }
@@ -4814,6 +5458,48 @@ export default {
             if (k) photoKeys.add(k);
           }
 
+          // Everything that decides what a station sees next is finished before this answers: the row
+          // leaves the store the feed reads from, the Cloudflare copy that every assembly merges back
+          // in loses it, and the connected stations are told. All three are edge-local, so the cost is
+          // milliseconds, while leaving them to the background is exactly what made a completed delete
+          // reappear on reload and get reported as "deleting does not work".
+          const d1PhotoRow = await readStudentFromD1(env, targetId);
+          if (d1PhotoRow) {
+            for (const f of ["photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "storageKey"]) {
+              const k = stripPhotoRef(d1PhotoRow[f]);
+              if (k) photoKeys.add(k);
+            }
+          }
+          const d1CleanAlias = d1PhotoRow && d1PhotoRow.fullName
+            ? String(d1PhotoRow.fullName).trim().replace(/[\/\\:*?"<>|\s]+/g, "_") : "";
+          if (d1CleanAlias) photoKeys.add(`${d1CleanAlias}.jpg`);
+          photoKeys.add(`${targetId}.jpg`);
+          photoKeys.add(`records/${targetId}.json`);
+
+          const d1RowsRemoved = await deleteStudentFromD1(env, targetId);
+          // Read the key back rather than trusting the change count: a row stored under the other id
+          // is invisible to a count, and the station needs to know whether the record is actually gone.
+          const stillInD1 = d1Ready(env) ? await readStudentFromD1(env, targetId) : null;
+
+          relayAnnounce(ctx, env, { type: "DELETE", studentId: targetId, origin: relayOrigin(request) });
+
+          let registryStripped = false;
+          try {
+            const registryRows = await getLiveRegistryFromR2();
+            if (Array.isArray(registryRows)) {
+              const kept = registryRows.filter(s => {
+                if (!s) return false;
+                return (s.studentId || "").toLowerCase() !== tLower && (s.id || "").toLowerCase() !== tLower;
+              });
+              if (kept.length !== registryRows.length) {
+                await saveLiveRegistryToR2(kept);
+                registryStripped = true;
+              }
+            }
+          } catch (e) {
+            console.warn("live registry purge notice:", targetId, e);
+          }
+
           // Offload remote async network operations to background via ctx.waitUntil
           const bgDeletePromise = (async () => {
             let cloudPurged = [];
@@ -4848,8 +5534,7 @@ export default {
             photoKeys.add(`${targetId}.jpg`);
             photoKeys.add(`records/${targetId}.json`);
 
-            // 1. Delete the row from every store that holds it
-            const d1RowsRemoved = await deleteStudentFromD1(env, targetId);
+            // 1. Drop the mirror the edge does not own. D1 already lost the row before this answered.
             let rowsRemoved = 0;
             try {
               const dropRes = await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
@@ -4867,11 +5552,6 @@ export default {
                 rowsRemoved = Array.isArray(dropped) ? dropped.length : 0;
               }
             } catch (e) {}
-
-            // The row is out of both stores now, so every station holding it can be told to drop it.
-            // Announced here rather than at the end because the photo purge below is the slow part and
-            // a station still showing a record it no longer owns is the thing operators report.
-            relayAnnounce(ctx, env, { type: "DELETE", studentId: targetId, origin: relayOrigin(request) });
 
             // 2. Purge every cloud photo object, unless another remaining student still references it
             for (const key of photoKeys) {
@@ -4904,28 +5584,6 @@ export default {
 
             r2ScanCache.scannedAt = 0;
 
-            // The live registry is the Cloudflare copy the directory reads while the database is
-            // unreachable, and every assembly merges it back in - so a record removed only from
-            // PostgreSQL keeps coming back from here. Thirteen deleted test students survived nine
-            // permanent deletes precisely this way, because the deleted-id list lives in one isolate's
-            // memory and the registry does not.
-            let registryStripped = false;
-            try {
-              const registryRows = await getLiveRegistryFromR2();
-              if (Array.isArray(registryRows)) {
-                const kept = registryRows.filter(s => {
-                  if (!s) return false;
-                  return (s.studentId || "").toLowerCase() !== tLower && (s.id || "").toLowerCase() !== tLower;
-                });
-                if (kept.length !== registryRows.length) {
-                  await saveLiveRegistryToR2(kept);
-                  registryStripped = true;
-                }
-              }
-            } catch (e) {
-              console.warn("live registry purge notice:", targetId, e);
-            }
-
             // A station that asks to purge a record that is already gone gets the same 200 answer,
             // but it is not an event: one retrying client wrote 985 "permanent purge completed" rows
             // in seventeen minutes and pushed the day's real history out of the log window. Nothing
@@ -4953,13 +5611,23 @@ export default {
             ctx.waitUntil(bgDeletePromise);
           }
 
+          // Say what was verified, not what was started. A station that is told the row is still
+          // readable keeps the operation in its outbox and retries instead of showing its operator a
+          // delete that quietly failed.
+          const purgeVerified = !stillInD1;
           return new Response(JSON.stringify({
-            success: true,
+            success: purgeVerified,
+            rowGone: purgeVerified,
             permanent: true,
             deletedId: targetId,
+            d1RowsRemoved,
+            registryStripped,
             cloudPurgeInitiated: true,
-            message: `Student ${targetId} permanently deleted from the database and cloud storage.`
+            message: purgeVerified
+              ? `Student ${targetId} is out of the row store; cloud clean-up continues in the background.`
+              : `Student ${targetId} is still readable in the row store; retry the purge.`
           }), {
+            status: purgeVerified ? 200 : 500,
             headers: { "Content-Type": "application/json", ...corsHeaders }
           });
         } else {
@@ -4985,12 +5653,14 @@ export default {
           }
 
           // 2. Update D1 and Supabase PostgreSQL
-          await patchStudentInD1(env, targetId, {
+          const hiddenPatchOk = await patchStudentInD1(env, targetId, {
             receiverHidden: true,
             hiddenAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           });
-          relayAnnounce(ctx, env, { type: "HIDE", studentId: targetId, origin: relayOrigin(request) });
+          if (hiddenPatchOk) {
+            relayAnnounce(ctx, env, { type: "HIDE", studentId: targetId, origin: relayOrigin(request) });
+          }
           try {
             await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
               method: "PATCH",
@@ -5040,6 +5710,16 @@ export default {
             user: authUser,
             ipAddress: request.headers.get("cf-connecting-ip") || null
           }, ctx);
+
+          // The hide only counts as done when the store the feed reads from agreed to it; a station
+          // that gets 500 here keeps the change in its outbox instead of showing a hidden record that
+          // reappears on the next reload.
+          if (d1Ready(env) && !hiddenPatchOk) {
+            return new Response(JSON.stringify({ error: "D1_WRITE_FAILED", studentId: targetId, message: "The hide did not reach the row store; retry it." }), {
+              status: 500,
+              headers: { "Content-Type": "application/json", ...corsHeaders }
+            });
+          }
 
           return new Response(JSON.stringify({ success: true, temporary: true, studentId: targetId }), {
             headers: { "Content-Type": "application/json", ...corsHeaders }
@@ -5689,6 +6369,9 @@ export default {
           }
           await saveR2ProvisionedUsers(r2List);
         } catch (e) {}
+        // The binding is written to the row store as well, so the next login from this terminal is
+        // resolved by the store rather than by whichever copy of the account list answers.
+        try { await writeUserToD1(env, user); } catch (d1BindErr) { console.warn("D1 device binding note:", d1BindErr); }
 
         let resolvedRole = user.role || "SENDER";
         if (term === "miskrdires11@gmail.com" || term === "abeni1@gmail.com") {
@@ -5990,6 +6673,11 @@ export default {
           // Persist to Cloudflare R2 bucket siliconlabs
           await saveR2ProvisionedUsers(r2Users);
 
+          // The row store takes the account first: it is what another isolate reads when this station
+          // logs in a minute from now, and the R2 copy has no such guarantee.
+          const savedUser = idx !== -1 ? r2Users[idx] : userObj;
+          const d1UserOk = await writeUserToD1(env, savedUser);
+
           // Authoritative write to Supabase cloudflare.users
           try {
             await fetch(`${SUPABASE_URL}/rest/v1/users`, {
@@ -6020,7 +6708,16 @@ export default {
           } catch (e) {}
 
           const { password, passwordHash, ...safeSaved } = userObj;
-          return new Response(JSON.stringify({ success: true, user: safeSaved }), {
+          // A station that was "provisioned" into a store that cannot answer later is the failure the
+          // operator finds at the gate, so the answer is only a success when the row store holds it.
+          if (d1Ready(env) && !d1UserOk) {
+            return new Response(JSON.stringify({
+              error: "D1_WRITE_FAILED",
+              message: "The account did not reach the station store. Nothing was provisioned - retry it.",
+              user: safeSaved
+            }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });
+          }
+          return new Response(JSON.stringify({ success: true, provisionedIn: d1UserOk ? "d1" : "r2", user: safeSaved }), {
             headers: { "Content-Type": "application/json", ...corsHeaders }
           });
         } catch (err) {
@@ -6063,6 +6760,10 @@ export default {
 
           await saveR2ProvisionedUsers(filtered);
 
+          // The tombstone goes in the row store too, and it has to survive this isolate: an
+          // in-memory deleted-list is what let a removed station log back in hours later.
+          const d1Tombstoned = await markUserDeletedInD1(env, targets);
+
           // Authoritative delete from Supabase cloudflare.users
           try {
             const queryParts = [];
@@ -6084,8 +6785,12 @@ export default {
             console.warn("Supabase user delete sync notice:", sbDelErr);
           }
 
-          // Purged from Cloudflare R2 & Supabase
-          return new Response(JSON.stringify({ success: true, message: "User deleted and workstation freed." }), {
+          // Purged from the station store, R2 and Supabase
+          return new Response(JSON.stringify({
+            success: true,
+            tombstonedIn: d1Tombstoned ? "d1" : "memory",
+            message: "User deleted and workstation freed."
+          }), {
             headers: { "Content-Type": "application/json", ...corsHeaders }
           });
         } catch (err) {

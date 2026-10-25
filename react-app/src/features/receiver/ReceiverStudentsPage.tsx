@@ -20,7 +20,8 @@ import {
   DEFAULT_BRANCHES, BRANCH_SCHOOL_MAP,
   generateStudentQrToken, getStudentPhotoFileName, getStudentQrFileName,
   addCorrectionLog, getAllSendersMetrics, SenderMetrics, getAuthHeaders,
-  initStore, buildExportPhotoPath, buildExportQrPath, refreshPlatformSettings,
+  getCurrentUser,
+  initStore, refreshStudentFeed, buildExportPhotoPath, buildExportQrPath, refreshPlatformSettings,
   isServerApiOnline
 } from '@/lib/store';
 import { Student } from '@/types';
@@ -98,7 +99,10 @@ export const ReceiverStudentsPage: React.FC = () => {
 
   // Pagination (Default: 500 students per page as required)
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(500);
+  // 500 rows measured 3-6 s of blocked main thread per render on a station, and the directory re-renders
+  // on every feed delta, so the page looked frozen for tens of seconds after opening it. 50 rows renders
+  // in ~320 ms; the operator can still raise this for a bulk pass.
+  const [pageSize, setPageSize] = useState(50);
 
   // View Switcher: Master Table vs School Directory Folders
   const [viewMode, setViewMode] = useState<'table' | 'folders'>('table');
@@ -166,6 +170,14 @@ export const ReceiverStudentsPage: React.FC = () => {
   // Delete Modal
   const [deleteTarget, setDeleteTarget] = useState<Student | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Directory add: the desk can register a record a station never captured. It reuses the edit form,
+  // so no second copy of those fields can drift; these hold the new row's ID and its honest delivery
+  // state, because a record only this browser holds is not in the directory.
+  const [isNewStudentMode, setIsNewStudentMode] = useState(false);
+  const [newStudentId, setNewStudentId] = useState('');
+  const [isAddingStudent, setIsAddingStudent] = useState(false);
+  const [addStatus, setAddStatus] = useState<{ kind: 'idle' | 'sending' | 'sent' | 'queued' | 'error'; text: string }>({ kind: 'idle', text: '' });
 
   // Mistake Analyzer Pop-up Modal State (Screen Overlay in Directory)
   const [isMistakeModalOpen, setIsMistakeModalOpen] = useState(false);
@@ -300,9 +312,16 @@ export const ReceiverStudentsPage: React.FC = () => {
       }
     );
 
-    // Auto-poll every 10 seconds to catch remote transmissions over long distance
+    // Ten seconds is how long an operator waits to see a colleague's send, not how often the whole
+    // registry is re-read. This asks the store's cursor what moved; a full paginated walk restarted
+    // here every ten seconds used to overtake the pass before it, leaving the page loading and the
+    // table showing zero students.
     const autoPollInterval = setInterval(() => {
-      loadData();
+      refreshStudentFeed().then(() => {
+        const current = getStudents();
+        if (current.length > 0) setStudents(current);
+        setSendersList(getAllSendersMetrics());
+      }).catch(() => {});
     }, 10000);
 
     return () => {
@@ -518,7 +537,9 @@ export const ReceiverStudentsPage: React.FC = () => {
   const retryDatasetLoad = async () => {
     setFeedRetrying(true);
     try {
-      await initStore();
+      // forceFullFeed is the escape hatch: it ignores both the freshness window and a delta pass that
+      // is already running, because the operator just told us the loaded list is short.
+      await initStore({ forceFullFeed: true });
       setStudents(getStudents());
       window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
     } catch (e) {
@@ -1007,6 +1028,8 @@ export const ReceiverStudentsPage: React.FC = () => {
   const handleOpenEditData = (s: Student, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setEditingDataStudent(s);
+    setIsNewStudentMode(false);
+    setNewStudentId('');
     setEditFullName(s.fullName || '');
     setEditSex(s.sex === 'Female' ? 'Female' : 'Male');
     setEditGrade(s.grade || '9');
@@ -1024,10 +1047,161 @@ export const ReceiverStudentsPage: React.FC = () => {
     setIsEditModalOpen(true);
   };
 
+  // A directory ID is generated against the records this station holds, so the desk is not handed a
+  // number that already belongs to someone else.
+  const nextDirectoryStudentId = () => {
+    const taken = new Set(getStudents().map(s => (s.studentId || '').trim().toUpperCase()));
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const candidate = `SB-2026-${Math.floor(10000 + Math.random() * 90000)}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return `SB-2026-${Date.now().toString(36).toUpperCase()}`;
+  };
+
+  const handleOpenAddStudent = () => {
+    setEditingDataStudent(null);
+    setIsNewStudentMode(true);
+    setNewStudentId(nextDirectoryStudentId());
+    setEditFullName('');
+    setEditSex('Male');
+    setEditGrade('');
+    setEditSection('');
+    setEditBranch('Addis Ababa');
+    setEditSchool((BRANCH_SCHOOL_MAP['Addis Ababa'] || ['YMS'])[0]);
+    setEditPhone('');
+    setEditDob('');
+    setEditBloodType('Unknown');
+    setEditGuardianName('');
+    setEditEmergencyPhone('');
+    setEditBusUsage('Yes');
+    setAddStatus({ kind: 'idle', text: '' });
+    setIsEditModalOpen(true);
+  };
+
+  // Start the next desk entry without closing the form.
+  const handleAddAnotherStudent = () => {
+    handleOpenAddStudent();
+    void loadData();
+  };
+
+  const closeAddStudentModal = () => {
+    setIsEditModalOpen(false);
+    setIsNewStudentMode(false);
+    setNewStudentId('');
+    setAddStatus({ kind: 'idle', text: '' });
+  };
+
+  // A desk add is a send. The row goes to the authoritative store first, and a cloud that does not
+  // answer leaves it on this station and in the outbox rather than pretending it is registered.
+  const handleCreateStudent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const sid = newStudentId.trim().toUpperCase();
+    const name = editFullName.trim();
+    if (!sid) { setAddStatus({ kind: 'error', text: 'Student ID is required.' }); return; }
+    if (!name) { setAddStatus({ kind: 'error', text: 'Full Name is required.' }); return; }
+    if (!editGrade.trim()) { setAddStatus({ kind: 'error', text: 'Grade is required.' }); return; }
+
+    const clash = getStudents().find(s => (s.studentId || '').trim().toUpperCase() === sid);
+    if (clash) {
+      setAddStatus({ kind: 'error', text: `Student ID ${sid} already belongs to ${clash.fullName}. Edit that record instead of adding a second one.` });
+      return;
+    }
+
+    const parsedG = parseGradeAndSection(editGrade.trim(), editSection.trim());
+    const resolvedSection = (editSection.trim() || parsedG.cleanSection || '').toUpperCase();
+    const cleanG = parsedG.cleanGrade || editGrade.trim();
+    const fullGrade = resolvedSection ? `${cleanG}${resolvedSection}` : cleanG;
+    const formattedPhone = formatPhoneNumber(editPhone);
+    const formattedEmergency = formatPhoneNumber(editEmergencyPhone) || formattedPhone;
+    const operator = getCurrentUser();
+
+    const record: Student = {
+      id: 'desk-' + Date.now().toString(36),
+      studentId: sid,
+      fullName: name,
+      sex: editSex,
+      grade: fullGrade,
+      department: resolvedSection || undefined,
+      section: resolvedSection || undefined,
+      branch: editBranch,
+      location: editBranch,
+      address: editBranch,
+      school: editSchool,
+      country: 'Ethiopia',
+      cityRegion: editBranch,
+      phone: formattedPhone,
+      emergencyContactPhone: formattedEmergency,
+      parentPhone: formattedPhone,
+      guardianPhone: formattedPhone,
+      dateOfBirth: editDob || undefined,
+      bloodType: editBloodType,
+      guardianFullName: editGuardianName.trim() || undefined,
+      schoolBusUsage: editBusUsage,
+      busUser: editBusUsage,
+      status: 'Accepted',
+      createdAt: new Date().toISOString(),
+      // The desk account is named as the source, so a record registered here is never counted as a
+      // field sender's transmission.
+      senderName: operator?.username || 'Receiver Desk',
+      senderId: operator?.id || undefined,
+      recordHistory: [
+        {
+          date: new Date().toISOString().replace('T', ' ').substring(0, 16),
+          action: 'Desk Registration',
+          user: operator?.username || 'Receiver Desk',
+          role: operator?.role || 'Receiver',
+          notes: 'Record created at the Receiver Desk; no station capture exists for it'
+        }
+      ]
+    } as any;
+
+    setIsAddingStudent(true);
+    setAddStatus({ kind: 'sending', text: `Delivering ${sid} to the cloud...` });
+
+    const { queueOfflineOperation, cloudJsonResponse } = await import('@/lib/offlineQueue');
+    let confirmed = false;
+    let cloudDuplicate = false;
+    try {
+      const res = await fetch('/api/students', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify(record)
+      });
+      const body = await cloudJsonResponse(res);
+      cloudDuplicate = res.status === 409 || body?.error === 'DUPLICATE_ID';
+      confirmed = !!body && res.ok && !cloudDuplicate;
+      if (!confirmed && !cloudDuplicate) {
+        await queueOfflineOperation('CREATE_STUDENT', record).catch(() => {});
+      }
+    } catch (err) {
+      await queueOfflineOperation('CREATE_STUDENT', record).catch(() => {});
+    }
+
+    if (cloudDuplicate) {
+      setIsAddingStudent(false);
+      setAddStatus({ kind: 'error', text: `The cloud already holds Student ID ${sid}. Edit that record instead of adding a second one.` });
+      return;
+    }
+
+    addStudent(record);
+    setStudents(prev => [record, ...prev]);
+    setIsAddingStudent(false);
+    setNewStudentId(nextDirectoryStudentId());
+
+    if (confirmed) {
+      setAddStatus({ kind: 'sent', text: `${sid} is saved in the cloud directory.` });
+    } else {
+      setAddStatus({ kind: 'queued', text: `${sid} is on this station and in its outbox; it transmits by itself until the cloud confirms.` });
+    }
+  };
+
   // Save Student Data Updates
   const handleSaveStudentData = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingDataStudent) return;
+    if (!editingDataStudent) {
+      void handleCreateStudent(e);
+      return;
+    }
     const targetSid = editingDataStudent.studentId || editingDataStudent.id;
     const targetDbId = editingDataStudent.id || editingDataStudent.studentId;
 
@@ -1542,6 +1716,17 @@ export const ReceiverStudentsPage: React.FC = () => {
 
         {/* Global Action Toolbar */}
         <div className="flex items-center gap-2 flex-wrap">
+          {/* 0. Register a record the field missed */}
+          <button
+            type="button"
+            onClick={handleOpenAddStudent}
+            className="py-2 px-3.5 rounded-xl bg-[#9EE617] hover:bg-[#8FE617] text-[#062404] text-xs font-black flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+            title="Add a new student to the directory"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add Student</span>
+          </button>
+
           {/* 1. Mistake Analyzer */}
           <button
             type="button"
@@ -2657,10 +2842,10 @@ export const ReceiverStudentsPage: React.FC = () => {
               className="ml-2 bg-white border border-[#CBD5E1] rounded-lg px-2 py-1 text-xs font-bold text-[#0B1118]"
             >
               <option value={25}>25 per page</option>
-              <option value={50}>50 per page</option>
+              <option value={50}>50 per page (Default)</option>
               <option value={100}>100 per page</option>
               <option value={250}>250 per page</option>
-              <option value={500}>500 per page (Default)</option>
+              <option value={500}>500 per page</option>
               <option value={1000}>1000 per page</option>
             </select>
           </div>
@@ -3413,21 +3598,23 @@ export const ReceiverStudentsPage: React.FC = () => {
       {/* =========================================================================
           EDIT STUDENT DATA MODAL (All fields EXCEPT Photo and QR)
          ========================================================================= */}
-      {isEditModalOpen && editingDataStudent && (
+      {isEditModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white border border-[#CBD5E1] rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div>
                 <h3 className="font-heading font-black text-base text-[#0B1118]">
-                  Edit Student Information
+                  {editingDataStudent ? 'Edit Student Information' : 'Add Student to Directory'}
                 </h3>
                 <p className="text-[11px] text-slate-500 font-mono">
-                  {editingDataStudent.studentId} &bull; Academic & Contact metadata
+                  {editingDataStudent
+                    ? `${editingDataStudent.studentId} • Academic & Contact metadata`
+                    : `${newStudentId} • Academic & Contact metadata`}
                 </p>
               </div>
               <button
                 type="button"
-                onClick={() => setIsEditModalOpen(false)}
+                onClick={() => (isNewStudentMode ? closeAddStudentModal() : setIsEditModalOpen(false))}
                 className="p-1 text-slate-400 hover:text-black cursor-pointer"
               >
                 <X className="w-5 h-5" />
@@ -3436,6 +3623,28 @@ export const ReceiverStudentsPage: React.FC = () => {
 
             <form onSubmit={handleSaveStudentData} className="space-y-3.5 text-xs">
               <div className="grid grid-cols-2 gap-3">
+                {isNewStudentMode && (
+                  <div className="col-span-2">
+                    <label className="font-bold text-[#0B1118] block mb-1 flex items-center justify-between">
+                      <span>Student ID *</span>
+                      <button
+                        type="button"
+                        onClick={() => setNewStudentId(nextDirectoryStudentId())}
+                        className="text-[10px] font-black text-[#256002] hover:underline cursor-pointer"
+                      >
+                        Generate new ID
+                      </button>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={newStudentId}
+                      onChange={(e) => setNewStudentId(e.target.value.toUpperCase())}
+                      className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 font-mono font-bold text-xs"
+                    />
+                  </div>
+                )}
+
                 <div className="col-span-2">
                   <label className="font-bold text-[#0B1118] block mb-1">Full Name *</label>
                   <input
@@ -3611,19 +3820,43 @@ export const ReceiverStudentsPage: React.FC = () => {
                 </div>
               </div>
 
+              {isNewStudentMode && addStatus.kind !== 'idle' && (
+                <div className={`rounded-xl border px-3 py-2 text-[11px] font-bold ${
+                  addStatus.kind === 'error'
+                    ? 'bg-rose-50 border-rose-300 text-rose-900'
+                    : addStatus.kind === 'queued'
+                      ? 'bg-amber-50 border-amber-300 text-amber-900'
+                      : addStatus.kind === 'sent'
+                        ? 'bg-emerald-50 border-[#9EE617] text-[#256002]'
+                        : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}>
+                  {addStatus.text}
+                </div>
+              )}
+
               <div className="pt-3 flex justify-end gap-2 border-t border-slate-200">
                 <button
                   type="button"
-                  onClick={() => setIsEditModalOpen(false)}
+                  onClick={() => (isNewStudentMode ? closeAddStudentModal() : setIsEditModalOpen(false))}
                   className="px-4 py-2 rounded-xl border border-[#CBD5E1] bg-white text-xs font-bold text-[#64748B] hover:bg-slate-50 cursor-pointer"
                 >
                   Cancel
                 </button>
+                {isNewStudentMode && (addStatus.kind === 'sent' || addStatus.kind === 'queued') && (
+                  <button
+                    type="button"
+                    onClick={handleAddAnotherStudent}
+                    className="px-4 py-2 rounded-xl border border-[#9EE617] bg-[#9EE617]/10 text-[#256002] text-xs font-black hover:bg-[#9EE617]/20 cursor-pointer"
+                  >
+                    Add another
+                  </button>
+                )}
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-[#9EE617] hover:bg-[#8FE617] text-[#062404] text-xs font-black shadow-xs cursor-pointer"
+                  disabled={isAddingStudent}
+                  className="px-5 py-2 rounded-xl bg-[#9EE617] hover:bg-[#8FE617] disabled:opacity-60 text-[#062404] text-xs font-black shadow-xs cursor-pointer"
                 >
-                  Save Changes
+                  {isNewStudentMode ? (isAddingStudent ? 'Adding...' : 'Add Student') : 'Save Changes'}
                 </button>
               </div>
             </form>

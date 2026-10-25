@@ -10,7 +10,7 @@ import {
   getStudents, addStudent, updateStudent, getSchools, getCurrentUser, getTasks,
   DEFAULT_BRANCHES, BRANCH_SCHOOL_MAP, getSenderMetrics, SenderMetrics,
   generateStudentQrToken, getCorrectionLogs, CorrectionLog, getAuthHeaders,
-  incrementSenderLiveCaptures, getPhotoUrl, refreshFleetTelemetry
+  incrementSenderLiveCaptures, getPhotoUrl, refreshFleetTelemetry, refreshSenderTotalsFromPayroll
 } from '@/lib/store';
 import { queueOfflineOperation, cloudJsonResponse } from '@/lib/offlineQueue';
 import { Student } from '@/types';
@@ -149,6 +149,13 @@ export const StudentRegistrationPage: React.FC = () => {
   // "cloud verified" banner must not be shown for it.
   const [cloudVerified, setCloudVerified] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // A send that never reached the cloud cannot be allowed to pass unnoticed. The operator is shown a
+  // prompt naming the record that is still only on this station, with the resend action on it.
+  const [resendPrompt, setResendPrompt] = useState<{ studentId: string; fullName: string } | null>(null);
+  // The one thing said when the cloud confirms a write: that it went, and on what date.
+  const [sentPopupAt, setSentPopupAt] = useState<string | null>(null);
+  // What the background outbox did since the last look, announced rather than silently applied.
+  const [outboxNews, setOutboxNews] = useState<{ synced: number; remaining: number } | null>(null);
   // Receiver confirmation for the send that just finished: the cloud answers with the stations
   // that applied the bus record into their own directory, so a green banner can name who holds it
   // instead of asserting a delivery nobody checked.
@@ -157,8 +164,11 @@ export const StudentRegistrationPage: React.FC = () => {
   // What the sync bus answered when the edge published this send.
   const [busState, setBusState] = useState('');
   // Which store the edge confirmed holding the row — it names the one that actually answered.
-  const [durableStore, setDurableStore] = useState('Supabase');
+  const [durableStore, setDurableStore] = useState('the cloud');
   const [stationId] = useState(syncStationId);
+  // Whether a send made from this page is still unlanded. A background flush of some other page's
+  // outbox must not throw a "successfully sent" modal over a form the operator is halfway through.
+  const unlandedSendRef = useRef(false);
   // The relay pushes a receiver's confirmation the moment the edge records it; this is the poll the
   // nudge fires, so the banner can be driven by evidence arriving rather than by a timer expiring.
   const receiptPollRef = useRef<(() => void) | null>(null);
@@ -210,6 +220,41 @@ export const StudentRegistrationPage: React.FC = () => {
     window.addEventListener('studentbridge_receipt_event', handleReceiptNudge);
     return () => window.removeEventListener('studentbridge_receipt_event', handleReceiptNudge);
   }, [submittedStudent?.studentId]);
+
+  // The fleet rollup is a cached server-side scan, so it can still answer with the number from before
+  // the send that just landed. This station's own counters are re-read from the payroll report, which
+  // recomputes from the row store on every call and is the answer the salary is paid from.
+  const syncOwnTotalsFromPayroll = useCallback(async () => {
+    const cur = getCurrentUser() || user;
+    const identifier = cur?.username || cur?.email || '';
+    const refreshed = await refreshSenderTotalsFromPayroll(identifier);
+    if (refreshed) setSenderMetrics(getSenderMetrics(identifier));
+  }, [user]);
+
+  // The outbox drains itself on reconnect; the operator has to hear about it. A record that quietly
+  // reached the cloud is indistinguishable from one that never left the station unless the station
+  // says which happened.
+  useEffect(() => {
+    const handleOutbox = (event: Event) => {
+      const detail = (event as CustomEvent<{ synced?: number; failed?: number; remaining?: number }>).detail;
+      if (!detail) return;
+      const synced = detail.synced || 0;
+      const remaining = detail.remaining || 0;
+      setOutboxNews({ synced, remaining });
+      if (synced > 0) void syncOwnTotalsFromPayroll();
+      // Only while this page is still sitting on the record that had not landed. Once the operator
+      // has moved to the next form the outbox keeps working in the background, and a modal whose one
+      // button wipes a half-filled registration would cost them real work.
+      if (synced > 0 && unlandedSendRef.current && submittedStudent) {
+        unlandedSendRef.current = false;
+        setSentPopupAt(new Date().toISOString());
+        setSubmitError(null);
+        if (remaining === 0) setResendPrompt(null);
+      }
+    };
+    window.addEventListener('studentbridge_outbox', handleOutbox);
+    return () => window.removeEventListener('studentbridge_outbox', handleOutbox);
+  }, [submittedStudent]);
 
   const confirmedStationNames = receiverReceipts.map(r => r.stationName || r.station);
   const lastReceiptTime = receiverReceipts.length
@@ -561,12 +606,22 @@ export const StudentRegistrationPage: React.FC = () => {
           setSubmittedStudent(confirmedStudent);
           setCloudVerified(true);
           // The edge names the store that actually holds the row, so the operator is never told
-          // "delivered to Supabase" for a record that landed only in Cloudflare R2.
-          setDurableStore(res.headers.get('X-SB-Durable') === 'cloudflare-r2' ? 'Cloudflare R2' : 'Supabase');
+          // "delivered to Supabase" for a record that landed only in Cloudflare R2. It is read into a
+          // local here because the state variable still holds the previous send's answer in this tick.
+          const durable = res.headers.get('X-SB-Durable');
+          const storeName = durable === 'd1' ? 'Cloudflare D1'
+            : durable === 'cloudflare-r2' ? 'Cloudflare R2'
+            : durable === 'supabase' ? 'Supabase'
+            : 'the cloud';
+          setDurableStore(storeName);
           // The edge waits for the bus to answer before returning, so this is the sync network's
           // own reply, not an assumption that the message went out.
           setBusState(res.headers.get('X-SB-Bus') || 'unknown');
-          setSubmitStatusText(`✓ Record delivered to ${durableStore}. Uploading HD photo to Cloudflare R2...`);
+          setSubmitStatusText(`✓ Record delivered to ${storeName}. Uploading HD photo to Cloudflare R2...`);
+          setSentPopupAt(confirmedStudent.createdAt || new Date().toISOString());
+          setResendPrompt(null);
+          unlandedSendRef.current = false;
+          void syncOwnTotalsFromPayroll();
         } else {
           // HTTP 200 with the SPA HTML shell means the edge Worker is not executing — the
           // record was NOT written. Keep it in the outbox instead of reporting delivery.
@@ -574,6 +629,8 @@ export const StudentRegistrationPage: React.FC = () => {
           setSubmittedStudent(localStudentPayload);
           setCloudVerified(false);
           setSubmitStatusText('Saved on this station and queued — the cloud did not answer, so it will sync automatically.');
+          unlandedSendRef.current = true;
+          setResendPrompt({ studentId: localStudentPayload.studentId, fullName: localStudentPayload.fullName });
           if (!res.ok) setSubmitError(`The server rejected the record (HTTP ${res.status}). It is safe on this station and in the outbox; you can register the next student now.`);
         }
       } catch (netErr) {
@@ -582,6 +639,10 @@ export const StudentRegistrationPage: React.FC = () => {
         setSubmittedStudent(localStudentPayload);
         setCloudVerified(false);
         setSubmitStatusText('Saved on this station and queued for offline delivery. Will sync when the server is reachable.');
+        // The network dropping must be loud. An amber line under a form is how a station ended up
+        // believing a record had gone when it had only reached this browser.
+        unlandedSendRef.current = true;
+        setResendPrompt({ studentId: localStudentPayload.studentId, fullName: localStudentPayload.fullName });
       }
 
       // Operator UI instantly unlocks so they can immediately proceed!
@@ -665,6 +726,10 @@ export const StudentRegistrationPage: React.FC = () => {
     setReceiverReceipts([]);
     setReceiptsWatching(false);
     setBusState('');
+    setSentPopupAt(null);
+    setResendPrompt(null);
+    setOutboxNews(null);
+    unlandedSendRef.current = false;
     refreshMetrics();
   };
 
@@ -969,6 +1034,66 @@ export const StudentRegistrationPage: React.FC = () => {
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* The whole of the success message: that it went, and the date it went. The next form is
+          behind the one button, so an operator cannot mistake a banner for a confirmation. */}
+      {sentPopupAt && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-[#0B1118]/85 p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-sm rounded-2xl bg-white border-2 border-[#85E510] p-6 text-center shadow-2xl">
+            <div className="mx-auto w-12 h-12 rounded-full bg-[#85E510] flex items-center justify-center">
+              <Check className="w-7 h-7 text-[#062404]" strokeWidth={3} />
+            </div>
+            <h2 className="mt-4 font-heading text-lg font-black text-[#0B1118] uppercase tracking-tight">
+              Data successfully sent
+            </h2>
+            <p className="mt-1 text-sm font-black text-[#4D8A07]">
+              {new Date(sentPopupAt).toLocaleDateString([], { year: 'numeric', month: 'long', day: 'numeric' })}
+            </p>
+            <button
+              autoFocus
+              type="button"
+              onClick={resetFormForNext}
+              className="mt-5 w-full py-3 rounded-xl bg-[#85E510] hover:bg-[#76cf0c] text-[#062404] font-black text-sm flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer"
+            >
+              <span>Next Student</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* A send that did not reach the cloud stops the operator rather than quietly becoming a
+          background retry: this popup names the record and puts the resend under their hand. */}
+      {resendPrompt && (
+        <div className="fixed inset-0 z-[121] flex items-center justify-center bg-[#0B1118]/85 p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-sm rounded-2xl bg-white border-2 border-rose-400 p-6 text-center shadow-2xl">
+            <div className="mx-auto w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center">
+              <RefreshCw className={`w-7 h-7 text-rose-600 ${isSubmitting ? 'animate-spin' : ''}`} strokeWidth={2.5} />
+            </div>
+            <h2 className="mt-4 font-heading text-lg font-black text-[#0B1118] uppercase tracking-tight">
+              Resend the data
+            </h2>
+            <p className="mt-1 font-mono text-sm font-bold text-rose-600 break-all">{resendPrompt.studentId}</p>
+            <button
+              autoFocus
+              type="button"
+              onClick={handleSubmit}
+              disabled={isSubmitting}
+              className="mt-5 w-full py-3 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white font-black text-sm flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer"
+            >
+              <span>Resend now</span>
+              <RefreshCw className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setResendPrompt(null)}
+              className="mt-2 w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs transition-all cursor-pointer"
+            >
+              <span>Keep in outbox{outboxNews?.remaining ? ` (${outboxNews.remaining})` : ''}</span>
+            </button>
           </div>
         </div>
       )}

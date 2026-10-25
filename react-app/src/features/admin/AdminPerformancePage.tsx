@@ -24,21 +24,20 @@ export const AdminPerformancePage: React.FC = () => {
       );
       const registeredCount = registeredStudents.length;
 
-      // Estimated velocity (records per hour based on sessions)
-      const sessions = sender.workSessionCount || (registeredCount > 0 ? Math.max(1, Math.round(registeredCount / 38)) : 0);
-      const speedPerHour = registeredCount > 0 && sessions > 0 ? (registeredCount / (sessions * 1.5)).toFixed(1) : '0.0';
-
       return {
         ...sender,
         registeredCount,
-        speedPerHour,
-        sessions,
         campus: sender.school || 'YMS'
       };
     }).sort((a, b) => b.registeredCount - a.registeredCount);
   }, [senders, students]);
 
   const topOperator = senderMetrics[0];
+  // Every record this station holds is either attributed to a sender or it is not, and the two
+  // numbers have to add up to the registry count. A per-hour speed or a quality score nobody
+  // measured used to be printed beside them as if it had been.
+  const attributedCount = senderMetrics.reduce((acc, s) => acc + s.registeredCount, 0);
+  const unattributedCount = Math.max(0, students.length - attributedCount);
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto pb-12 select-none animate-in fade-in duration-150">
@@ -48,12 +47,13 @@ export const AdminPerformancePage: React.FC = () => {
             Workforce Telemetricity & Performance Hub
           </h1>
           <p className="text-xs text-[#64748B] mt-0.5">
-            Real-time data sending velocity, individual operator registration counts, and institutional field SLA monitoring
+            Registration counts per operator, read from the records this station holds. For the figures
+            a salary is paid from, use the Sender Payroll Report, which reads the row store directly.
           </p>
         </div>
 
         <span className="text-xs font-mono text-[#366804] bg-[#85E510]/15 px-3 py-1.5 rounded-xl font-black border border-[#85E510]/30 shadow-2xs">
-          Regional Network SLA: 99.4% Synchronized
+          {senderMetrics.length} Field Senders &bull; {students.length.toLocaleString()} Records Held
         </span>
       </div>
 
@@ -88,13 +88,13 @@ export const AdminPerformancePage: React.FC = () => {
         <div className="bg-white border border-[#E2E8F0] rounded-2xl p-5 shadow-xs">
           <span className="text-xs font-bold text-[#64748B] uppercase tracking-wider flex items-center gap-1.5">
             <Zap className="w-4 h-4 text-emerald-500" />
-            <span>Average Field Sending Speed</span>
+            <span>Attribution of Records Held</span>
           </span>
           <div className="mt-2 text-xl font-heading font-black text-[#2E7D32]">
-            26.8 Records / Hour
+            {attributedCount.toLocaleString()} by sender
           </div>
-          <div className="text-xs text-[#64748B] mt-1 font-medium">
-            3:4 Portrait Biometric Standard Compliant
+          <div className="text-xs text-[#64748B] mt-1 font-medium font-mono">
+            {unattributedCount.toLocaleString()} carry no sender name &bull; adds to {students.length.toLocaleString()}
           </div>
         </div>
       </div>
@@ -121,10 +121,7 @@ export const AdminPerformancePage: React.FC = () => {
                 <th className="py-3 pl-4">Operator Name & School</th>
                 <th className="py-3">Email Address</th>
                 <th className="py-3 text-center">Registered Students</th>
-                <th className="py-3 text-center">Sending Speed</th>
-                <th className="py-3 text-center">Work Sessions</th>
-                <th className="py-3 text-center">Quality Score</th>
-                <th className="py-3 text-right pr-4">Status</th>
+                <th className="py-3 text-right pr-4">Campus</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#E2E8F0]">
@@ -148,25 +145,8 @@ export const AdminPerformancePage: React.FC = () => {
                   <td className="py-3 text-center font-mono font-black text-[#202833] text-sm">
                     {s.registeredCount.toLocaleString()}
                   </td>
-                  <td className="py-3 text-center">
-                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-mono text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                      <Zap className="w-3 h-3 text-blue-600" />
-                      <span>{s.speedPerHour} rec/hr</span>
-                    </span>
-                  </td>
-                  <td className="py-3 text-center font-mono text-slate-700 font-bold">
-                    {s.sessions} sessions
-                  </td>
-                  <td className="py-3 text-center">
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#85E510]/15 text-[#366804] border border-[#85E510]/30">
-                      99.8% Passed
-                    </span>
-                  </td>
-                  <td className="py-3 text-right pr-4">
-                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700">
-                      <span className="w-2 h-2 rounded-full bg-[#85E510] animate-pulse" />
-                      <span>Active</span>
-                    </span>
+                  <td className="py-3 text-right pr-4 text-[11px] font-bold text-slate-600">
+                    {s.campus}
                   </td>
                 </tr>
               ))}

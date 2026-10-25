@@ -250,6 +250,15 @@ async function runQueueFlush(): Promise<{ synced: number; failed: number }> {
     window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
   }
 
+  // The station screen tells the operator what happened to the outbox rather than quietly draining
+  // it: a record that left this browser minutes after the network came back has to be said out loud,
+  // and one that failed again has to be visible as still pending.
+  if (typeof window !== 'undefined' && (synced > 0 || failed > 0)) {
+    window.dispatchEvent(new CustomEvent('studentbridge_outbox', {
+      detail: { synced, failed, remaining: Math.max(0, ops.length - synced) }
+    }));
+  }
+
   return { synced, failed };
 }
 

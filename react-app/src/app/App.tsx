@@ -30,6 +30,7 @@ import { AdminTasksPage } from '@/features/admin/AdminTasksPage';
 import { AdminSendersPage } from '@/features/admin/AdminSendersPage';
 import { AdminReviewsPage } from '@/features/admin/AdminReviewsPage';
 import { AdminPerformancePage } from '@/features/admin/AdminPerformancePage';
+import { SenderPayrollPage } from '@/features/admin/SenderPayrollPage';
 import { AdminReportsPage } from '@/features/admin/AdminReportsPage';
 import { AdminSettingsPage } from '@/features/admin/AdminSettingsPage';
 import { AdminQualityControlPage } from '@/features/admin/AdminQualityControlPage';
@@ -111,6 +112,7 @@ export const App: React.FC = () => {
             <Route path="/admin/tasks" element={<AdminTasksPage />} />
             <Route path="/admin/reviews" element={<AdminReviewsPage />} />
             <Route path="/admin/performance" element={<AdminPerformancePage />} />
+            <Route path="/admin/payroll" element={<SenderPayrollPage />} />
             <Route path="/admin/quality-control" element={<AdminQualityControlPage />} />
             <Route path="/admin/reports" element={<AdminReportsPage />} />
             <Route path="/admin/database" element={<DatabaseControlPage />} />
