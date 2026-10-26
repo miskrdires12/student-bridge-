@@ -10,7 +10,8 @@ import {
   getStudents, addStudent, updateStudent, getSchools, getCurrentUser, getTasks,
   DEFAULT_BRANCHES, BRANCH_SCHOOL_MAP, getSenderMetrics, SenderMetrics,
   generateStudentQrToken, getCorrectionLogs, CorrectionLog, getAuthHeaders,
-  incrementSenderLiveCaptures, getPhotoUrl, refreshFleetTelemetry, refreshSenderTotalsFromPayroll
+  incrementSenderLiveCaptures, getPhotoUrl, refreshFleetTelemetry, refreshSenderTotalsFromPayroll,
+  dropLocalStudentCopy
 } from '@/lib/store';
 import { queueOfflineOperation, cloudJsonResponse } from '@/lib/offlineQueue';
 import { Student } from '@/types';
@@ -594,6 +595,24 @@ export const StudentRegistrationPage: React.FC = () => {
           setCloudVerified(false);
           setSubmitStatusText('Student ID already exists in the cloud database — kept on this station.');
           setSubmitError('Notice: this Student ID was already recorded in the database. The local record is kept so nothing is lost; you can register the next student now.');
+        } else if (cloudSaved?.duplicateFolded) {
+          // The cloud already holds this child under the id it sent back. A second row under the
+          // fresh id is what made a sender's count read double and paid twice for one student, so
+          // this station drops its own copy and keeps the record the cloud holds. Nothing is lost:
+          // the held row carries the same name, school and grade.
+          dropLocalStudentCopy(localStudentPayload.id);
+          const heldStudent = { ...cloudSaved } as Student;
+          setSubmittedStudent(heldStudent);
+          setCloudVerified(true);
+          setDurableStore('Cloudflare D1');
+          setBusState('folded');
+          setSubmitStatusText('Already registered — counted once.');
+          setSubmitError(null);
+          setSentPopupAt(heldStudent.createdAt || new Date().toISOString());
+          setResendPrompt(null);
+          unlandedSendRef.current = false;
+          refreshMetrics();
+          void syncOwnTotalsFromPayroll();
         } else if (cloudSaved) {
           const confirmedStudent = {
             ...localStudentPayload,
@@ -812,6 +831,26 @@ export const StudentRegistrationPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Day by day - the per-day ledger the server's own totals are summed from, so a sender can
+          check the salary day against the four figures above without asking the office. */}
+      {Object.keys(senderMetrics.daily || {}).length > 0 && (
+        <div className="bg-white border border-[#E2E8F0] rounded-xl p-2.5 shadow-xs">
+          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+            Day by day (Addis)
+          </div>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {Object.entries(senderMetrics.daily)
+              .sort((a, b) => b[0].localeCompare(a[0]))
+              .slice(0, 14)
+              .map(([day, count]) => (
+                <span key={day} className="text-[11px] font-semibold text-[#0B1118] bg-[#F1F5F9] rounded-lg px-2 py-0.5 tabular-nums">
+                  {day} <strong className="text-[#4D7C0F]">{count}</strong>
+                </span>
+              ))}
+          </div>
+        </div>
+      )}
 
       {/* Target Task Quota - ONLY rendered when there is an active task for this operator! */}
       {activeTask && (

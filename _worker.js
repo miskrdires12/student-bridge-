@@ -305,6 +305,42 @@ async function readStudentFromD1(env, key) {
   }
 }
 
+// A station that re-sends a registration mints a brand new studentId for it, so the row-keyed
+// upsert cannot see the record being repeated: the same child lands as a second row and the sender
+// is credited - and paid - for both. The row store holds 23 such pairs, 76 s to 31 min apart.
+// Matching on the child's own fingerprints rather than the id is what catches that, and the window
+// rolls instead of following the calendar day, because a retry that straddled Addis midnight has to
+// fold exactly like one made an hour later.
+const DUPLICATE_FOLD_WINDOW_MS = 12 * 60 * 60 * 1000;
+
+async function findRecentSameChildInD1(env, candidate) {
+  if (!d1Ready(env)) return null;
+  const nameKey = String(candidate.fullName || "").trim().toLowerCase();
+  if (!nameKey) return null;
+  try {
+    const fromInstant = d1CanonicalInstant(
+      new Date(Date.parse(d1CanonicalInstant(candidate.createdAt)) - DUPLICATE_FOLD_WINDOW_MS).toISOString()
+    );
+    const row = await env.SB_D1.prepare(
+      "SELECT * FROM students WHERE receiverHidden = 0 AND lower(trim(fullName)) = ? " +
+      "AND ifnull(phone, '') = ? AND lower(ifnull(school, '')) = ? AND lower(ifnull(grade, '')) = ? " +
+      "AND studentId <> ? AND substr(createdAt, 1, 19) >= substr(?, 1, 19) " +
+      "ORDER BY createdAt DESC LIMIT 1"
+    ).bind(
+      nameKey,
+      String(candidate.phone || "").trim(),
+      String(candidate.school || "").trim().toLowerCase(),
+      String(candidate.grade || "").trim().toLowerCase(),
+      String(candidate.studentId || "").trim(),
+      fromInstant
+    ).first();
+    return row ? d1HydrateStudent(row) : null;
+  } catch (foldLookErr) {
+    console.warn("D1 same-child lookup note:", foldLookErr);
+    return null;
+  }
+}
+
 // A PATCH is applied as read-merge-replace rather than a column UPDATE. An UPDATE would silently
 // match zero rows when the record reached Postgres but not D1, and the two stores would drift apart
 // with nothing reporting it; the merge writes the row back whole and heals that gap.
@@ -2545,6 +2581,22 @@ async function getAllStudentsDataset(env, originUrl, forceRefresh = false) {
     return cachedAllStudents;
   }
 
+  // 0. Read the row store itself first. D1 is where a send is committed and where a purge deletes,
+  //    and every count in this file is measured against it; Postgres lags a send that landed here
+  //    and still holds rows a purge removed, which is how the feed once answered 6,093 while the
+  //    store held 6,092. One number per label means the feed has to come from the same table the
+  //    totals do. Supabase stays below as the fallback for a deploy without the binding.
+  if (d1Ready(env)) {
+    const d1All = await queryAllStudentsFromD1(env, null);
+    if (d1All && Array.isArray(d1All.students) && d1All.students.length > 0) {
+      d1All.students.forEach(normalizeStudentWireFields);
+      cachedAllStudents = d1All.students;
+      lastAllFetchTime = Date.now();
+      return cachedAllStudents;
+    }
+    console.warn("getAllStudentsDataset: D1 read empty or failed, falling back to Supabase");
+  }
+
   // 1. Try authoritative Supabase PostgreSQL dataset first (fastest, pre-indexed)
   try {
     const dbCount = await countSupabaseTable("students");
@@ -4051,6 +4103,48 @@ export default {
         let isExistingStudent = isDuplicate;
         edgeDeletedStudents.delete(studentId.trim().toLowerCase());
         edgeHiddenStudents.delete(studentId.trim().toLowerCase());
+
+        // The same-child fold, run before any byte is written anywhere. A brand new id for a child
+        // the row store already holds inside the window is a repeat send, not a second student, so
+        // the cloud answers with the record it already has: the station still gets its confirmation
+        // and its popup, but the sender's count and the payroll stay the actual number.
+        if (d1Ready(env)) {
+          const alreadyHeldUnderThisId = await readStudentFromD1(env, sidTrim);
+          if (!alreadyHeldUnderThisId) {
+            const heldTwin = await findRecentSameChildInD1(env, {
+              studentId: sidTrim,
+              fullName: fullName.trim(),
+              phone: cleanPhone,
+              school: (school || "YMS 1").trim(),
+              grade: (grade || "").trim(),
+              createdAt: new Date().toISOString()
+            });
+            if (heldTwin) {
+              await writeAuditLog({
+                action: "STUDENT_DUPLICATE_FOLDED",
+                entityType: "Student",
+                entityId: heldTwin.studentId,
+                details: `Repeat send of ${heldTwin.fullName} (${heldTwin.grade}, ${heldTwin.school}) not counted twice: station sent it again under new id ${sidTrim}`,
+                user: authUser,
+                ipAddress: request.headers.get("cf-connecting-ip") || null,
+                metadataExtra: { attemptedStudentId: sidTrim, foldedInto: heldTwin.studentId }
+              }, ctx);
+              return new Response(JSON.stringify({
+                ...heldTwin,
+                duplicateFolded: true,
+                foldedInto: heldTwin.studentId
+              }), {
+                status: 200,
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-SB-Durable": "d1",
+                  "X-SB-Bus": "folded",
+                  ...corsHeaders
+                }
+              });
+            }
+          }
+        }
 
         // Extract photo from any possible field name used by mobile APKs or web clients
         let rawPhoto = body.capturedPhoto || body.photoBase64 || body.photo_base64 ||

@@ -1310,6 +1310,27 @@ export async function updateStudent(id: string, updates: Partial<Student>): Prom
   return false;
 }
 
+// The cloud answered that this send repeats a record it already holds under a different id, so the
+// station's optimistic copy has to go: kept, it is a second row for one child in this browser's
+// registry, which is exactly the double the payroll cannot carry. Only this browser's copy is
+// removed - the record the cloud holds stays, and its id is deliberately not blacklisted, so the
+// next feed read still brings it back whole.
+export function dropLocalStudentCopy(id: string): void {
+  const copy = memoryStudents.find(s => s.id === id);
+  const copyStudentId = copy?.studentId;
+  memoryStudents = memoryStudents.filter(s => s.id !== id && !(copyStudentId && s.studentId === copyStudentId));
+  try {
+    const raw = localStorage.getItem('sb_custom_students');
+    const custom: Student[] = raw ? JSON.parse(raw) : [];
+    const filtered = custom.filter(s => s.id !== id && !(copyStudentId && s.studentId === copyStudentId));
+    if (filtered.length !== custom.length) safeSetItem('sb_custom_students', JSON.stringify(filtered));
+  } catch (e) {}
+  invalidateStudentCaches();
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
+  }
+}
+
 export async function deleteStudent(id: string, permanent: boolean = false): Promise<boolean> {
   const index = memoryStudents.findIndex(s => s.id === id || s.studentId === id);
   const student = index !== -1 ? memoryStudents[index] : null;
@@ -2242,6 +2263,9 @@ export interface SenderMetrics {
   week: number;
   month: number;
   total: number;
+  // Per-Addis-day counts behind the four cards above, in the same measurement they come from, so the
+  // day-by-day ledger can never print a second number for a label the card already answers.
+  daily: Record<string, number>;
   lastActive: string;
   // Server-derived fleet telemetry (populated after /api/telemetry/senders loads):
   serverSessionCount?: number;
@@ -2500,6 +2524,9 @@ export async function refreshSenderTotalsFromPayroll(senderIdentifier: string): 
     target.week = Number(row.week) || 0;
     target.month = Number(row.month) || 0;
     target.total = Number(row.rangeTotal) || 0;
+    // The ledger re-reads with the totals, or the day rows would keep showing the pre-payroll walk
+    // while the cards above them had moved on.
+    if (row.daily && typeof row.daily === 'object') target.daily = row.daily;
     return true;
   } catch (e) {
     return false;
@@ -2719,8 +2746,8 @@ function totalsForSender(
   nameKeys: Set<string>,
   idKeys: Set<string>,
   anonymousEligible: boolean
-): { total: number; today: number; week: number; month: number } {
-  const out = { total: 0, today: 0, week: 0, month: 0 };
+): { total: number; today: number; week: number; month: number; daily: Record<string, number> } {
+  const out = { total: 0, today: 0, week: 0, month: 0, daily: {} as Record<string, number> };
   const counted = new Set<Student>();
   const visit = (rows: Student[] | undefined) => {
     if (!rows) return;
@@ -2730,6 +2757,7 @@ function totalsForSender(
       out.total++;
       const dayKey = recordDayKey(s);
       if (!dayKey) continue;
+      out.daily[dayKey] = (out.daily[dayKey] || 0) + 1;
       if (dayKey === index.day.todayStr) out.today++;
       if (dayKey >= index.day.weekFromKey && dayKey <= index.day.weekToKey) out.week++;
       if (dayKey >= index.day.monthFromKey && dayKey <= index.day.todayStr) out.month++;
@@ -2790,6 +2818,7 @@ function senderMetricsFor(senderIdentifier: string, index: SenderRowIndex): Send
   let week: number;
   let month: number;
   let total: number;
+  let daily: Record<string, number>;
 
   if (fleetRow) {
     // Server-authoritative counts, taken exactly as the row store computed them. Clamping one period
@@ -2799,6 +2828,9 @@ function senderMetricsFor(senderIdentifier: string, index: SenderRowIndex): Send
     week = fleetRow.week;
     month = fleetRow.month;
     total = fleetRow.total;
+    // The same server walk that produced those four figures keeps a per-day ledger, so the day rows
+    // add up to the card above them instead of being a second, differently-sourced count.
+    daily = fleetRow.daily || {};
     live.today = today;
     live.week = week;
     live.month = month;
@@ -2813,6 +2845,7 @@ function senderMetricsFor(senderIdentifier: string, index: SenderRowIndex): Send
     week = realWeek;
     month = realMonth;
     total = realTotal;
+    daily = derived.daily;
     live.today = today;
     live.week = week;
     live.month = month;
@@ -2868,6 +2901,7 @@ function senderMetricsFor(senderIdentifier: string, index: SenderRowIndex): Send
     week,
     month,
     total,
+    daily,
     lastActive: fleetRow?.lastActivity
       ? new Date(fleetRow.lastActivity).toISOString()
       : (live.lastCapture ? new Date(live.lastCapture).toISOString() : ((user as any)?.lastActiveAt || (user as any)?.lastLoginAt || new Date().toISOString())),
