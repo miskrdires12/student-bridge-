@@ -155,6 +155,9 @@ export const StudentRegistrationPage: React.FC = () => {
   const [resendPrompt, setResendPrompt] = useState<{ studentId: string; fullName: string } | null>(null);
   // The one thing said when the cloud confirms a write: that it went, and on what date.
   const [sentPopupAt, setSentPopupAt] = useState<string | null>(null);
+  // A repeat send folds into the record the cloud already holds. Same one popup, but it has to say
+  // what actually happened, or the operator believes a second student went out.
+  const [sentPopupFolded, setSentPopupFolded] = useState(false);
   // What the background outbox did since the last look, announced rather than silently applied.
   const [outboxNews, setOutboxNews] = useState<{ synced: number; remaining: number } | null>(null);
   // Receiver confirmation for the send that just finished: the cloud answers with the stations
@@ -608,6 +611,7 @@ export const StudentRegistrationPage: React.FC = () => {
           setBusState('folded');
           setSubmitStatusText('Already registered — counted once.');
           setSubmitError(null);
+          setSentPopupFolded(true);
           setSentPopupAt(heldStudent.createdAt || new Date().toISOString());
           setResendPrompt(null);
           unlandedSendRef.current = false;
@@ -637,6 +641,7 @@ export const StudentRegistrationPage: React.FC = () => {
           // own reply, not an assumption that the message went out.
           setBusState(res.headers.get('X-SB-Bus') || 'unknown');
           setSubmitStatusText(`✓ Record delivered to ${storeName}. Uploading HD photo to Cloudflare R2...`);
+          setSentPopupFolded(false);
           setSentPopupAt(confirmedStudent.createdAt || new Date().toISOString());
           setResendPrompt(null);
           unlandedSendRef.current = false;
@@ -746,6 +751,7 @@ export const StudentRegistrationPage: React.FC = () => {
     setReceiptsWatching(false);
     setBusState('');
     setSentPopupAt(null);
+    setSentPopupFolded(false);
     setResendPrompt(null);
     setOutboxNews(null);
     unlandedSendRef.current = false;
@@ -1086,7 +1092,7 @@ export const StudentRegistrationPage: React.FC = () => {
               <Check className="w-7 h-7 text-[#062404]" strokeWidth={3} />
             </div>
             <h2 className="mt-4 font-heading text-lg font-black text-[#0B1118] uppercase tracking-tight">
-              Data successfully sent
+              {sentPopupFolded ? 'Already registered' : 'Data successfully sent'}
             </h2>
             <p className="mt-1 text-sm font-black text-[#4D8A07]">
               {new Date(sentPopupAt).toLocaleDateString([], { year: 'numeric', month: 'long', day: 'numeric' })}
