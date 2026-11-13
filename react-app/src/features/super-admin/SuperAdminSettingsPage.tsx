@@ -3,15 +3,21 @@ import {
   Settings, Save, CheckCircle2, Shield, HardDrive, Key,
   Globe, Database, Sliders, RotateCcw, Download, Upload,
   Building2, Phone, Camera, Check, AlertTriangle, RefreshCw,
-  FolderOpen, QrCode, Target
+  FolderOpen, QrCode, Target, Laptop, Server
 } from 'lucide-react';
 import { getAppSettings, updateAppSettings, resetAppSettings, exportSettingsJson, importSettingsJson, AppSettings } from '@/lib/settingsStore';
-import { DEFAULT_BRANCHES, getAuthHeaders, refreshPlatformSettings } from '@/lib/store';
+import { DEFAULT_BRANCHES, getAuthHeaders, refreshPlatformSettings, getOrCreateDeviceId } from '@/lib/store';
+import { PageShell, PageHero, FactGrid, FactCard, SectionCard, ToolbarButton, PrimaryButton, Chip } from '@/components/ui/PageKit';
 
 const DEFAULT_PHOTO_PATH_TEMPLATE = '{grade}/{name}.jpg';
 const DEFAULT_EXPORT_PHOTO_TEMPLATE = '{name}.jpg';
 const DEFAULT_EXPORT_QR_TEMPLATE = '{id}_qr.png';
-const DEFAULT_EXPORT_BASE_FOLDER = 'C:\\Users\\Administrator\\Desktop\\yekaelementry';
+const DEFAULT_EXPORT_BASE_FOLDER = 'C:\\Users\\Administrator\\Desktop\\ymshighschool';
+// The exact shape a Windows base folder must have for the spreadsheet references to resolve on
+// the receiving laptop: drive letter, backslash-separated folders, no trailing slash.
+const YMS_EXPORT_FOLDER = 'C:\\Users\\Administrator\\Desktop\\ymshighschool';
+const FIELD_CLASS =
+  'w-full rounded-xl border border-[#E3EFD7] bg-white px-3 py-2 text-xs font-bold text-[#0B1118] placeholder:font-medium placeholder:text-[#A6B29C] focus:border-[#9EE617] focus:outline-none';
 const PATH_TOKEN_RE = /\{(?:grade|name|id)\}/i;
 const PATH_ALLOWED_RE = /^[A-Za-z0-9_.\-/{}]+$/;
 const SAMPLE_PATH_VALUES: Record<string, string> = { grade: '9A', name: 'Sila-Bekeri', id: 'SB-1024' };
@@ -216,177 +222,179 @@ export const SuperAdminSettingsPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto pb-14 font-mono select-none animate-in fade-in duration-200">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-[#E2E8F0] dark:border-[#223126]">
-        <div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
-            <span className="text-[#366804] dark:text-[#8fe617] font-bold">SUPER ADMIN CONSOLE</span>
-            <span>/</span>
-            <span className="font-semibold text-slate-700 dark:text-slate-300">ENTERPRISE SYSTEM PARAMETERS</span>
-          </div>
-          <h1 className="text-2xl font-black tracking-tight text-[#0B1118] dark:text-white flex items-center gap-2">
-            Super Admin Enterprise Parameters
-          </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Cloudflare R2 endpoints, zero-egress bindings, 1-device security locks, and regional branch policies
-          </p>
-        </div>
-
-        <span className="text-xs font-mono text-[#256002] dark:text-[#8fe617] bg-[#85E510]/15 px-3 py-1.5 rounded-xl font-bold border border-[#85E510]/30 shrink-0 self-start sm:self-auto">
-          Config Rev 2.5 (Active)
-        </span>
-      </div>
+    <PageShell className="mx-auto max-w-5xl">
+      <PageHero
+        icon={Settings}
+        title="Enterprise Parameters"
+        count="Super admin"
+        live="Edge settings"
+        subtitle="Cloudflare R2 key layout, zero-egress bindings, the one-device security lock and regional branch policies. Values persisted here apply to every station that reads the platform settings."
+      >
+        <FactGrid cols={4}>
+          <FactCard label="Role" value="SUPER_ADMIN" hint="full console access" icon={Shield} />
+          <FactCard label="Device" value={getOrCreateDeviceId().slice(0, 14)} hint="this terminal id" icon={Laptop} />
+          <FactCard label="Photo Path" value={platformUpdatedAt ? 'Saved' : 'Defaults'} hint={platformUpdatedAt || 'never saved from here'} icon={Camera} />
+          <FactCard label="Edge" value={edgeOffline ? 'Offline' : 'Online'} hint="platform settings source" icon={Server} />
+        </FactGrid>
+      </PageHero>
 
       {toastMessage && (
-        <div className="p-3.5 rounded-2xl bg-[#85E510]/15 border border-[#85E510]/40 text-[#256002] dark:text-[#8fe617] text-xs font-bold flex items-center gap-2 animate-in fade-in">
+        <div className="p-3.5 rounded-2xl bg-[#EAF7DA] border border-[#CDEBB4] text-[#256002] text-xs font-bold flex items-center gap-2 animate-in fade-in">
           <CheckCircle2 className="w-4 h-4 shrink-0 text-[#85E510]" />
           <span>{toastMessage}</span>
         </div>
       )}
 
-      {/* ─────────────────────────────────────────────────────────────────── */}
-      {/* CLOUD PHOTO STORAGE PATH — R2-persisted platform settings          */}
-      {/* ─────────────────────────────────────────────────────────────────── */}
-      <div className="bg-white dark:bg-[#111613] border border-[#8fe617]/30 dark:border-[#8fe617]/25 rounded-3xl p-6 space-y-4 shadow-xs">
-        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-[#85E510]/20 text-[#256002] dark:text-[#8fe617] flex items-center justify-center">
-              <Camera className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Cloud Photo Storage Path</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">R2 object key layout &amp; sync scope — persisted at the edge, served Live</p>
-            </div>
-          </div>
-          <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 shrink-0">
-            Last updated: {platformUpdatedAt ? platformUpdatedAt : 'Never (defaults)'}
-          </span>
-        </div>
-
+      <SectionCard
+        icon={FolderOpen}
+        title="Storage & export paths"
+        subtitle="R2 object keys plus the receiving-PC folders written into @photo and @qr of every download"
+        actions={
+          <>
+            <Chip tone={edgeOffline ? 'amber' : 'lime'}>{edgeOffline ? 'Edge offline' : 'Edge online'}</Chip>
+            <PrimaryButton icon={Save} onClick={handleSavePlatformSettings} disabled={isSavingPlatform || platformSaveBlocked}>
+              {isSavingPlatform ? 'Saving to edge…' : 'Save paths'}
+            </PrimaryButton>
+          </>
+        }
+      >
+        <div className="space-y-4">
         {edgeOffline && (
-          <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/60 text-amber-800 dark:text-amber-400 text-xs font-bold flex items-center gap-2">
+          <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 text-xs font-bold flex items-center gap-2">
             <RefreshCw className="w-4 h-4 shrink-0" />
             <span>Edge offline — showing local defaults. Saving requires connectivity.</span>
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-            <label htmlFor="photo-path-template" className="block text-slate-400 uppercase font-bold text-[10px]">Photo Path Template</label>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+            <label htmlFor="photo-path-template" className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+              <Camera className="h-3.5 w-3.5" /> R2 photo key template
+            </label>
             <input
               id="photo-path-template"
               type="text"
               value={photoPathTemplate}
               onChange={(e) => { setPhotoPathTemplate(e.target.value); setPlatformError(null); }}
-              className={`w-full bg-white dark:bg-[#111613] border rounded-xl px-3 py-2 font-mono font-bold text-slate-900 dark:text-white ${
-                pathTemplateError ? 'border-rose-400 dark:border-rose-700' : 'border-slate-200 dark:border-slate-800'
-              }`}
+              className={`${FIELD_CLASS} ${pathTemplateError ? 'border-rose-400' : ''}`}
               placeholder={DEFAULT_PHOTO_PATH_TEMPLATE}
             />
-            <p className="text-[10px] text-slate-500">
-              Tokens: <span className="font-bold text-[#256002] dark:text-[#8fe617]">{'{grade}'}</span>,{' '}
-              <span className="font-bold text-[#256002] dark:text-[#8fe617]">{'{name}'}</span>,{' '}
-              <span className="font-bold text-[#256002] dark:text-[#8fe617]">{'{id}'}</span> — at least one is required.
+            <p className="text-[10px] font-medium text-[#7C8B70]">
+              Tokens <span className="font-bold text-[#2F5E04]">{'{grade}'}</span> <span className="font-bold text-[#2F5E04]">{'{name}'}</span> <span className="font-bold text-[#2F5E04]">{'{id}'}</span> — at least one is required.
             </p>
-            <div className="text-[10px] text-slate-500">
-              Live example:{' '}
-              <span className="font-mono font-bold text-slate-800 dark:text-slate-200 break-all">{photoPathPreview(pathTemplateError ? DEFAULT_PHOTO_PATH_TEMPLATE : photoPathTemplate)}</span>
+            <div className="rounded-lg bg-white px-2 py-1.5 text-[10px] text-[#7C8B70]">
+              Live key: <span className="font-bold text-[#0B1118] break-all">{photoPathPreview(pathTemplateError ? DEFAULT_PHOTO_PATH_TEMPLATE : photoPathTemplate)}</span>
             </div>
-            {pathTemplateError && (
-              <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{pathTemplateError}</p>
-            )}
+            {pathTemplateError && <p className="text-[10px] font-bold text-rose-600">{pathTemplateError}</p>}
           </div>
 
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-            <label htmlFor="sync-school-scope" className="block text-slate-400 uppercase font-bold text-[10px]">Sync School Scope</label>
+          <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+            <label htmlFor="sync-school-scope" className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+              <Building2 className="h-3.5 w-3.5" /> Sync school scope
+            </label>
             <input
               id="sync-school-scope"
               type="text"
               value={syncSchool}
               onChange={(e) => { setSyncSchool(e.target.value); setPlatformError(null); }}
-              className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 font-mono font-bold text-slate-900 dark:text-white"
+              className={FIELD_CLASS}
               placeholder="Warka"
             />
-            <p className="text-[10px] text-slate-500">
-              The native APK feed serves this school by default (<span className="font-bold">Warka</span> preset).
+            <p className="text-[10px] font-medium text-[#7C8B70]">
+              The native APK feed serves this school by default (<span className="font-bold text-[#2F5E04]">Warka</span> preset).
             </p>
           </div>
         </div>
 
-        {/* ── EXPORT PATHS: @photo / @qr folder references in CSV & Excel ── */}
-        <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-4">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-blue-500/15 text-blue-600 flex items-center justify-center">
-              <FolderOpen className="w-4 h-4" />
+        <div className="space-y-3 rounded-2xl border border-[#EDF4E5] bg-white p-3.5">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="flex min-w-0 items-start gap-2.5">
+              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-[#EAF7DA] text-[#2F5E04]">
+                <FolderOpen className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <h4 className="text-xs font-black uppercase tracking-wider text-[#0B1118]">Local export folders</h4>
+                <p className="text-[10px] font-medium text-[#7C8B70]">
+                  Windows folders on the receiving PC — written into <span className="font-bold">@photo</span> and <span className="font-bold">@qr</span>, not server paths.
+                </p>
+              </div>
             </div>
-            <div>
-              <h4 className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-wider">Export Paths</h4>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                Folder references written into the <span className="font-bold">@photo</span> and <span className="font-bold">@qr</span> columns of downloaded CSV &amp; Excel files.
-                These are reference paths for the receiving computer's local folders — not server filesystem paths or URLs.
-              </p>
-            </div>
+            <ToolbarButton
+              icon={FolderOpen}
+              onClick={() => {
+                setExportBaseFolderPhoto(YMS_EXPORT_FOLDER);
+                setExportBaseFolderQr(YMS_EXPORT_FOLDER);
+                setPlatformError(null);
+              }}
+            >
+              Use Desktop\ymshighschool
+            </ToolbarButton>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <label htmlFor="export-photo-template" className="block text-slate-400 uppercase font-bold text-[10px]">Student Photo Path (@photo)</label>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+              <label htmlFor="export-photo-template" className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                <Camera className="h-3.5 w-3.5" /> Photo file pattern (@photo)
+              </label>
               <input
                 id="export-photo-template"
                 type="text"
                 value={exportPhotoTemplate}
                 onChange={(e) => { setExportPhotoTemplate(e.target.value); setPlatformError(null); }}
-                className={`w-full bg-white dark:bg-[#111613] border rounded-xl px-3 py-2 font-mono font-bold text-slate-900 dark:text-white ${
-                  !PATH_TOKEN_RE.test(exportPhotoTemplate) || !PATH_ALLOWED_RE.test(exportPhotoTemplate) ? 'border-rose-400 dark:border-rose-700' : 'border-slate-200 dark:border-slate-800'
-                }`}
+                className={`${FIELD_CLASS} ${!PATH_TOKEN_RE.test(exportPhotoTemplate) || !PATH_ALLOWED_RE.test(exportPhotoTemplate) ? 'border-rose-400' : ''}`}
                 placeholder={DEFAULT_EXPORT_PHOTO_TEMPLATE}
               />
+              <label htmlFor="export-photo-folder" className="mt-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                Photo base folder (receiving PC)
+              </label>
               <input
+                id="export-photo-folder"
                 type="text"
-                aria-label="Photo base folder"
                 value={exportBaseFolderPhoto}
                 onChange={(e) => { setExportBaseFolderPhoto(e.target.value); setPlatformError(null); }}
-                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 font-mono text-slate-900 dark:text-white"
-                placeholder={DEFAULT_EXPORT_BASE_FOLDER}
+                className={`${FIELD_CLASS} font-mono`}
+                placeholder={YMS_EXPORT_FOLDER}
               />
-              <div className="text-[10px] text-slate-500">
-                Result preview:{' '}
-                <span className="font-mono font-bold text-slate-800 dark:text-slate-200 break-all">{exportPathPreview(exportBaseFolderPhoto, PATH_TOKEN_RE.test(exportPhotoTemplate) && PATH_ALLOWED_RE.test(exportPhotoTemplate) ? exportPhotoTemplate : DEFAULT_EXPORT_PHOTO_TEMPLATE, 'jpg')}</span>
+              <div className="rounded-lg bg-white px-2 py-1.5 text-[10px] text-[#7C8B70]">
+                Writes:{' '}
+                <span className="break-all font-mono font-bold text-[#0B1118]">{exportPathPreview(exportBaseFolderPhoto, PATH_TOKEN_RE.test(exportPhotoTemplate) && PATH_ALLOWED_RE.test(exportPhotoTemplate) ? exportPhotoTemplate : DEFAULT_EXPORT_PHOTO_TEMPLATE, 'jpg')}</span>
               </div>
             </div>
 
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <label htmlFor="export-qr-template" className="block text-slate-400 uppercase font-bold text-[10px] flex items-center gap-1.5">
-                <QrCode className="w-3.5 h-3.5" /> Student QR-Code Path (@qr)
+            <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+              <label htmlFor="export-qr-template" className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                <QrCode className="h-3.5 w-3.5" /> QR file pattern (@qr)
               </label>
               <input
                 id="export-qr-template"
                 type="text"
                 value={exportQrTemplate}
                 onChange={(e) => { setExportQrTemplate(e.target.value); setPlatformError(null); }}
-                className={`w-full bg-white dark:bg-[#111613] border rounded-xl px-3 py-2 font-mono font-bold text-slate-900 dark:text-white ${
-                  !PATH_TOKEN_RE.test(exportQrTemplate) || !PATH_ALLOWED_RE.test(exportQrTemplate) ? 'border-rose-400 dark:border-rose-700' : 'border-slate-200 dark:border-slate-800'
-                }`}
+                className={`${FIELD_CLASS} ${!PATH_TOKEN_RE.test(exportQrTemplate) || !PATH_ALLOWED_RE.test(exportQrTemplate) ? 'border-rose-400' : ''}`}
                 placeholder={DEFAULT_EXPORT_QR_TEMPLATE}
               />
+              <label htmlFor="export-qr-folder" className="mt-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                QR base folder (receiving PC)
+              </label>
               <input
+                id="export-qr-folder"
                 type="text"
-                aria-label="QR base folder"
                 value={exportBaseFolderQr}
                 onChange={(e) => { setExportBaseFolderQr(e.target.value); setPlatformError(null); }}
-                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 font-mono text-slate-900 dark:text-white"
-                placeholder={DEFAULT_EXPORT_BASE_FOLDER}
+                className={`${FIELD_CLASS} font-mono`}
+                placeholder={YMS_EXPORT_FOLDER}
               />
-              <div className="text-[10px] text-slate-500">
-                Result preview:{' '}
-                <span className="font-mono font-bold text-slate-800 dark:text-slate-200 break-all">{exportPathPreview(exportBaseFolderQr, PATH_TOKEN_RE.test(exportQrTemplate) && PATH_ALLOWED_RE.test(exportQrTemplate) ? exportQrTemplate : DEFAULT_EXPORT_QR_TEMPLATE, 'png')}</span>
+              <div className="rounded-lg bg-white px-2 py-1.5 text-[10px] text-[#7C8B70]">
+                Writes:{' '}
+                <span className="break-all font-mono font-bold text-[#0B1118]">{exportPathPreview(exportBaseFolderQr, PATH_TOKEN_RE.test(exportQrTemplate) && PATH_ALLOWED_RE.test(exportQrTemplate) ? exportQrTemplate : DEFAULT_EXPORT_QR_TEMPLATE, 'png')}</span>
               </div>
             </div>
+          </div>
 
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <label htmlFor="sender-daily-target" className="block text-slate-400 uppercase font-bold text-[10px] flex items-center gap-1.5">
-                <Target className="w-3.5 h-3.5" /> Daily Registration Target / Sender
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+              <label htmlFor="sender-daily-target" className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                <Target className="h-3.5 w-3.5" /> Daily registration target / sender
               </label>
               <input
                 id="sender-daily-target"
@@ -395,50 +403,40 @@ export const SuperAdminSettingsPage: React.FC = () => {
                 max={5000}
                 value={senderDailyTarget}
                 onChange={(e) => { setSenderDailyTarget(parseInt(e.target.value, 10)); setPlatformError(null); }}
-                className={`w-full bg-white dark:bg-[#111613] border rounded-xl px-3 py-2 font-mono font-bold text-slate-900 dark:text-white ${targetError ? 'border-rose-400 dark:border-rose-700' : 'border-slate-200 dark:border-slate-800'}`}
+                className={`${FIELD_CLASS} ${targetError ? 'border-rose-400' : ''}`}
               />
-              <p className="text-[10px] text-slate-500">Drives the target-progress bars in Telemetric Velocity &amp; Fleet and the dashboard.</p>
-              {targetError && <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{targetError}</p>}
+              <p className="text-[10px] font-medium text-[#7C8B70]">Drives the target-progress bars in Telemetric Velocity &amp; Fleet and the dashboard.</p>
+              {targetError && <p className="text-[10px] font-bold text-rose-600">{targetError}</p>}
             </div>
 
-            <div className="p-4 rounded-2xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/40 text-[10px] text-slate-600 dark:text-slate-300 space-y-1.5">
-              <p className="font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wider">Folder layout</p>
-              <p>Templates support <span className="font-bold text-[#256002] dark:text-[#8fe617]">{'{grade}'} {'{name}'} {'{id}'}</span> — e.g. <span className="font-mono">Photos/{'{grade}'}/{'{id}'}.jpg</span> or <span className="font-mono">QR/{'{grade}'}/{'{id}'}.png</span> for grade-based folders, or a flat layout like <span className="font-mono">{'{id}'}.jpg</span>.</p>
-              <p>The receiving computer must contain the base folder with this exact structure for the spreadsheet references to resolve. An empty base folder writes relative paths only.</p>
+            <div className="space-y-1.5 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5 text-[10px] text-[#4B5B42]">
+              <p className="font-bold uppercase tracking-wider text-[#2B3A22]">Folder layout</p>
+              <p>Templates support <span className="font-bold text-[#2F5E04]">{'{grade}'} {'{name}'} {'{id}'}</span> — e.g. <span className="font-mono">Photos/{'{grade}'}/{'{id}'}.jpg</span> or <span className="font-mono">QR/{'{grade}'}/{'{id}'}.png</span>, or a flat layout like <span className="font-mono">{'{id}'}.jpg</span>.</p>
+              <p>The receiving PC must contain the base folder with this exact structure. An empty base folder writes relative paths only.</p>
             </div>
           </div>
         </div>
 
         {platformError && (
-          <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-400 text-xs font-bold flex items-center gap-2">
+          <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 shrink-0" />
             <span>{platformError}</span>
           </div>
         )}
 
-        <div className="flex justify-end pt-1">
-          <button
-            type="button"
-            onClick={handleSavePlatformSettings}
-            disabled={isSavingPlatform || platformSaveBlocked}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#85E510] text-[#062404] text-xs font-black hover:brightness-105 transition-all shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Save className="w-4 h-4" />
-            <span>{isSavingPlatform ? 'Saving to Edge...' : 'Save Photo Path & Export Settings'}</span>
-          </button>
         </div>
-      </div>
+      </SectionCard>
 
       {/* Tabs */}
-      <div className="flex flex-wrap items-center gap-1 p-1.5 rounded-2xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] shadow-xs">
+      <div className="flex flex-wrap items-center gap-1 rounded-xl bg-[#F3F7EE] p-1">
         <button
           type="button"
           onClick={() => setActiveTab('cloud')}
-          className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'cloud'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white'
-          }`}
+          className={`flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition-all ${
+ activeTab === 'cloud'
+ ? 'bg-[#85E510] text-[#062404] shadow-sm font-black'
+ : 'text-[#5C6B51] hover:text-[#0B1118]'
+ }`}
         >
           <HardDrive className="w-3.5 h-3.5" />
           <span>Cloudflare R2 &amp; Edge</span>
@@ -447,11 +445,11 @@ export const SuperAdminSettingsPage: React.FC = () => {
         <button
           type="button"
           onClick={() => setActiveTab('security')}
-          className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'security'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white'
-          }`}
+          className={`flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition-all ${
+ activeTab === 'security'
+ ? 'bg-[#85E510] text-[#062404] shadow-sm font-black'
+ : 'text-[#5C6B51] hover:text-[#0B1118]'
+ }`}
         >
           <Shield className="w-3.5 h-3.5" />
           <span>1-Device Security &amp; RBAC</span>
@@ -460,11 +458,11 @@ export const SuperAdminSettingsPage: React.FC = () => {
         <button
           type="button"
           onClick={() => setActiveTab('branches')}
-          className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'branches'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white'
-          }`}
+          className={`flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition-all ${
+ activeTab === 'branches'
+ ? 'bg-[#85E510] text-[#062404] shadow-sm font-black'
+ : 'text-[#5C6B51] hover:text-[#0B1118]'
+ }`}
         >
           <Building2 className="w-3.5 h-3.5" />
           <span>Regional Branches &amp; Telecom</span>
@@ -473,11 +471,11 @@ export const SuperAdminSettingsPage: React.FC = () => {
         <button
           type="button"
           onClick={() => setActiveTab('biometrics')}
-          className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'biometrics'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white'
-          }`}
+          className={`flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition-all ${
+ activeTab === 'biometrics'
+ ? 'bg-[#85E510] text-[#062404] shadow-sm font-black'
+ : 'text-[#5C6B51] hover:text-[#0B1118]'
+ }`}
         >
           <Camera className="w-3.5 h-3.5" />
           <span>Biometric &amp; ID Standards</span>
@@ -486,11 +484,11 @@ export const SuperAdminSettingsPage: React.FC = () => {
         <button
           type="button"
           onClick={() => setActiveTab('backup')}
-          className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'backup'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white'
-          }`}
+          className={`flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition-all ${
+ activeTab === 'backup'
+ ? 'bg-[#85E510] text-[#062404] shadow-sm font-black'
+ : 'text-[#5C6B51] hover:text-[#0B1118]'
+ }`}
         >
           <Download className="w-3.5 h-3.5" />
           <span>Backup &amp; Reset</span>
@@ -501,249 +499,252 @@ export const SuperAdminSettingsPage: React.FC = () => {
       {/* TAB 1: CLOUDFLARE R2 & ZERO-EGRESS EDGE INFRASTRUCTURE             */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'cloud' && (
-        <form onSubmit={handleSaveAll} className="bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] rounded-3xl p-6 space-y-6 shadow-xs">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-            <div className="w-10 h-10 rounded-2xl bg-[#85E510]/20 text-[#256002] dark:text-[#8fe617] flex items-center justify-center">
-              <HardDrive className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Cloudflare R2 Object Storage Binding</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">Zero-Egress S3-compatible bucket &amp; CDN edge gateway</p>
-            </div>
-          </div>
+        <SectionCard
+          icon={HardDrive}
+          title="Cloudflare R2 object storage"
+          subtitle="Zero-egress S3-compatible bucket and CDN edge gateway"
+          actions={
+            <PrimaryButton icon={Save} type="submit" form="cloud-params-form" disabled={isSaving}>
+              {isSaving ? 'Propagating…' : 'Save cloud parameters'}
+            </PrimaryButton>
+          }
+        >
+          <form id="cloud-params-form" onSubmit={handleSaveAll} className="space-y-4">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+                <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                  <Server className="h-3.5 w-3.5" /> R2 bucket name
+                </label>
+                <input
+                  type="text"
+                  value={settings.r2BucketName}
+                  onChange={(e) => handleFieldChange('r2BucketName', e.target.value)}
+                  className={FIELD_CLASS}
+                />
+              </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-            <div>
-              <label className="block text-slate-400 uppercase font-bold text-[10px] mb-1">R2 Bucket Name</label>
-              <input
-                type="text"
-                value={settings.r2BucketName}
-                onChange={(e) => handleFieldChange('r2BucketName', e.target.value)}
-                className="w-full bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white font-bold"
-              />
+              <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+                <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                  <Globe className="h-3.5 w-3.5" /> Public CDN base URL
+                </label>
+                <input
+                  type="text"
+                  value={settings.r2PublicCdnUrl}
+                  onChange={(e) => handleFieldChange('r2PublicCdnUrl', e.target.value)}
+                  className={FIELD_CLASS}
+                />
+              </div>
             </div>
 
-            <div>
-              <label className="block text-slate-400 uppercase font-bold text-[10px] mb-1">Public CDN Domain Base URL</label>
-              <input
-                type="text"
-                value={settings.r2PublicCdnUrl}
-                onChange={(e) => handleFieldChange('r2PublicCdnUrl', e.target.value)}
-                className="w-full bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white font-bold"
-              />
+            <div className="flex items-center gap-2 rounded-2xl border border-[#CDEBB4] bg-[#EAF7DA] px-3.5 py-2.5 text-[11px] font-bold text-[#2F5E04]">
+              <CheckCircle2 className="h-4 w-4 shrink-0 text-[#4D8A07]" />
+              <span>Guaranteed $0.00 egress bandwidth via Cloudflare R2 Global Anycast</span>
             </div>
-          </div>
-
-          <div className="p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-400 text-xs font-bold flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>Guaranteed $0.00 Egress Bandwidth via Cloudflare R2 Global Anycast</span>
-          </div>
-
-          <div className="flex justify-end pt-2">
-            <button
-              type="submit"
-              disabled={isSaving}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#85E510] text-[#062404] text-xs font-black hover:brightness-105 transition-all shadow-xs cursor-pointer"
-            >
-              <Save className="w-4 h-4" />
-              <span>{isSaving ? 'Propagating...' : 'Save Cloud Parameters'}</span>
-            </button>
-          </div>
-        </form>
+          </form>
+        </SectionCard>
       )}
 
       {/* ─────────────────────────────────────────────────────────────────── */}
       {/* TAB 2: SECURITY, 1-DEVICE LOCK & RBAC                              */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'security' && (
-        <div className="bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] rounded-3xl p-6 space-y-6 shadow-xs">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-            <div className="w-10 h-10 rounded-2xl bg-purple-500/15 text-purple-600 flex items-center justify-center">
-              <Shield className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Station Security &amp; Terminal Lock Policies</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">Hardware isolation and cryptographic workstation authorization</p>
-            </div>
-          </div>
-
-          <div className="space-y-4 text-xs">
-            <label className="flex items-start gap-3 cursor-pointer p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800">
+        <SectionCard
+          icon={Shield}
+          title="Station security & terminal lock"
+          subtitle="Hardware isolation, one-device binding and session pacing"
+          actions={
+            <Chip tone={settings.hardwareLockEnforced ? 'lime' : 'amber'}>
+              {settings.hardwareLockEnforced ? 'Lock enforced' : 'Lock relaxed'}
+            </Chip>
+          }
+        >
+          <div className="space-y-3">
+            <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-[#E3EFD7] bg-[#FBFDF7] p-3.5">
               <input
                 type="checkbox"
                 checked={settings.hardwareLockEnforced}
                 onChange={(e) => handleFieldChange('hardwareLockEnforced', e.target.checked)}
-                className="mt-0.5 rounded border-slate-300 text-[#85E510] focus:ring-0 w-4 h-4 cursor-pointer"
+                className="mt-0.5 h-4 w-4 cursor-pointer rounded border-[#CDEBB4] text-[#85E510] focus:ring-0"
               />
-              <div>
-                <div className="text-slate-900 dark:text-white font-bold text-sm">Strict 1-Email = 1-Device Lock Enforcement</div>
-                <div className="text-slate-500 text-xs mt-0.5">
-                  Block secondary device logins; bind each operator account strictly to their approved field laptop
+              <div className="min-w-0">
+                <div className="text-xs font-black text-[#0B1118]">Strict 1 email = 1 device enforcement</div>
+                <div className="mt-0.5 text-[10px] font-medium text-[#7C8B70]">
+                  Blocks secondary device logins and binds every operator account to its approved field laptop.
                 </div>
               </div>
             </label>
 
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <span className="font-bold text-slate-800 dark:text-slate-200 block">Session Timeout Pacing</span>
-              <select
-                value={settings.sessionTimeoutMinutes}
-                onChange={(e) => handleFieldChange('sessionTimeoutMinutes', Number(e.target.value))}
-                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white font-bold"
-              >
-                <option value={60}>60 Minutes (High Security)</option>
-                <option value={120}>120 Minutes (Standard Production)</option>
-                <option value={240}>240 Minutes (Extended Shift)</option>
-              </select>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+                <label htmlFor="session-timeout" className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                  <Key className="h-3.5 w-3.5" /> Session timeout
+                </label>
+                <select
+                  id="session-timeout"
+                  value={settings.sessionTimeoutMinutes}
+                  onChange={(e) => handleFieldChange('sessionTimeoutMinutes', Number(e.target.value))}
+                  className={FIELD_CLASS}
+                >
+                  <option value={60}>60 minutes — high security</option>
+                  <option value={120}>120 minutes — standard production</option>
+                  <option value={240}>240 minutes — extended shift</option>
+                </select>
+                <p className="text-[10px] font-medium text-[#7C8B70]">Operators are signed out of the station once this window goes idle.</p>
+              </div>
+
+              <div className="space-y-1.5 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5 text-[10px] text-[#4B5B42]">
+                <p className="font-bold uppercase tracking-wider text-[#2B3A22]">What the lock covers</p>
+                <p>Every role (sender, receiver, admin) is bound to the terminal id shown in the hero above.</p>
+                <p>Clearing the browser storage does not release the binding — a super admin has to rebind the account.</p>
+              </div>
             </div>
           </div>
-        </div>
+        </SectionCard>
       )}
 
       {/* ─────────────────────────────────────────────────────────────────── */}
       {/* TAB 3: REGIONAL BRANCHES & TELECOM STANDARDS                        */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'branches' && (
-        <div className="bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] rounded-3xl p-6 space-y-6 shadow-xs">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-            <div className="w-10 h-10 rounded-2xl bg-blue-500/15 text-blue-600 flex items-center justify-center">
-              <Building2 className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Authorized Regional Branches &amp; Telecom Prefixes</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">Production branches and telecom validation rules</p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <span className="font-bold text-slate-800 dark:text-slate-200 block">Default Telecom Prefix</span>
+        <SectionCard
+          icon={Building2}
+          title="Regional branches & telecom"
+          subtitle="Authorized production branches and the phone prefix used to validate every registration"
+          actions={<Chip tone="lime">{DEFAULT_BRANCHES.length} branches</Chip>}
+        >
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+              <label htmlFor="phone-prefix" className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                <Phone className="h-3.5 w-3.5" /> Default telecom prefix
+              </label>
               <input
+                id="phone-prefix"
                 type="text"
                 value={settings.phonePrefix}
                 onChange={(e) => handleFieldChange('phonePrefix', e.target.value)}
-                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white font-bold"
+                className={`${FIELD_CLASS} font-mono`}
+                placeholder="+251"
               />
-              <span className="text-[10px] text-slate-400 block">Default Ethiopian prefix: +251</span>
+              <p className="text-[10px] font-medium text-[#7C8B70]">Ethiopian default is <span className="font-bold text-[#2F5E04]">+251</span>; local 09… numbers are expanded with it on save.</p>
             </div>
 
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <span className="font-bold text-slate-800 dark:text-slate-200 block">Active Branch Network</span>
-              <div className="flex flex-wrap gap-2 pt-1">
+            <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+              <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                <Building2 className="h-3.5 w-3.5" /> Active branch network
+              </span>
+              <div className="flex flex-wrap gap-1.5">
                 {DEFAULT_BRANCHES.map(b => (
-                  <span key={b} className="px-3 py-1 rounded-xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 font-bold text-xs text-slate-800 dark:text-slate-200">
-                    {b} Branch
+                  <span key={b} className="rounded-full border border-[#CDEBB4] bg-[#EAF7DA] px-2.5 py-0.5 text-[10px] font-black text-[#2F5E04]">
+                    {b}
                   </span>
                 ))}
               </div>
+              <p className="text-[10px] font-medium text-[#7C8B70]">Branches available in the registration and roster filters.</p>
             </div>
           </div>
-        </div>
+        </SectionCard>
       )}
 
       {/* ─────────────────────────────────────────────────────────────────── */}
       {/* TAB 4: BIOMETRIC & CAMERA DEFAULTS                                  */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'biometrics' && (
-        <div className="bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] rounded-3xl p-6 space-y-6 shadow-xs">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-            <div className="w-10 h-10 rounded-2xl bg-[#85E510]/20 text-[#256002] dark:text-[#8fe617] flex items-center justify-center">
-              <Camera className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Enterprise Biometric Standards</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">Universal portrait aspect ratios, formats, and compression quality</p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <span className="font-bold text-slate-800 dark:text-slate-200 block">Compression Format</span>
+        <SectionCard
+          icon={Camera}
+          title="Biometric & ID standards"
+          subtitle="Portrait encoding and print resolution applied to every captured student photo"
+          actions={<Chip tone="lime">{settings.printDpi}</Chip>}
+        >
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+              <label htmlFor="photo-format" className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                <Camera className="h-3.5 w-3.5" /> Compression format
+              </label>
               <select
+                id="photo-format"
                 value={settings.photoCompressionFormat}
                 onChange={(e) => handleFieldChange('photoCompressionFormat', e.target.value as any)}
-                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white font-bold"
+                className={FIELD_CLASS}
               >
-                <option value="image/webp">WebP (98.4% bandwidth reduction - High Efficiency)</option>
-                <option value="image/jpeg">JPEG (Universal Compatibility)</option>
+                <option value="image/webp">WebP — 98.4% bandwidth reduction</option>
+                <option value="image/jpeg">JPEG — universal compatibility</option>
               </select>
+              <p className="text-[10px] font-medium text-[#7C8B70]">Applied when the station compresses the portrait before it leaves the browser.</p>
             </div>
 
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <span className="font-bold text-slate-800 dark:text-slate-200 block">Print Resolution Standard</span>
+            <div className="space-y-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+              <label htmlFor="print-dpi" className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
+                <Target className="h-3.5 w-3.5" /> Print resolution standard
+              </label>
               <select
+                id="print-dpi"
                 value={settings.printDpi}
                 onChange={(e) => handleFieldChange('printDpi', e.target.value as any)}
-                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white font-bold"
+                className={FIELD_CLASS}
               >
-                <option value="300dpi">300 DPI (High-Resolution Offset Standard)</option>
-                <option value="600dpi">600 DPI (Ultra-Sharp Thermal Print)</option>
+                <option value="300dpi">300 DPI — offset standard</option>
+                <option value="600dpi">600 DPI — thermal print</option>
               </select>
+              <p className="text-[10px] font-medium text-[#7C8B70]">Target density for the printed ID cards generated from these portraits.</p>
             </div>
           </div>
-        </div>
+        </SectionCard>
       )}
 
       {/* ─────────────────────────────────────────────────────────────────── */}
       {/* TAB 5: BACKUP, IMPORT/EXPORT & FACTORY RESET                        */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'backup' && (
-        <div className="bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] rounded-3xl p-6 space-y-6 shadow-xs">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-            <div className="w-10 h-10 rounded-2xl bg-emerald-500/15 text-emerald-600 flex items-center justify-center">
-              <Download className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Configuration Backup &amp; Factory Reset</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">Export enterprise state or restore presets across fleet</p>
-            </div>
-          </div>
+        <SectionCard
+          icon={Download}
+          title="Backup & reset"
+          subtitle="Export the station configuration, restore it elsewhere, or clear every override"
+          actions={<Chip tone="amber">Local station</Chip>}
+        >
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="flex flex-col gap-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+                <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">Export configuration</span>
+                <p className="text-[10px] font-medium text-[#7C8B70]">Downloads a snapshot of every parameter on this station as JSON.</p>
+                <PrimaryButton icon={Download} onClick={handleExportBackup} className="mt-1 self-start">
+                  Export JSON
+                </PrimaryButton>
+              </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-3">
-              <span className="font-bold text-slate-900 dark:text-white block">Export JSON Configuration</span>
-              <p className="text-[11px] text-slate-500">Download a full snapshot of all enterprise parameters</p>
+              <div className="flex flex-col gap-2 rounded-2xl border border-[#EDF4E5] bg-[#FBFDF7] p-3.5">
+                <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">Import configuration</span>
+                <p className="text-[10px] font-medium text-[#7C8B70]">Load parameters from a previously exported JSON backup.</p>
+                <label className="mt-1 inline-flex h-9 cursor-pointer items-center gap-1.5 self-start rounded-xl border border-[#E3E9DD] bg-white px-3 text-[11px] font-bold text-[#4B5B42] transition-colors hover:border-[#85E510]">
+                  <Upload className="h-3.5 w-3.5 text-[#6FBF0A]" />
+                  Choose JSON file
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    onChange={handleImportBackup}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50/60 p-3.5">
+              <div className="min-w-0">
+                <span className="block text-xs font-black text-rose-800">Factory reset all parameters</span>
+                <span className="text-[10px] font-medium text-[#7C8B70]">Erases custom overrides and restores the official enterprise presets on this station.</span>
+              </div>
               <button
                 type="button"
-                onClick={handleExportBackup}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 hover:bg-black text-white dark:bg-white dark:text-black font-bold transition-all cursor-pointer"
+                onClick={handleFactoryReset}
+                className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl bg-rose-600 px-3.5 text-[11px] font-black text-white transition-colors hover:bg-rose-700"
               >
-                <Download className="w-3.5 h-3.5" />
-                <span>Export Configuration JSON</span>
+                <RotateCcw className="h-3.5 w-3.5" />
+                Factory reset
               </button>
             </div>
-
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-3">
-              <span className="font-bold text-slate-900 dark:text-white block">Import Configuration File</span>
-              <p className="text-[11px] text-slate-500">Load parameters from a previously exported JSON backup</p>
-              <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 font-bold transition-all cursor-pointer hover:border-[#85E510]">
-                <Upload className="w-3.5 h-3.5 text-[#85E510]" />
-                <span>Choose JSON File</span>
-                <input
-                  type="file"
-                  accept=".json,application/json"
-                  onChange={handleImportBackup}
-                  className="hidden"
-                />
-              </label>
-            </div>
           </div>
-
-          <div className="flex items-center justify-between p-4 rounded-2xl bg-rose-50/50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-xs">
-            <div>
-              <span className="font-bold text-rose-800 dark:text-rose-400 block">Factory Reset All Parameters</span>
-              <span className="text-[11px] text-slate-500">Erase custom overrides and restore official enterprise settings</span>
-            </div>
-            <button
-              type="button"
-              onClick={handleFactoryReset}
-              className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition-all cursor-pointer"
-            >
-              Factory Reset
-            </button>
-          </div>
-        </div>
+        </SectionCard>
       )}
-    </div>
+    </PageShell>
   );
 };
 

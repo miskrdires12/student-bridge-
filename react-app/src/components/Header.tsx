@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, LogOut, Menu, X, CheckCircle2, AlertTriangle, Info, Clock, Check, Sun, Moon } from 'lucide-react';
+import { Bell, LogOut, Menu, X, CheckCircle2, AlertTriangle, Info, Clock, Check } from 'lucide-react';
 import { getCurrentUser, setCurrentUser } from '@/lib/store';
 import { UserRole } from '@/types';
 
@@ -29,7 +29,7 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onToggleMobileSi
     {
       id: 'notif-1',
       title: 'Batch Sync Complete',
-      message: 'New biometric enrollments synchronized from YMS 1 & Adika Youth.',
+      message: 'New biometric enrollments synchronized from YMS & Adika Youth.',
       time: 'Just now',
       type: 'success',
       read: false
@@ -54,29 +54,11 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onToggleMobileSi
 
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  // Night / Dark Mode State
-  const [isDark, setIsDark] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('sb_theme');
-      if (saved) return saved === 'dark';
-      return document.documentElement.classList.contains('dark');
-    }
-    return false;
-  });
-
+  // The interface ships one light + lime theme; clear any dark class left by earlier builds.
   useEffect(() => {
-    if (isDark) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('sb_theme', 'dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('sb_theme', 'light');
-    }
-  }, [isDark]);
-
-  const toggleTheme = () => {
-    setIsDark(prev => !prev);
-  };
+    document.documentElement.classList.remove('dark');
+    localStorage.setItem('sb_theme', 'light');
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -120,24 +102,24 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onToggleMobileSi
   const roleDisplay = user?.role === 'SUPER_ADMIN' ? 'Super Admin' : (user?.role ? user.role.charAt(0) + user.role.slice(1).toLowerCase() : 'Super Admin');
 
   return (
-    <header className="sticky top-0 z-30 h-16 bg-white dark:bg-[#141A22] border-b border-[#E2E8F0] dark:border-[#243041] flex items-center justify-between px-4 sm:px-6 gap-4 shadow-xs select-none transition-colors">
+    <header className="sticky top-0 z-30 h-16 bg-white border-b border-[#E2E8F0] flex items-center justify-between px-4 sm:px-6 gap-4 shadow-sm select-none transition-colors">
       {/* Left: Navigation Menu Toggle & Silicon Labs Logo Brand */}
       <div className="flex items-center gap-3">
         {!isSidebarOpen && (
           <button
             type="button"
             onClick={onToggleMobileSidebar}
-            className="p-2 rounded-xl border border-slate-200 dark:border-[#243041] hover:border-[#9EE617]/50 text-slate-800 dark:text-slate-200 hover:text-black dark:hover:text-[#9EE617] hover:bg-[#9EE617]/20 transition-all flex items-center justify-center shrink-0 cursor-pointer shadow-2xs"
+            className="p-2 rounded-xl border border-[#E3EFD7] hover:border-[#9EE617]/50 text-slate-800 hover:text-black hover:bg-[#9EE617]/20 transition-all flex items-center justify-center shrink-0 cursor-pointer shadow-sm"
             aria-label="Open Navigation Menu"
             title="Open Navigation Menu"
           >
-            <Menu className="w-5 h-5 text-slate-900 dark:text-slate-100" />
+            <Menu className="w-5 h-5 text-[#0B1118]" />
           </button>
         )}
 
         {/* Silicon Labs Logo & Brand Title */}
         <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-xl bg-white dark:bg-[#0B1118] border border-slate-200 dark:border-[#243041] shadow-xs flex items-center justify-center p-1.5 transition-transform hover:scale-105">
+          <div className="w-9 h-9 rounded-xl bg-white border border-[#E3EFD7] shadow-sm flex items-center justify-center p-1.5 transition-transform hover:scale-105">
             <img
               src="/logo.png"
               alt="Silicon Labs"
@@ -149,36 +131,22 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onToggleMobileSi
           </div>
           <div className="flex flex-col">
             <div className="flex items-center gap-1.5">
-              <span className="font-heading font-black text-sm tracking-tight text-black dark:text-white">
+              <span className="font-heading font-black text-sm tracking-tight text-black">
                 SILICON
               </span>
-              <span className="bg-[#9EE617] text-black text-[9px] font-black px-1.5 py-0.5 rounded leading-none shadow-xs">
+              <span className="bg-[#9EE617] text-black text-[9px] font-black px-1.5 py-0.5 rounded leading-none shadow-sm">
                 LABS
               </span>
             </div>
-            <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 leading-none mt-0.5 hidden sm:block">
+            <span className="text-[10px] font-semibold text-[#7C8B70] leading-none mt-0.5 hidden sm:block">
               StudentBridge Terminal
             </span>
           </div>
         </div>
       </div>
 
-      {/* Right Controls: Theme Toggle, Notifications & User Profile */}
+      {/* Right Controls: Notifications & User Profile */}
       <div className="flex items-center gap-2.5 sm:gap-3.5 shrink-0">
-        {/* Night / Dark Mode Toggle Button */}
-        <button
-          type="button"
-          onClick={toggleTheme}
-          className="w-9 h-9 rounded-xl border border-slate-200 dark:border-[#243041] bg-white dark:bg-[#141A22] text-slate-700 dark:text-[#9EE617] hover:border-[#85E510] flex items-center justify-center transition-all cursor-pointer shadow-xs active:scale-95"
-          title={isDark ? "Switch to Day / Light Mode" : "Switch to Night / Dark Mode"}
-          aria-label="Toggle Night/Day Mode"
-        >
-          {isDark ? (
-            <Sun className="w-4 h-4 text-[#9EE617] transition-transform hover:rotate-45" />
-          ) : (
-            <Moon className="w-4 h-4 text-slate-700 transition-transform hover:-rotate-12" />
-          )}
-        </button>
 
         {/* Notifications Icon with Working Interactive Popover */}
         <div className="relative" ref={popoverRef}>
@@ -186,27 +154,27 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onToggleMobileSi
             type="button"
             onClick={() => setShowNotifications(prev => !prev)}
             className={`w-9 h-9 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${
-              showNotifications
-                ? 'border-[#85E510] bg-[#85E510]/15 text-black dark:text-[#9EE617]'
-                : 'border-slate-200 dark:border-[#243041] bg-white dark:bg-[#141A22] text-slate-600 dark:text-slate-300 hover:text-black dark:hover:text-white hover:bg-[#F8FAF9] dark:hover:bg-[#1E2633]'
-            }`}
+ showNotifications
+ ? 'border-[#85E510] bg-[#85E510]/15 text-black'
+ : 'border-[#E3EFD7] bg-white text-[#4B5B42] hover:text-black hover:bg-[#F8FAF9]'
+ }`}
             title="Notifications"
           >
             <Bell className="w-4 h-4" />
           </button>
 
           {unreadCount > 0 && (
-            <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-500 text-white text-[9px] font-black flex items-center justify-center border-2 border-white shadow-xs pointer-events-none">
+            <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-500 text-white text-[9px] font-black flex items-center justify-center border-2 border-white shadow-sm pointer-events-none">
               {unreadCount}
             </span>
           )}
 
           {/* Notification Popover Dropdown */}
           {showNotifications && (
-            <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white dark:bg-[#141A22] border border-slate-200 dark:border-[#243041] rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-150">
-              <div className="px-4 py-3 bg-[#F8FAF9] dark:bg-[#1A2330] border-b border-slate-200 dark:border-[#243041] flex items-center justify-between">
+            <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white border border-[#E3EFD7] rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-150">
+              <div className="px-4 py-3 bg-[#F8FAF9] border-b border-[#E3EFD7] flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="font-heading font-black text-xs text-slate-900 dark:text-white tracking-tight">
+                  <span className="font-heading font-black text-xs text-[#0B1118] tracking-tight">
                     Notifications
                   </span>
                   {unreadCount > 0 && (
@@ -219,25 +187,25 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onToggleMobileSi
                   <button
                     type="button"
                     onClick={markAllAsRead}
-                    className="text-[11px] font-bold text-[#366804] dark:text-[#9EE617] hover:underline cursor-pointer"
+                    className="text-[11px] font-bold text-[#366804] hover:underline cursor-pointer"
                   >
                     Mark all read
                   </button>
                 )}
               </div>
 
-              <div className="divide-y divide-slate-100 dark:divide-[#243041] max-h-80 overflow-y-auto">
+              <div className="divide-y divide-slate-100 max-h-80 overflow-y-auto">
                 {notifications.length === 0 ? (
-                  <div className="py-8 text-center text-slate-400 text-xs font-semibold">
+                  <div className="py-8 text-center text-[#8A9680] text-xs font-semibold">
                     No active notifications
                   </div>
                 ) : (
                   notifications.map((n) => (
                     <div
                       key={n.id}
-                      className={`p-3.5 flex items-start gap-3 hover:bg-slate-50 dark:hover:bg-[#1E2633] transition-colors ${
-                        !n.read ? 'bg-emerald-50/30 dark:bg-emerald-950/20' : ''
-                      }`}
+                      className={`p-3.5 flex items-start gap-3 hover:bg-[#FBFDF7] transition-colors ${
+ !n.read ? 'bg-emerald-50/30' : ''
+ }`}
                     >
                       <div className="mt-0.5 shrink-0">
                         {n.type === 'success' ? (
@@ -257,14 +225,14 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onToggleMobileSi
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-1">
-                          <span className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+                          <span className="text-xs font-bold text-[#0B1118] truncate">
                             {n.title}
                           </span>
-                          <span className="text-[10px] text-slate-400 font-mono shrink-0">
+                          <span className="text-[10px] text-[#8A9680] shrink-0">
                             {n.time}
                           </span>
                         </div>
-                        <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5 leading-tight">
+                        <p className="text-[11px] text-[#4B5B42] mt-0.5 leading-tight">
                           {n.message}
                         </p>
                       </div>
@@ -272,7 +240,7 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onToggleMobileSi
                       <button
                         type="button"
                         onClick={() => removeNotification(n.id)}
-                        className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-md hover:bg-slate-100 dark:hover:bg-[#1E2633] shrink-0"
+                        className="text-[#8A9680] hover:text-[#4B5B42] p-1 rounded-md hover:bg-[#F6FAEF] shrink-0"
                         title="Dismiss"
                       >
                         <X className="w-3.5 h-3.5" />
@@ -282,8 +250,8 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onToggleMobileSi
                 )}
               </div>
 
-              <div className="p-2.5 bg-slate-50 dark:bg-[#1A2330] border-t border-slate-100 dark:border-[#243041] text-center">
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold">
+              <div className="p-2.5 bg-[#FBFDF7] border-t border-[#EDF4E5] text-center">
+                <span className="text-[10px] text-[#7C8B70] font-semibold">
                   Station Network Connected &bull; Real-time Feed
                 </span>
               </div>
@@ -292,15 +260,15 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onToggleMobileSi
         </div>
 
         {/* User Account Profile with Initials */}
-        <div className="flex items-center gap-2.5 pl-2 border-l border-[#E2E8F0] dark:border-[#243041]">
-          <div className="w-9 h-9 rounded-full bg-[#9EE617] text-black font-black flex items-center justify-center text-xs shadow-xs border border-[#9EE617]/50 shrink-0">
+        <div className="flex items-center gap-2.5 pl-2 border-l border-[#E2E8F0]">
+          <div className="w-9 h-9 rounded-full bg-[#9EE617] text-black font-black flex items-center justify-center text-xs shadow-sm border border-[#9EE617]/50 shrink-0">
             {getInitials(displayName)}
           </div>
           <div className="hidden sm:block text-left leading-none">
-            <div className="text-xs font-black text-black dark:text-white leading-tight">
+            <div className="text-xs font-black text-black leading-tight">
               {displayName}
             </div>
-            <div className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
+            <div className="text-[10px] text-[#7C8B70] font-semibold mt-0.5">
               {roleDisplay}
             </div>
           </div>
@@ -308,7 +276,7 @@ export const Header: React.FC<HeaderProps> = ({ currentStation, onToggleMobileSi
           <button
             type="button"
             onClick={handleSignOut}
-            className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-all ml-1 cursor-pointer"
+            className="p-1.5 text-[#8A9680] hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-all ml-1 cursor-pointer"
             title="Sign Out"
           >
             <LogOut className="w-4 h-4" />

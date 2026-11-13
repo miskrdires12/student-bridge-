@@ -147,7 +147,7 @@ export const SenderStudentsPage: React.FC = () => {
                     </td>
                     <td className="py-3 font-mono text-[#8fe617] font-semibold">{s.studentId}</td>
                     <td className="py-3">
-                      <div className="text-white font-medium">{s.school || 'YMS'}</div>
+                      <div className="text-white font-medium">{s.school || 'Unassigned'}</div>
                       <div className="text-[10px] text-[#9eb2a6] font-mono">{getStudentBranch(s)}</div>
                     </td>
                     <td className="py-3">

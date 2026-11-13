@@ -323,7 +323,7 @@ export const SenderDashboardPage: React.FC = () => {
                       <div className="font-bold text-white">{s.fullName}</div>
                       <div className="text-[10px] text-[#94a3b8]">{s.grade || '9C'}</div>
                     </td>
-                    <td className="py-3 text-[#e2e8f0] font-medium">{s.school || 'YMS'}</td>
+                    <td className="py-3 text-[#e2e8f0] font-medium">{s.school || 'Unassigned'}</td>
                     <td className="py-3">
                       {isAccepted ? (
                         <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#85e510]/15 text-[#85e510] border border-[#85e510]/30">

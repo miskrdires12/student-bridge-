@@ -3,10 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import {
   Settings, User, Smartphone, Shield, LogOut, CheckCircle2,
   Download, Table, Save, Printer, Sliders, HardDrive, RotateCcw,
-  RefreshCw, Volume2, Layers, Check, Database, Camera, AlertTriangle
+  RefreshCw, Volume2, Layers, Check, Database, Camera, AlertTriangle, Laptop, Server
 } from 'lucide-react';
 import { getCurrentUser, setCurrentUser, getOrCreateDeviceId, getAuthHeaders } from '@/lib/store';
 import { getAppSettings, updateAppSettings, resetAppSettings, AppSettings } from '@/lib/settingsStore';
+import { PageShell, PageHero, FactGrid, FactCard, ToolbarButton } from '@/components/ui/PageKit';
 
 const DEFAULT_PHOTO_PATH_TEMPLATE = '{grade}/{name}.jpg';
 const PATH_TOKEN_RE = /\{(?:grade|name|id)\}/i;
@@ -123,35 +124,29 @@ export const ReceiverSettingsPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto pb-14 font-mono select-none animate-in fade-in duration-200">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-[#E2E8F0] dark:border-[#223126]">
-        <div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
-            <span className="text-[#366804] dark:text-[#8fe617] font-bold">RECEIVER STATION</span>
-            <span>/</span>
-            <span className="font-semibold text-slate-700 dark:text-slate-300">PRINT &amp; DIRECTORY PREFERENCES</span>
-          </div>
-          <h1 className="text-2xl font-black tracking-tight text-[#0B1118] dark:text-white flex items-center gap-2">
-            Receiver Workstation Settings
-          </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Configure directory page density, 8-up print DPI resolution, export naming conventions, and terminal binding
-          </p>
-        </div>
-
-        <button
-          type="button"
-          onClick={handleSignOut}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-50 hover:bg-red-100 dark:bg-red-950/20 dark:hover:bg-red-900/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-900/40 text-xs font-bold transition-all cursor-pointer"
-        >
-          <LogOut className="w-4 h-4" />
-          <span>Sign Out</span>
-        </button>
-      </div>
+    <PageShell className="mx-auto max-w-5xl">
+      <PageHero
+        icon={Printer}
+        title="Receiver Settings"
+        count={user?.username || 'Receiver'}
+        live="This workstation"
+        subtitle="Directory page density, print DPI, export naming conventions, photo path layout and the one-device terminal binding."
+        actions={
+          <ToolbarButton icon={LogOut} onClick={handleSignOut} className="border-rose-200 text-rose-700 hover:border-rose-300 hover:bg-rose-50">
+            Sign Out
+          </ToolbarButton>
+        }
+      >
+        <FactGrid cols={4}>
+          <FactCard label="Role" value={user?.role || 'RECEIVER'} hint="station privilege" icon={Shield} />
+          <FactCard label="Device" value={deviceId.slice(0, 14)} hint="this terminal id" icon={Laptop} />
+          <FactCard label="Photo Path" value={platformUpdatedAt ? 'Saved' : 'Defaults'} hint={platformUpdatedAt || 'never saved from here'} icon={Camera} />
+          <FactCard label="Edge" value={edgeOffline ? 'Offline' : 'Online'} hint="platform settings source" icon={Server} />
+        </FactGrid>
+      </PageHero>
 
       {toastMessage && (
-        <div className="p-3.5 rounded-2xl bg-[#85E510]/15 border border-[#85E510]/40 text-[#256002] dark:text-[#8fe617] text-xs font-bold flex items-center gap-2 animate-in fade-in">
+        <div className="p-3.5 rounded-2xl bg-[#EAF7DA] border border-[#CDEBB4] text-[#256002] text-xs font-bold flex items-center gap-2 animate-in fade-in">
           <CheckCircle2 className="w-4 h-4 shrink-0 text-[#85E510]" />
           <span>{toastMessage}</span>
         </div>
@@ -160,59 +155,59 @@ export const ReceiverSettingsPage: React.FC = () => {
       {/* ─────────────────────────────────────────────────────────────────── */}
       {/* CLOUD PHOTO STORAGE PATH — R2-persisted platform settings          */}
       {/* ─────────────────────────────────────────────────────────────────── */}
-      <div className="bg-white dark:bg-[#111613] border border-[#8fe617]/30 dark:border-[#8fe617]/25 rounded-3xl p-6 space-y-4 shadow-xs">
-        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+      <div className="overflow-hidden rounded-2xl border border-[#E3EFD7] bg-white p-4 space-y-4 shadow-sm shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[#EDF4E5]">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-[#85E510]/20 text-[#256002] dark:text-[#8fe617] flex items-center justify-center">
+            <div className="w-10 h-10 rounded-2xl bg-[#EAF7DA] text-[#2F5E04] flex items-center justify-center">
               <Camera className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Cloud Photo Storage Path</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">R2 photo key layout used by the directory review feed — served Live</p>
+              <h3 className="text-sm font-black tracking-tight text-[#0B1118]">Cloud Photo Storage Path</h3>
+              <p className="text-[11px] text-[#7C8B70]">R2 photo key layout used by the directory review feed — served Live</p>
             </div>
           </div>
-          <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 shrink-0">
+          <span className="text-[10px] text-[#8A9680] shrink-0">
             Last updated: {platformUpdatedAt ? platformUpdatedAt : 'Never (defaults)'}
           </span>
         </div>
 
         {edgeOffline && (
-          <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/60 text-amber-800 dark:text-amber-400 text-xs font-bold flex items-center gap-2">
+          <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 text-xs font-bold flex items-center gap-2">
             <RefreshCw className="w-4 h-4 shrink-0" />
             <span>Edge offline — showing local defaults. Saving requires connectivity.</span>
           </div>
         )}
 
         <div className="text-xs">
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-            <label htmlFor="photo-path-template" className="block text-slate-400 uppercase font-bold text-[10px]">Photo Path Template</label>
+          <div className="p-4 rounded-2xl bg-[#FBFDF7] border border-[#E3EFD7] space-y-2">
+            <label htmlFor="photo-path-template" className="block text-[#8A9680] uppercase font-bold text-[10px]">Photo Path Template</label>
             <input
               id="photo-path-template"
               type="text"
               value={photoPathTemplate}
               onChange={(e) => { setPhotoPathTemplate(e.target.value); setPlatformError(null); }}
-              className={`w-full bg-white dark:bg-[#111613] border rounded-xl px-3 py-2 font-mono font-bold text-slate-900 dark:text-white ${
-                pathTemplateError ? 'border-rose-400 dark:border-rose-700' : 'border-slate-200 dark:border-slate-800'
-              }`}
+              className={`w-full bg-white border rounded-xl px-3 py-2 font-bold text-[#0B1118] ${
+ pathTemplateError ? 'border-rose-400' : 'border-[#E3EFD7]'
+ }`}
               placeholder={DEFAULT_PHOTO_PATH_TEMPLATE}
             />
-            <p className="text-[10px] text-slate-500">
-              Tokens: <span className="font-bold text-[#256002] dark:text-[#8fe617]">{'{grade}'}</span>,{' '}
-              <span className="font-bold text-[#256002] dark:text-[#8fe617]">{'{name}'}</span>,{' '}
-              <span className="font-bold text-[#256002] dark:text-[#8fe617]">{'{id}'}</span> — at least one is required.
+            <p className="text-[10px] text-[#7C8B70]">
+              Tokens: <span className="font-bold text-[#256002]">{'{grade}'}</span>,{' '}
+              <span className="font-bold text-[#256002]">{'{name}'}</span>,{' '}
+              <span className="font-bold text-[#256002]">{'{id}'}</span> — at least one is required.
             </p>
-            <div className="text-[10px] text-slate-500">
+            <div className="text-[10px] text-[#7C8B70]">
               Live example:{' '}
-              <span className="font-mono font-bold text-slate-800 dark:text-slate-200 break-all">{photoPathPreview(pathTemplateError ? DEFAULT_PHOTO_PATH_TEMPLATE : photoPathTemplate)}</span>
+              <span className="font-bold text-[#0B1118] break-all">{photoPathPreview(pathTemplateError ? DEFAULT_PHOTO_PATH_TEMPLATE : photoPathTemplate)}</span>
             </div>
             {pathTemplateError && (
-              <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{pathTemplateError}</p>
+              <p className="text-[10px] font-bold text-rose-600">{pathTemplateError}</p>
             )}
           </div>
         </div>
 
         {platformError && (
-          <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-400 text-xs font-bold flex items-center gap-2">
+          <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 shrink-0" />
             <span>{platformError}</span>
           </div>
@@ -223,7 +218,7 @@ export const ReceiverSettingsPage: React.FC = () => {
             type="button"
             onClick={handleSavePlatformSettings}
             disabled={isSavingPlatform || !!pathTemplateError}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#85E510] text-[#062404] text-xs font-black hover:brightness-105 transition-all shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#85E510] text-[#062404] text-xs font-black hover:brightness-105 transition-all shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Save className="w-4 h-4" />
             <span>{isSavingPlatform ? 'Saving to Edge...' : 'Save Photo Path Settings'}</span>
@@ -232,15 +227,15 @@ export const ReceiverSettingsPage: React.FC = () => {
       </div>
 
       {/* Tabs */}
-      <div className="flex flex-wrap items-center gap-1 p-1.5 rounded-2xl bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] shadow-xs">
+      <div className="flex flex-wrap items-center gap-1 p-1.5 rounded-2xl bg-white border border-[#E3EFD7] shadow-sm">
         <button
           type="button"
           onClick={() => setActiveTab('directory')}
           className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'directory'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white'
-          }`}
+ activeTab === 'directory'
+ ? 'bg-[#85E510] text-[#062404] shadow-sm'
+ : 'text-[#4B5B42] hover:text-[#0B1118]'
+ }`}
         >
           <Table className="w-3.5 h-3.5" />
           <span>Directory &amp; Review</span>
@@ -250,10 +245,10 @@ export const ReceiverSettingsPage: React.FC = () => {
           type="button"
           onClick={() => setActiveTab('print')}
           className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'print'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white'
-          }`}
+ activeTab === 'print'
+ ? 'bg-[#85E510] text-[#062404] shadow-sm'
+ : 'text-[#4B5B42] hover:text-[#0B1118]'
+ }`}
         >
           <Printer className="w-3.5 h-3.5" />
           <span>8-Up Print &amp; ID Studio</span>
@@ -263,10 +258,10 @@ export const ReceiverSettingsPage: React.FC = () => {
           type="button"
           onClick={() => setActiveTab('export')}
           className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'export'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white'
-          }`}
+ activeTab === 'export'
+ ? 'bg-[#85E510] text-[#062404] shadow-sm'
+ : 'text-[#4B5B42] hover:text-[#0B1118]'
+ }`}
         >
           <Download className="w-3.5 h-3.5" />
           <span>Export Conventions</span>
@@ -276,10 +271,10 @@ export const ReceiverSettingsPage: React.FC = () => {
           type="button"
           onClick={() => setActiveTab('security')}
           className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'security'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white'
-          }`}
+ activeTab === 'security'
+ ? 'bg-[#85E510] text-[#062404] shadow-sm'
+ : 'text-[#4B5B42] hover:text-[#0B1118]'
+ }`}
         >
           <Shield className="w-3.5 h-3.5" />
           <span>1-Device Lock</span>
@@ -289,10 +284,10 @@ export const ReceiverSettingsPage: React.FC = () => {
           type="button"
           onClick={() => setActiveTab('profile')}
           className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'profile'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white'
-          }`}
+ activeTab === 'profile'
+ ? 'bg-[#85E510] text-[#062404] shadow-sm'
+ : 'text-[#4B5B42] hover:text-[#0B1118]'
+ }`}
         >
           <User className="w-3.5 h-3.5" />
           <span>Operator Profile</span>
@@ -302,10 +297,10 @@ export const ReceiverSettingsPage: React.FC = () => {
           type="button"
           onClick={() => setActiveTab('diagnostics')}
           className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'diagnostics'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white'
-          }`}
+ activeTab === 'diagnostics'
+ ? 'bg-[#85E510] text-[#062404] shadow-sm'
+ : 'text-[#4B5B42] hover:text-[#0B1118]'
+ }`}
         >
           <RotateCcw className="w-3.5 h-3.5" />
           <span>Reset Defaults</span>
@@ -316,24 +311,24 @@ export const ReceiverSettingsPage: React.FC = () => {
       {/* TAB 1: DIRECTORY & REVIEW PREFERENCES                               */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'directory' && (
-        <div className="bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] rounded-3xl p-6 space-y-6 shadow-xs">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-            <div className="w-10 h-10 rounded-2xl bg-[#85E510]/20 text-[#256002] dark:text-[#8fe617] flex items-center justify-center">
+        <div className="bg-white border border-[#E3EFD7] rounded-2xl p-6 space-y-6 shadow-sm">
+          <div className="flex items-center gap-3 pb-3 border-b border-[#EDF4E5]">
+            <div className="w-10 h-10 rounded-2xl bg-[#EAF7DA] text-[#2F5E04] flex items-center justify-center">
               <Table className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Directory Density &amp; Review Pacing</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">Control table row pagination and real-time review settings</p>
+              <h3 className="text-sm font-black tracking-tight text-[#0B1118]">Directory Density &amp; Review Pacing</h3>
+              <p className="text-[11px] text-[#7C8B70]">Control table row pagination and real-time review settings</p>
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <span className="font-bold text-slate-800 dark:text-slate-200 block">Default Table Page Size</span>
+            <div className="p-4 rounded-2xl bg-[#FBFDF7] border border-[#E3EFD7] space-y-2">
+              <span className="font-bold text-[#0B1118] block">Default Table Page Size</span>
               <select
                 value={settings.tablePageSize}
                 onChange={(e) => handleFieldChange('tablePageSize', Number(e.target.value))}
-                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white font-bold"
+                className="w-full bg-white border border-[#E3EFD7] rounded-xl px-3 py-2 text-[#0B1118] font-bold"
               >
                 <option value={50}>50 Students per page</option>
                 <option value={100}>100 Students per page (Recommended)</option>
@@ -342,12 +337,12 @@ export const ReceiverSettingsPage: React.FC = () => {
               </select>
             </div>
 
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <span className="font-bold text-slate-800 dark:text-slate-200 block">Auto-Sync Heartbeat Pacing</span>
+            <div className="p-4 rounded-2xl bg-[#FBFDF7] border border-[#E3EFD7] space-y-2">
+              <span className="font-bold text-[#0B1118] block">Auto-Sync Heartbeat Pacing</span>
               <select
                 value={settings.storageSyncIntervalMs}
                 onChange={(e) => handleFieldChange('storageSyncIntervalMs', Number(e.target.value))}
-                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white font-bold"
+                className="w-full bg-white border border-[#E3EFD7] rounded-xl px-3 py-2 text-[#0B1118] font-bold"
               >
                 <option value={2000}>2 Seconds (High Frequency)</option>
                 <option value={4000}>4 Seconds (Standard Production)</option>
@@ -362,40 +357,40 @@ export const ReceiverSettingsPage: React.FC = () => {
       {/* TAB 2: 8-UP PRINT & ID BADGE STUDIO                                 */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'print' && (
-        <div className="bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] rounded-3xl p-6 space-y-6 shadow-xs">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+        <div className="bg-white border border-[#E3EFD7] rounded-2xl p-6 space-y-6 shadow-sm">
+          <div className="flex items-center gap-3 pb-3 border-b border-[#EDF4E5]">
             <div className="w-10 h-10 rounded-2xl bg-blue-500/15 text-blue-600 flex items-center justify-center">
               <Printer className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">8-Up Sheet Print Engine &amp; DPI Standards</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">Configure high-resolution A4 card production and cutting crosshairs</p>
+              <h3 className="text-sm font-black tracking-tight text-[#0B1118]">8-Up Sheet Print Engine &amp; DPI Standards</h3>
+              <p className="text-[11px] text-[#7C8B70]">Configure high-resolution A4 card production and cutting crosshairs</p>
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <span className="font-bold text-slate-800 dark:text-slate-200 block">Print Resolution (DPI)</span>
+            <div className="p-4 rounded-2xl bg-[#FBFDF7] border border-[#E3EFD7] space-y-2">
+              <span className="font-bold text-[#0B1118] block">Print Resolution (DPI)</span>
               <select
                 value={settings.printDpi}
                 onChange={(e) => handleFieldChange('printDpi', e.target.value as any)}
-                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white font-bold"
+                className="w-full bg-white border border-[#E3EFD7] rounded-xl px-3 py-2 text-[#0B1118] font-bold"
               >
                 <option value="300dpi">300 DPI (Commercial Print Standard - Fast)</option>
                 <option value="600dpi">600 DPI (Ultra Sharp - High Density Text)</option>
               </select>
             </div>
 
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 flex items-center justify-between">
+            <div className="p-4 rounded-2xl bg-[#FBFDF7] border border-[#E3EFD7] flex items-center justify-between">
               <div>
-                <span className="font-bold text-slate-800 dark:text-slate-200 block">Print Crop &amp; Cutting Marks</span>
-                <span className="text-[11px] text-slate-500">Render corner crosshairs for Guillotine cutters</span>
+                <span className="font-bold text-[#0B1118] block">Print Crop &amp; Cutting Marks</span>
+                <span className="text-[11px] text-[#7C8B70]">Render corner crosshairs for Guillotine cutters</span>
               </div>
               <input
                 type="checkbox"
                 checked={settings.includeCropMarks}
                 onChange={(e) => handleFieldChange('includeCropMarks', e.target.checked)}
-                className="w-5 h-5 rounded border-slate-300 text-[#85E510] focus:ring-0 cursor-pointer"
+                className="w-5 h-5 rounded border-[#CDEBB4] text-[#85E510] focus:ring-0 cursor-pointer"
               />
             </div>
           </div>
@@ -406,24 +401,24 @@ export const ReceiverSettingsPage: React.FC = () => {
       {/* TAB 3: EXPORT CONVENTIONS                                           */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'export' && (
-        <div className="bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] rounded-3xl p-6 space-y-6 shadow-xs">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+        <div className="bg-white border border-[#E3EFD7] rounded-2xl p-6 space-y-6 shadow-sm">
+          <div className="flex items-center gap-3 pb-3 border-b border-[#EDF4E5]">
             <div className="w-10 h-10 rounded-2xl bg-purple-500/15 text-purple-600 flex items-center justify-center">
               <Download className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">ZIP &amp; CSV Export Conventions</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">File naming standards for bulk download manifests</p>
+              <h3 className="text-sm font-black tracking-tight text-[#0B1118]">ZIP &amp; CSV Export Conventions</h3>
+              <p className="text-[11px] text-[#7C8B70]">File naming standards for bulk download manifests</p>
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <span className="font-bold text-slate-800 dark:text-slate-200 block">ZIP File Structure</span>
+            <div className="p-4 rounded-2xl bg-[#FBFDF7] border border-[#E3EFD7] space-y-2">
+              <span className="font-bold text-[#0B1118] block">ZIP File Structure</span>
               <select
                 value={settings.zipExportConvention}
                 onChange={(e) => handleFieldChange('zipExportConvention', e.target.value)}
-                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white font-bold"
+                className="w-full bg-white border border-[#E3EFD7] rounded-xl px-3 py-2 text-[#0B1118] font-bold"
               >
                 <option value="School/Grade/ID_Name.jpg">School / Grade / ID_Name.jpg (Recommended)</option>
                 <option value="Flat/ID.jpg">Flat Directory (ID.jpg)</option>
@@ -431,12 +426,12 @@ export const ReceiverSettingsPage: React.FC = () => {
               </select>
             </div>
 
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-2">
-              <span className="font-bold text-slate-800 dark:text-slate-200 block">CSV Export Delimiter</span>
+            <div className="p-4 rounded-2xl bg-[#FBFDF7] border border-[#E3EFD7] space-y-2">
+              <span className="font-bold text-[#0B1118] block">CSV Export Delimiter</span>
               <select
                 value={settings.csvDelimiter}
                 onChange={(e) => handleFieldChange('csvDelimiter', e.target.value as any)}
-                className="w-full bg-white dark:bg-[#111613] border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white font-bold"
+                className="w-full bg-white border border-[#E3EFD7] rounded-xl px-3 py-2 text-[#0B1118] font-bold"
               >
                 <option value=",">Comma (,) - Standard</option>
                 <option value=";">Semicolon (;) - European Excel</option>
@@ -450,26 +445,26 @@ export const ReceiverSettingsPage: React.FC = () => {
       {/* TAB 4: 1-DEVICE LOCK                                                */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'security' && (
-        <div className="bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] rounded-3xl p-6 space-y-4 shadow-xs">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+        <div className="overflow-hidden rounded-2xl border border-[#E3EFD7] bg-white p-4 space-y-4 shadow-sm shadow-sm">
+          <div className="flex items-center gap-3 pb-3 border-b border-[#EDF4E5]">
             <div className="w-10 h-10 rounded-2xl bg-purple-500/15 text-purple-600 flex items-center justify-center">
               <Shield className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Receiver Terminal Hardware Binding</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">1-Email = 1-Device hardware authorization</p>
+              <h3 className="text-sm font-black tracking-tight text-[#0B1118]">Receiver Terminal Hardware Binding</h3>
+              <p className="text-[11px] text-[#7C8B70]">1-Email = 1-Device hardware authorization</p>
             </div>
           </div>
 
           <div className="space-y-3 text-xs">
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 space-y-1">
-              <span className="text-slate-400 uppercase font-bold text-[10px] block">Bound Terminal ID</span>
-              <span className="font-mono font-bold text-[#256002] dark:text-[#8fe617] break-all block">
+            <div className="p-4 rounded-2xl bg-[#FBFDF7] border border-[#E3EFD7] space-y-1">
+              <span className="text-[#8A9680] uppercase font-bold text-[10px] block">Bound Terminal ID</span>
+              <span className="font-bold text-[#256002] break-all block">
                 {deviceId}
               </span>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-purple-50 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-800 text-purple-800 dark:text-purple-400 text-xs font-bold flex items-center gap-2">
+            <div className="p-3.5 rounded-xl bg-purple-50 border border-purple-200 text-purple-800 text-xs font-bold flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 shrink-0 text-purple-600" />
               <span>Receiver Privilege Bound to {user?.email || 'Current Account'}</span>
             </div>
@@ -481,29 +476,29 @@ export const ReceiverSettingsPage: React.FC = () => {
       {/* TAB 5: OPERATOR PROFILE                                             */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'profile' && (
-        <div className="bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] rounded-3xl p-6 space-y-4 shadow-xs">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+        <div className="overflow-hidden rounded-2xl border border-[#E3EFD7] bg-white p-4 space-y-4 shadow-sm shadow-sm">
+          <div className="flex items-center gap-3 pb-3 border-b border-[#EDF4E5]">
             <div className="w-10 h-10 rounded-2xl bg-blue-500/15 text-blue-600 flex items-center justify-center font-bold">
               {user?.username?.substring(0, 2).toUpperCase() || 'RC'}
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Receiver Account Identity</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">Central registry operator profile</p>
+              <h3 className="text-sm font-black tracking-tight text-[#0B1118]">Receiver Account Identity</h3>
+              <p className="text-[11px] text-[#7C8B70]">Central registry operator profile</p>
             </div>
           </div>
 
           <div className="space-y-3 text-xs">
             <div>
-              <span className="text-slate-400 uppercase font-bold text-[10px] block">Username</span>
-              <span className="font-bold text-slate-900 dark:text-white text-sm">{user?.username || 'yonatantesfa'}</span>
+              <span className="text-[#8A9680] uppercase font-bold text-[10px] block">Username</span>
+              <span className="font-bold text-[#0B1118] text-sm">{user?.username || 'yonatantesfa'}</span>
             </div>
             <div>
-              <span className="text-slate-400 uppercase font-bold text-[10px] block">Email</span>
-              <span className="font-semibold text-slate-700 dark:text-slate-300">{user?.email || 'yonatantesfa@gmail.com'}</span>
+              <span className="text-[#8A9680] uppercase font-bold text-[10px] block">Email</span>
+              <span className="font-semibold text-[#2B3A22]">{user?.email || 'yonatantesfa@gmail.com'}</span>
             </div>
             <div>
-              <span className="text-slate-400 uppercase font-bold text-[10px] block">Station Role</span>
-              <span className="inline-block mt-0.5 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-blue-100 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800">
+              <span className="text-[#8A9680] uppercase font-bold text-[10px] block">Station Role</span>
+              <span className="inline-block mt-0.5 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-blue-100 text-blue-700 border border-blue-200">
                 {user?.role || 'RECEIVER'} (CENTRAL REVIEW)
               </span>
             </div>
@@ -515,33 +510,33 @@ export const ReceiverSettingsPage: React.FC = () => {
       {/* TAB 6: DIAGNOSTICS & RESET                                          */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'diagnostics' && (
-        <div className="bg-white dark:bg-[#111613] border border-slate-200 dark:border-[#223126] rounded-3xl p-6 space-y-4 shadow-xs">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+        <div className="overflow-hidden rounded-2xl border border-[#E3EFD7] bg-white p-4 space-y-4 shadow-sm shadow-sm">
+          <div className="flex items-center gap-3 pb-3 border-b border-[#EDF4E5]">
             <div className="w-10 h-10 rounded-2xl bg-rose-500/15 text-rose-600 flex items-center justify-center">
               <RotateCcw className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Maintenance &amp; Preferences Reset</h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">Restore default receiver parameters</p>
+              <h3 className="text-sm font-black tracking-tight text-[#0B1118]">Maintenance &amp; Preferences Reset</h3>
+              <p className="text-[11px] text-[#7C8B70]">Restore default receiver parameters</p>
             </div>
           </div>
 
-          <div className="flex items-center justify-between p-4 rounded-2xl bg-slate-50 dark:bg-[#070908] border border-slate-200 dark:border-slate-800 text-xs">
+          <div className="flex items-center justify-between p-4 rounded-2xl bg-[#FBFDF7] border border-[#E3EFD7] text-xs">
             <div>
-              <span className="font-bold text-slate-900 dark:text-white block">Reset Receiver Preferences</span>
-              <span className="text-[11px] text-slate-500">Restore default print resolution, directory pagination, and export formats</span>
+              <span className="font-bold text-[#0B1118] block">Reset Receiver Preferences</span>
+              <span className="text-[11px] text-[#7C8B70]">Restore default print resolution, directory pagination, and export formats</span>
             </div>
             <button
               type="button"
               onClick={handleReset}
-              className="px-3.5 py-1.5 rounded-xl border border-rose-300 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 font-bold transition-all cursor-pointer"
+              className="px-3.5 py-1.5 rounded-xl border border-rose-300 text-rose-600 hover:bg-rose-50 font-bold transition-all cursor-pointer"
             >
               Reset Defaults
             </button>
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 };
 

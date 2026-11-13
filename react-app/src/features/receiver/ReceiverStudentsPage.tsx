@@ -5,11 +5,11 @@ import {
   UserCheck, Shield, ChevronLeft, ChevronRight,
   BookOpen, Users as UsersIcon, Check, Printer,
   Download, Image as ImageIcon, QrCode as QrIcon,
-  Sliders, FileText, CheckCircle2, AlertTriangle, Phone,
+  FileText, CheckCircle2, AlertTriangle, Phone,
   MapPin, Clock, ExternalLink, RefreshCw, FileSpreadsheet,
   Archive, ArrowUpDown, ArrowUp, ArrowDown, Filter, Sparkles, Crop, Cloud,
   Radio, Award, Activity, TrendingUp, ArrowRight, Link2, Upload,
-  Folder, FolderOpen, Layers
+  Folder, FolderOpen, Layers, Maximize2, Minimize2, MoveRight, CalendarDays, MoreHorizontal
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import JSZip from 'jszip';
@@ -22,7 +22,8 @@ import {
   addCorrectionLog, getAllSendersMetrics, SenderMetrics, getAuthHeaders,
   getCurrentUser,
   initStore, refreshStudentFeed, buildExportPhotoPath, buildExportQrPath, refreshPlatformSettings,
-  isServerApiOnline
+  exportPhoneValue,
+  isServerApiOnline, refreshFleetTelemetry, getFleetTelemetrySnapshot
 } from '@/lib/store';
 import { Student } from '@/types';
 import { photoSourceError } from '@/lib/syncEngine';
@@ -54,7 +55,30 @@ export const ReceiverStudentsPage: React.FC = () => {
   const [schoolFilter, setSchoolFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [senderFilter, setSenderFilter] = useState('ALL');
-  const [selectedDate, setSelectedDate] = useState('');
+  // Several transmitted days can be viewed at once: the operator picks today, then adds other days
+  // without losing the first one. An empty list means "all days".
+  const [selectedDates, setSelectedDates] = useState<string[]>([]);
+  const [datePickerValue, setDatePickerValue] = useState('');
+
+  // Full-screen directory mode (table or folders expanded to the viewport)
+  const [isDirectoryFullscreen, setIsDirectoryFullscreen] = useState(false);
+
+  // Right-click menu for school folders and student cards in the folder view
+  const [folderMenu, setFolderMenu] = useState<
+    { x: number; y: number; kind: 'folder'; folderName: string } |
+    { x: number; y: number; kind: 'student'; folderName: string; studentId: string } |
+    null
+  >(null);
+
+  // Move students to another school / rename folder
+  const [moveTarget, setMoveTarget] = useState<{ ids: string[]; fromSchool: string } | null>(null);
+  const [moveDestination, setMoveDestination] = useState('');
+  const [isMoving, setIsMoving] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<{ schoolName: string; branch: string } | null>(null);
+  const [renameSchoolValue, setRenameSchoolValue] = useState('');
+  const [renameBranchValue, setRenameBranchValue] = useState('');
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
 
   // Bulked Pause Note Modal
   const [calendarNoteModalOpen, setCalendarNoteModalOpen] = useState(false);
@@ -111,6 +135,9 @@ export const ReceiverStudentsPage: React.FC = () => {
   const [folderSectionTab, setFolderSectionTab] = useState<string>('ALL');
   const [folderSearchQuery, setFolderSearchQuery] = useState<string>('');
   const [folderBranchFilter, setFolderBranchFilter] = useState<string>('ALL');
+  // Big schools hold over a thousand records; rendering every photo card at once locked the
+  // station, so the grid paints in pages and the rest arrive on demand.
+  const [folderCardLimit, setFolderCardLimit] = useState(60);
   const [isRefreshingTelemetry, setIsRefreshingTelemetry] = useState(false);
   const [liveServerStats, setLiveServerStats] = useState<{
     totalStudents: number;
@@ -140,6 +167,14 @@ export const ReceiverStudentsPage: React.FC = () => {
     statsMissing: []
   });
   const [feedRetrying, setFeedRetrying] = useState(false);
+
+  // Active senders means "a station is transmitting right now", not "every account that ever sent a
+  // record". The fleet rollup already answers that with a 15-minute window, so the header reads the
+  // same number as the Live Dashboard instead of the lifetime distinct-sender count.
+  const [fleetActiveSenders, setFleetActiveSenders] = useState<number | null>(() => {
+    const snap = getFleetTelemetrySnapshot();
+    return snap ? snap.totals.activeSenders : null;
+  });
 
   // Active Student Detail Drawer (Clean 3-tab layout without fake placeholder fields)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false);
@@ -448,10 +483,10 @@ export const ReceiverStudentsPage: React.FC = () => {
       const matchSection = matchesSectionFilter(s, sectionFilter);
       const sBranch = getStudentBranch(s);
       const matchBranch = branchFilter === 'ALL' || sBranch === branchFilter;
-      const matchSchool = schoolFilter === 'ALL' || (s.school || '').toLowerCase().includes(schoolFilter.toLowerCase());
+      const matchSchool = schoolFilter === 'ALL' || (s.school || '').trim().toLowerCase() === schoolFilter.toLowerCase();
       const matchSender = senderFilter === 'ALL' || (s.senderName || s.senderId) === senderFilter;
       const studentDate = (s.createdAt || (s as any).registrationDate || s.recordHistory?.[0]?.date || '').substring(0, 10);
-      const matchDate = !selectedDate || (studentDate === selectedDate);
+      const matchDate = selectedDates.length === 0 || selectedDates.includes(studentDate);
 
       const st = (s.status || 'Active').toUpperCase();
       const isAccepted = st === 'ACCEPTED' || st === 'ACTIVE' || st === 'VERIFIED';
@@ -462,7 +497,7 @@ export const ReceiverStudentsPage: React.FC = () => {
 
       return matchSearch && matchGrade && matchSection && matchBranch && matchSchool && matchSender && matchDate && matchStatus;
     });
-  }, [students, search, gradeFilter, sectionFilter, branchFilter, schoolFilter, statusFilter, senderFilter, selectedDate]);
+  }, [students, search, gradeFilter, sectionFilter, branchFilter, schoolFilter, statusFilter, senderFilter, selectedDates]);
 
   const distinctSenders = useMemo(() => {
     const set = new Set<string>();
@@ -492,6 +527,45 @@ export const ReceiverStudentsPage: React.FC = () => {
   const distinctDates = useMemo(() => {
     return Object.keys(calendarDateCounts).sort().reverse();
   }, [calendarDateCounts]);
+
+  // One calendar key per record, matching the day buckets used by the counters above.
+  const studentDateKey = (s: Student): string =>
+    (s.createdAt || (s as any).registrationDate || s.recordHistory?.[0]?.date || '').substring(0, 10);
+
+  const dayChipLabel = (key: string): string => {
+    const [y, m, d] = key.split('-').map(Number);
+    if (!y || !m || !d) return key;
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      timeZone: 'UTC'
+    });
+  };
+
+  const toggleSelectedDate = (day: string) => {
+    if (!day) return;
+    setSelectedDates(prev => (prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day].sort()));
+    setPage(1);
+  };
+
+  // Picker appends instead of replacing, so picking a second day keeps the first one in view.
+  const addSelectedDate = (day: string) => {
+    if (!day) return;
+    setSelectedDates(prev => (prev.includes(day) ? prev : [...prev, day].sort()));
+    setPage(1);
+  };
+
+  const clearSelectedDates = () => {
+    setSelectedDates([]);
+    setDatePickerValue('');
+    setPage(1);
+  };
+
+  const folderDayCount = (folder: { students: Student[] }): number => {
+    if (selectedDates.length === 0) return folder.students.length;
+    return folder.students.filter(s => selectedDates.includes(studentDateKey(s))).length;
+  };
 
   // Live Telemetry Poller from Authoritative Edge Stats API
   const fetchLiveTelemetry = async () => {
@@ -531,6 +605,38 @@ export const ReceiverStudentsPage: React.FC = () => {
     const interval = setInterval(fetchLiveTelemetry, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  // Fleet rollup: 60s server cache, so a 30s poll is cheap and keeps "Active Senders" honest.
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      refreshFleetTelemetry()
+        .then(snap => {
+          if (alive && snap) setFleetActiveSenders(snap.totals.activeSenders);
+        })
+        .catch(() => {});
+    };
+    load();
+    const interval = setInterval(load, 30000);
+    return () => {
+      alive = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Degraded fallback (fleet endpoint unreachable): a sender counts as active only if one of its
+  // records landed in the last 15 minutes.
+  const fallbackActiveSenders = useMemo(() => {
+    const cutoff = Date.now() - 15 * 60000;
+    const senders = new Set<string>();
+    students.forEach(s => {
+      if (s.receiverHidden) return;
+      const at = Date.parse(s.createdAt || '');
+      if (!Number.isFinite(at) || at < cutoff) return;
+      senders.add(String(s.senderId || s.senderName || '').toLowerCase().trim() || 'unattributed');
+    });
+    return senders.size;
+  }, [students]);
 
   // Reload the whole registry into this station's dataset. Used when the loaded list is
   // smaller than the server total, which means a sync feed returned an incomplete page set.
@@ -604,10 +710,9 @@ export const ReceiverStudentsPage: React.FC = () => {
       withPhoto: shownPhotos,
       photoFilesCatalogued: withPhotoCount,
       pendingPhoto: Math.max(0, shownTotal - shownPhotos),
-      activeSenders: distinctSenders.length,
       latestTransmitted
     };
-  }, [students, distinctSenders, liveServerStats]);
+  }, [students, liveServerStats]);
 
   // =========================================================================
   // SCHOOL DIRECTORY FOLDERS COMPUTATION (Each School in its Dedicated Folder)
@@ -639,7 +744,7 @@ export const ReceiverStudentsPage: React.FC = () => {
 
     // 2. Add students into their corresponding school folder
     activeStudents.forEach(st => {
-      const sName = (st.school || 'YMS 1').trim();
+      const sName = (st.school || '').trim() || 'Unassigned';
       const branch = getStudentBranch(st) || getBranchForSchool(sName);
       if (!map.has(sName)) {
         map.set(sName, { branch, students: [] });
@@ -719,6 +824,7 @@ export const ReceiverStudentsPage: React.FC = () => {
 
     currentSchoolFolder.students.forEach(s => {
       if (!s || s.receiverHidden) return;
+      if (selectedDates.length > 0 && !selectedDates.includes(studentDateKey(s))) return;
       const parsed = parseGradeAndSection(s.grade, s.department || (s as any).section);
       const bg = parsed.cleanGrade || 'General';
       const sec = parsed.cleanSection;
@@ -763,7 +869,7 @@ export const ReceiverStudentsPage: React.FC = () => {
       if (idxB !== -1) return 1;
       return a.baseGrade.localeCompare(b.baseGrade, undefined, { numeric: true });
     });
-  }, [currentSchoolFolder]);
+  }, [currentSchoolFolder, selectedDates]);
 
   const currentFolderActiveGrade = useMemo(() => {
     if (folderGradeTab === 'ALL') return null;
@@ -773,6 +879,9 @@ export const ReceiverStudentsPage: React.FC = () => {
   const currentFolderStudents = useMemo(() => {
     if (!currentSchoolFolder) return [];
     let list = currentSchoolFolder.students;
+    if (selectedDates.length > 0) {
+      list = list.filter(s => selectedDates.includes(studentDateKey(s)));
+    }
     if (folderGradeTab !== 'ALL') {
       list = list.filter(s => matchesGradeFilter(s, folderGradeTab));
     }
@@ -784,11 +893,15 @@ export const ReceiverStudentsPage: React.FC = () => {
       list = list.filter(s =>
         (s.fullName || '').toLowerCase().includes(q) ||
         (s.studentId || '').toLowerCase().includes(q) ||
-        (s.phone || '').toLowerCase().includes(q)
+        (s.phone || '').includes(q)
       );
     }
     return list;
-  }, [currentSchoolFolder, folderGradeTab, folderSectionTab, folderSearchQuery]);
+  }, [currentSchoolFolder, folderGradeTab, folderSectionTab, folderSearchQuery, selectedDates]);
+
+  useEffect(() => {
+    setFolderCardLimit(60);
+  }, [currentSchoolFolder?.schoolName, folderGradeTab, folderSectionTab, folderSearchQuery, selectedDates.length]);
 
   // Dynamically computed registry anomalies for the Mistake Analyzer pop-up
   const mistakeItems = useMemo(() => {
@@ -1543,7 +1656,7 @@ export const ReceiverStudentsPage: React.FC = () => {
           'Grade': getGradeDisplay(s),
           'Section': getCleanSection(s),
           'BloodType': s.bloodType || 'Unknown',
-          'Phone': s.phone || '',
+          'Phone': exportPhoneValue(s.phone),
           '@photo': buildExportPhotoPath(s),
           '@qr': buildExportQrPath(s),
           'Branch': getStudentBranch(s),
@@ -1604,7 +1717,7 @@ export const ReceiverStudentsPage: React.FC = () => {
           `"${s.sex || 'Male'}"`,
           `"${s.grade || ''}"`,
           `"${s.bloodType || 'Unknown'}"`,
-          `"${s.phone || ''}"`,
+          `"${exportPhoneValue(s.phone)}"`,
           `"${photoLocalPath.replace(/"/g, '""')}"`,
           `"${qrLocalPath.replace(/"/g, '""')}"`
         ];
@@ -1699,104 +1812,504 @@ export const ReceiverStudentsPage: React.FC = () => {
     }
   };
 
-  return (
-    <div className="space-y-5 pb-16 animate-in fade-in duration-200">
-      {/* Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-5 rounded-2xl border border-[#E2E8F0] shadow-xs">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-heading font-black text-[#0B1118] tracking-tight">
-              Student Directory
-            </h1>
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-[#9EE617]/20 text-[#256002] border border-[#9EE617]/40 font-mono">
-              {filtered.length.toLocaleString()} Records
-            </span>
+  // =========================================================================
+  // FULL-SCREEN DIRECTORY + RIGHT-CLICK FOLDER ACTIONS
+  // =========================================================================
+  useEffect(() => {
+    if (!isDirectoryFullscreen) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setIsDirectoryFullscreen(false);
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [isDirectoryFullscreen]);
+
+  useEffect(() => {
+    if (!actionNotice) return;
+    const timer = setTimeout(() => setActionNotice(null), 4000);
+    return () => clearTimeout(timer);
+  }, [actionNotice]);
+
+  useEffect(() => {
+    if (!folderMenu) return;
+    const close = () => setFolderMenu(null);
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setFolderMenu(null);
+    };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [folderMenu]);
+
+  const openFolderMenu = (
+    e: React.MouseEvent,
+    payload: { kind: 'folder'; folderName: string } | { kind: 'student'; folderName: string; studentId: string }
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const menuW = 236;
+    const menuH = payload.kind === 'folder' ? 286 : 268;
+    setFolderMenu({
+      ...payload,
+      x: Math.max(8, Math.min(e.clientX, window.innerWidth - menuW - 8)),
+      y: Math.max(8, Math.min(e.clientY, window.innerHeight - menuH - 8))
+    });
+  };
+
+  // Folder membership honours the active day filter, so "select" and "delete" inside a folder act
+  // on exactly the days the desk has picked.
+  const folderStudentsFor = (folderName: string): Student[] => {
+    const folder = schoolFolders.find(f => f.schoolName.toLowerCase() === folderName.toLowerCase());
+    if (!folder) return [];
+    if (selectedDates.length === 0) return folder.students;
+    return folder.students.filter(s => selectedDates.includes(studentDateKey(s)));
+  };
+
+  const openSchoolFolder = (folderName: string) => {
+    setSelectedSchoolFolder(folderName);
+    setFolderGradeTab('ALL');
+    setFolderSectionTab('ALL');
+    setFolderSearchQuery('');
+    setFolderMenu(null);
+  };
+
+  const selectFolderRecords = (folderName: string) => {
+    const ids = folderStudentsFor(folderName).map(s => s.studentId);
+    if (ids.length === 0) {
+      setActionNotice(`No ${folderName} records on the selected dates`);
+      setFolderMenu(null);
+      return;
+    }
+    setSelectedIds(prev => new Set([...prev, ...ids]));
+    setActionNotice(`${ids.length} ${folderName} record(s) added to the selection`);
+    setFolderMenu(null);
+  };
+
+  const deleteFolderRecords = (folderName: string) => {
+    const ids = folderStudentsFor(folderName).map(s => s.studentId);
+    if (ids.length === 0) {
+      setActionNotice(`No ${folderName} records on the selected dates`);
+      setFolderMenu(null);
+      return;
+    }
+    setSelectedIds(new Set(ids));
+    setIsBulkDeleteModalOpen(true);
+    setFolderMenu(null);
+  };
+
+  const startMoveStudents = (ids: string[], fromSchool: string) => {
+    if (ids.length === 0) {
+      setActionNotice('Nothing to move for the selected dates');
+      setFolderMenu(null);
+      return;
+    }
+    setMoveTarget({ ids, fromSchool });
+    setMoveDestination('');
+    setFolderMenu(null);
+  };
+
+  const handleConfirmMove = async () => {
+    if (!moveTarget || !moveDestination) return;
+    const branch = getBranchForSchool(moveDestination);
+    setIsMoving(true);
+    let moved = 0;
+    try {
+      for (const sid of moveTarget.ids) {
+        const ok = await updateStudent(sid, { school: moveDestination, branch });
+        if (ok) moved++;
+      }
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        moveTarget.ids.forEach(id => next.delete(id));
+        return next;
+      });
+      setActionNotice(`${moved} record(s) moved to ${moveDestination} \u00b7 ${branch}`);
+      setMoveTarget(null);
+      setMoveDestination('');
+      await loadData();
+    } catch (err) {
+      setActionNotice('Move failed \u2014 records were left unchanged');
+    } finally {
+      setIsMoving(false);
+    }
+  };
+
+  const startRenameFolder = (folderName: string, branch: string) => {
+    setRenameTarget({ schoolName: folderName, branch });
+    setRenameSchoolValue(folderName);
+    setRenameBranchValue(branch);
+    setFolderMenu(null);
+  };
+
+  // A rename re-files the whole folder, not just the days currently on screen.
+  const handleConfirmRename = async () => {
+    if (!renameTarget) return;
+    const nextName = renameSchoolValue.trim();
+    if (!nextName) return;
+    const allFolderStudents = schoolFolders.find(f => f.schoolName === renameTarget.schoolName)?.students || [];
+    const ids = allFolderStudents.map(s => s.studentId);
+    if (ids.length === 0) {
+      setActionNotice('This folder has no records to re-file');
+      return;
+    }
+    setIsRenaming(true);
+    try {
+      for (const sid of ids) {
+        await updateStudent(sid, { school: nextName, branch: renameBranchValue });
+      }
+      setActionNotice(`${ids.length} record(s) re-filed to ${nextName} \u00b7 ${renameBranchValue}`);
+      if (selectedSchoolFolder?.toLowerCase() === renameTarget.schoolName.toLowerCase()) {
+        setSelectedSchoolFolder(nextName);
+      }
+      setRenameTarget(null);
+      await loadData();
+    } catch (err) {
+      setActionNotice('Edit failed \u2014 records were left unchanged');
+    } finally {
+      setIsRenaming(false);
+    }
+  };
+
+  // Shared day picker: used by the master table and by the school folders so both views read the
+  // same set of chosen transmit days.
+  const renderDateStrip = () => {
+    const allDaysCount = distinctDates.reduce((n, d) => n + (calendarDateCounts[d] || 0), 0);
+    return (
+      <div className="rounded-2xl border border-[#E3E9DD] bg-white p-3.5 shadow-[0_1px_6px_rgba(15,23,42,0.04)]">
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5">
+            <div className="grid h-8 w-8 place-items-center rounded-xl bg-[#EAF7DA]">
+              <CalendarDays className="h-4 w-4 text-[#3F7A06]" />
+            </div>
+            <div>
+              <div className="text-xs font-black text-[#0B1118]">Transmit days</div>
+              <p className="text-[10px] font-medium text-[#8A9680]">
+                Tap days to combine them — pick one day, then add the others at the same time.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 rounded-xl border border-[#E3E9DD] bg-[#F8FAF5] px-1.5 py-1">
+              <CalendarDays className="ml-1 h-3.5 w-3.5 text-[#8A9680]" />
+              <input
+                type="date"
+                value={datePickerValue}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setDatePickerValue(value);
+                  if (value) addSelectedDate(value);
+                }}
+                className="cursor-pointer bg-transparent px-1 py-0.5 text-[11px] font-bold text-[#26301F] focus:outline-none"
+                title="Add another transmitted day to the selection"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={clearSelectedDates}
+              disabled={selectedDates.length === 0}
+              className={`rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition-colors ${
+ selectedDates.length === 0
+ ? 'cursor-default border border-[#E3E9DD] bg-[#F3F7EE] text-[#A6B29B]'
+ : 'cursor-pointer border border-[#E3E9DD] bg-white text-[#5C6B51] hover:border-[#85E510]'
+ }`}
+            >
+              Clear days
+            </button>
           </div>
         </div>
 
-        {/* Global Action Toolbar */}
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* 0. Register a record the field missed */}
-          <button
-            type="button"
-            onClick={handleOpenAddStudent}
-            className="py-2 px-3.5 rounded-xl bg-[#9EE617] hover:bg-[#8FE617] text-[#062404] text-xs font-black flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
-            title="Add a new student to the directory"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Add Student</span>
-          </button>
+        {selectedDates.length > 0 && (
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-[#EDF3E7] pt-2.5">
+            <span className="text-[10px] font-black uppercase tracking-[0.12em] text-[#7C8B70]">Selected</span>
+            {selectedDates.map(dt => (
+              <span
+                key={dt}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B1118] px-2 py-1 text-[11px] font-bold text-white"
+              >
+                {dayChipLabel(dt)}
+                <span className="text-[10px] text-[#9EE617]">{calendarDateCounts[dt] || 0}</span>
+                <button
+                  type="button"
+                  onClick={() => toggleSelectedDate(dt)}
+                  className="rounded p-0.5 text-[#8A9680] transition-colors hover:text-white cursor-pointer"
+                  title="Remove this day from the selection"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+            <span className="rounded-lg bg-[#EAF7DA] px-2 py-1 text-[11px] font-black text-[#3F7A06]">
+              {filtered.length.toLocaleString()} records in view
+            </span>
+          </div>
+        )}
 
-          {/* 1. Mistake Analyzer */}
+        <div className="custom-scrollbar mt-2.5 flex items-center gap-1.5 overflow-x-auto pb-1">
           <button
             type="button"
-            onClick={() => setIsMistakeModalOpen(true)}
-            className="py-2 px-3.5 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-950 text-xs font-black flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
-            title="Scan student directory for mistakes & anomalies"
+            onClick={clearSelectedDates}
+            className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition-colors cursor-pointer ${
+ selectedDates.length === 0
+ ? 'bg-[#85E510] text-[#062404]'
+ : 'border border-[#E3E9DD] bg-white text-[#5C6B51] hover:border-[#85E510]'
+ }`}
           >
-            <AlertTriangle className="w-4 h-4 text-amber-600" />
-            <span>Mistake Analyzer</span>
-            {mistakeItems.length > 0 && (
-              <span className="px-1.5 py-0.5 rounded-md bg-amber-600 text-white text-[10px] font-black">
-                {mistakeItems.length}
+            All days <span className="opacity-70">{allDaysCount.toLocaleString()}</span>
+          </button>
+          {distinctDates.map(dt => {
+            const active = selectedDates.includes(dt);
+            return (
+              <button
+                key={dt}
+                type="button"
+                onClick={() => toggleSelectedDate(dt)}
+                title={`${dt} — click to add or remove this day`}
+                className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition-colors cursor-pointer ${
+ active
+ ? 'bg-[#0B1118] text-[#9EE617]'
+ : 'border border-[#E3E9DD] bg-white text-[#5C6B51] hover:border-[#85E510]'
+ }`}
+              >
+                <span>{dayChipLabel(dt)}</span>
+                <span className="text-[10px] opacity-80">{calendarDateCounts[dt] || 0}</span>
+                {active && <Check className="h-3 w-3" />}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-5 pb-16 animate-in fade-in duration-200">
+      {/* Page Header — light lime hero */}
+      <div className="relative overflow-hidden rounded-3xl border border-[#E1F0CF] bg-gradient-to-br from-white via-[#F8FDEF] to-[#ECF9DA] shadow-[0_2px_18px_rgba(63,122,6,0.07)]">
+        <div className="pointer-events-none absolute -right-16 -top-24 h-56 w-56 rounded-full bg-[#9EE617]/25 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-24 left-1/3 h-48 w-48 rounded-full bg-[#85E510]/10 blur-3xl" />
+
+        <div className="relative space-y-4 p-5">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex items-start gap-3.5">
+              <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#0B1118] shadow-sm">
+                <UsersIcon className="h-5 w-5 text-[#9EE617]" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="text-2xl font-heading font-black tracking-tight text-[#0B1118]">
+                    Student Directory
+                  </h1>
+                  <span className="rounded-full border border-[#9EE617]/60 bg-white/80 px-2.5 py-0.5 text-[11px] font-black tabular-nums text-[#3F7A06]">
+                    {filtered.length.toLocaleString()} records
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-[#CDEBB4] bg-white/80 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em] text-[#3F7A06]">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#85E510] opacity-70" />
+                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[#6FBF0A]" />
+                    </span>
+                    Live feed
+                  </span>
+                </div>
+                <p className="mt-1.5 text-[11px] font-medium text-[#6B7A60]">
+                  Master registry, multi-day filters and school folders — every number reads the same snapshot.
+                </p>
+              </div>
+            </div>
+
+            {/* Global Action Toolbar */}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleOpenAddStudent}
+                className="flex items-center gap-1.5 rounded-xl bg-[#85E510] px-3.5 py-2 text-xs font-black text-[#062404] shadow-sm transition-all hover:bg-[#9EE617] cursor-pointer"
+                title="Add a new student to the directory"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Add Student</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsMistakeModalOpen(true)}
+                className="flex items-center gap-1.5 rounded-xl border border-[#F3D9A4] bg-[#FDF7E8] px-3.5 py-2 text-xs font-black text-[#7A5A10] transition-all hover:bg-[#FBEFD4] cursor-pointer"
+                title="Scan student directory for mistakes & anomalies"
+              >
+                <AlertTriangle className="h-4 w-4 text-[#B8860B]" />
+                <span>Mistake Analyzer</span>
+                {mistakeItems.length > 0 && (
+                  <span className="rounded-md bg-[#B8860B] px-1.5 py-0.5 text-[10px] font-black text-white">
+                    {mistakeItems.length}
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => exportExcel(false)}
+                className="flex items-center gap-1.5 rounded-xl border border-[#E3E9DD] bg-white px-3.5 py-2 text-xs font-bold text-[#26301F] transition-all hover:border-[#85E510] cursor-pointer"
+              >
+                <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+                <span>Excel (.xlsx)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => exportCsv(false)}
+                className="flex items-center gap-1.5 rounded-xl border border-[#E3E9DD] bg-white px-3.5 py-2 text-xs font-bold text-[#26301F] transition-all hover:border-[#85E510] cursor-pointer"
+              >
+                <FileText className="h-4 w-4 text-blue-600" />
+                <span>Export CSV</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => downloadSelectedPhotosZip()}
+                className="flex items-center gap-1.5 rounded-xl border border-[#E3E9DD] bg-white px-3.5 py-2 text-xs font-bold text-[#26301F] transition-all hover:border-[#85E510] cursor-pointer"
+                title="Download student photos archive (ZIP)"
+              >
+                <Archive className="h-4 w-4 text-[#3F7A06]" />
+                <span>Export Photo ZIP</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={loadData}
+                disabled={isLoading}
+                className="flex items-center gap-1.5 rounded-xl border border-[#E3E9DD] bg-white px-3 py-2 text-xs font-bold text-[#26301F] transition-all hover:border-[#85E510] cursor-pointer"
+                title="Refresh from server"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 text-[#5C6B51] ${isLoading ? 'animate-spin' : ''}`} />
+                <span>Refresh</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleCloudSync}
+                disabled={isLoading}
+                className="flex items-center gap-1.5 rounded-xl bg-[#0B1118] px-3.5 py-2 text-xs font-bold text-white shadow-sm transition-all hover:bg-[#1E2A20] cursor-pointer"
+                title="Synchronize registry with cloud master server"
+              >
+                <Cloud className="h-3.5 w-3.5 text-[#9EE617]" />
+                <span>Cloud Sync</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsDirectoryFullscreen(v => !v)}
+                className={`grid h-9 w-9 place-items-center rounded-xl border transition-all cursor-pointer ${
+ isDirectoryFullscreen
+ ? 'border-[#85E510] bg-[#85E510]/15 text-[#3F7A06]'
+ : 'border-[#E3E9DD] bg-white text-[#4B5B42] hover:border-[#85E510]'
+ }`}
+                title={isDirectoryFullscreen ? 'Exit full screen' : 'View students in full screen'}
+                aria-label={isDirectoryFullscreen ? 'Exit full screen' : 'Full screen directory'}
+              >
+                {isDirectoryFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Live facts from the authoritative snapshot */}
+          <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
+            {[
+              {
+                label: 'Total Received',
+                value: telemetryAmounts.total.toLocaleString(),
+                hint: `${hiddenCount.toLocaleString()} hidden \u00b7 ${sortedFiltered.length.toLocaleString()} in view`,
+                icon: UsersIcon
+              },
+              {
+                label: 'Transmitted Today',
+                value: telemetryAmounts.today.toLocaleString(),
+                hint: 'since 00:00 local day',
+                icon: Calendar
+              },
+              {
+                label: 'Photos Verified',
+                value: telemetryAmounts.withPhoto.toLocaleString(),
+                hint: `${telemetryAmounts.total > 0 ? ((telemetryAmounts.withPhoto / telemetryAmounts.total) * 100).toFixed(1) : '0.0'}% coverage`,
+                icon: ImageIcon
+              },
+              {
+                label: 'Active Senders',
+                value: String(fleetActiveSenders ?? fallbackActiveSenders),
+                hint: 'transmitting now · last 15 min',
+                icon: Radio
+              }
+            ].map(fact => (
+              <div key={fact.label} className="rounded-2xl border border-[#E3EFD7] bg-white/75 px-3.5 py-2.5 backdrop-blur-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">{fact.label}</span>
+                  <fact.icon className="h-3.5 w-3.5 text-[#6FBF0A]" />
+                </div>
+                <div className="mt-1 text-xl font-black tabular-nums tracking-tight text-[#0B1118]">{fact.value}</div>
+                <div className="text-[10px] font-medium text-[#8A9680]">{fact.hint}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Live link strip */}
+          <div className="flex flex-wrap items-center gap-2 border-t border-[#DBEDC9]/80 pt-3">
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-[#E3EFD7] bg-white/75 px-2.5 py-1 text-[11px] font-semibold text-[#5C6B51]">
+              <Cloud className="h-3 w-3 text-[#3B82F6]" />
+              R2 <strong className="font-bold text-[#26301F]">{liveServerStats.r2Bucket || '—'}</strong>
+            </span>
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-[#E3EFD7] bg-white/75 px-2.5 py-1 text-[11px] font-semibold text-[#5C6B51]">
+              <Activity className="h-3 w-3 text-[#6FBF0A]" />
+              Ping <strong className="font-bold text-[#26301F]">{liveServerStats.queryLatencyMs} ms</strong>
+            </span>
+            {telemetryAmounts.latestTransmitted ? (
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-[#E3EFD7] bg-white/75 px-2.5 py-1 text-[11px] font-semibold text-[#5C6B51]">
+                <Clock className="h-3 w-3 text-[#6FBF0A]" />
+                Last received{' '}
+                <strong className="font-bold text-[#26301F]">
+                  {telemetryAmounts.latestTransmitted.createdAt
+                    ? new Date(telemetryAmounts.latestTransmitted.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    : 'just now'}
+                </strong>
+                <span className="text-[#8A9680]">({telemetryAmounts.latestTransmitted.senderName || 'Sender'})</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-[#E3EFD7] bg-white/75 px-2.5 py-1 text-[11px] font-semibold text-[#8A9680]">
+                Waiting for incoming transmissions…
               </span>
             )}
-          </button>
 
-          {/* 2. Excel (.xlsx) */}
-          <button
-            type="button"
-            onClick={() => exportExcel(false)}
-            className="py-2 px-3.5 rounded-xl bg-white border border-[#CBD5E1] hover:bg-[#F8FAF9] text-[#0B1118] text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
-          >
-            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-            <span>Excel (.xlsx)</span>
-          </button>
-
-          {/* 3. Export CSV */}
-          <button
-            type="button"
-            onClick={() => exportCsv(false)}
-            className="py-2 px-3.5 rounded-xl bg-white border border-[#CBD5E1] hover:bg-[#F8FAF9] text-[#0B1118] text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
-          >
-            <FileText className="w-4 h-4 text-blue-600" />
-            <span>Export CSV</span>
-          </button>
-
-          {/* 4. Export Photo ZIP */}
-          <button
-            type="button"
-            onClick={() => downloadSelectedPhotosZip()}
-            className="py-2 px-3.5 rounded-xl bg-white border border-[#CBD5E1] hover:bg-[#F8FAF9] text-[#0B1118] text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
-            title="Download student photos archive (ZIP)"
-          >
-            <Archive className="w-4 h-4 text-[#256002]" />
-            <span>Export Photo ZIP</span>
-          </button>
-
-          {/* 5. Refresh */}
-          <button
-            type="button"
-            onClick={loadData}
-            disabled={isLoading}
-            className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-[#0B1118] text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
-            title="Refresh from server"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-slate-600 ${isLoading ? 'animate-spin' : ''}`} />
-            <span>Refresh</span>
-          </button>
-
-          {/* 6. Cloud Sync */}
-          <button
-            type="button"
-            onClick={handleCloudSync}
-            disabled={isLoading}
-            className="py-2 px-3.5 rounded-xl bg-[#0B1118] hover:bg-[#1A2533] text-white text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
-            title="Synchronize registry with cloud master server"
-          >
-            <Cloud className="w-3.5 h-3.5 text-[#9EE617]" />
-            <span>Cloud Sync</span>
-          </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={fetchLiveTelemetry}
+                disabled={isRefreshingTelemetry}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[#CDEBB4] bg-white px-2.5 py-1 text-[11px] font-bold text-[#3F7A06] transition-colors hover:bg-[#F1FBE4] cursor-pointer"
+                title="Refresh live telemetric data"
+              >
+                <RefreshCw className={`h-3 w-3 ${isRefreshingTelemetry ? 'animate-spin' : ''}`} />
+                {isRefreshingTelemetry ? 'Pinging…' : 'Sync'}
+              </button>
+              <Link
+                to="/receiver/telemetric-velocity"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B1118] px-2.5 py-1 text-[11px] font-bold text-[#9EE617] transition-colors hover:bg-[#1E2A20]"
+                title="Open the full telemetric velocity & fleet cockpit"
+              >
+                <Radio className="h-3 w-3" />
+                Fleet cockpit
+                <ArrowRight className="h-3 w-3" />
+              </Link>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1811,7 +2324,7 @@ export const ReceiverStudentsPage: React.FC = () => {
             <button
               type="button"
               onClick={() => setSelectedIds(new Set())}
-              className="text-[11px] text-slate-400 hover:text-white underline ml-1 cursor-pointer"
+              className="text-[11px] text-[#8A9680] hover:text-white underline ml-1 cursor-pointer"
             >
               Clear selection
             </button>
@@ -1840,7 +2353,7 @@ export const ReceiverStudentsPage: React.FC = () => {
             <button
               type="button"
               onClick={downloadSelectedQrsZip}
-              className="py-1.5 px-3 rounded-xl bg-white hover:bg-slate-100 text-[#0B1118] text-xs font-black flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+              className="py-1.5 px-3 rounded-xl bg-white hover:bg-[#F6FAEF] text-[#0B1118] text-xs font-black flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
             >
               <QrIcon className="w-3.5 h-3.5 text-[#366804]" />
               <span>Download QRs (ZIP)</span>
@@ -1889,151 +2402,9 @@ export const ReceiverStudentsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Real-Time Live Transmission & Amounts Telemetry Banner */}
-      <div className="bg-gradient-to-r from-[#0B1118] via-[#111A24] to-[#0B1118] border border-[#223126] rounded-2xl p-4 text-white shadow-lg space-y-3 relative overflow-hidden">
-        {/* Subtle Ambient Glow */}
-        <div className="absolute top-0 right-1/4 w-72 h-20 bg-[#85E510]/10 blur-2xl pointer-events-none rounded-full" />
-        
-        <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 pb-3 border-b border-slate-700/60">
-          <div className="flex items-center gap-2.5">
-            <span className="relative flex h-3 w-3">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#85E510] opacity-75" />
-              <span className="relative inline-flex rounded-full h-3 w-3 bg-[#85E510]" />
-            </span>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-black tracking-wider uppercase text-[#85E510] font-heading flex items-center gap-1.5">
-                  <Activity className="w-3.5 h-3.5" />
-                  Live Real-Time Telemetry &amp; Field Bus Console
-                </span>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30 font-mono">
-                  Realtime Active
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-300">
-                Connected to global field sender bus &bull; Synchronizing live transmissions across all school campuses
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Live Infrastructure Pills */}
-            <div className="flex items-center gap-2 bg-black/40 px-3 py-1 rounded-xl border border-slate-700/80 text-[11px]">
-              <Cloud className="w-3.5 h-3.5 text-blue-400" />
-              <span className="text-slate-300">R2:</span>
-              <strong className="text-white font-mono">{liveServerStats.r2Bucket}</strong>
-            </div>
-
-            <div className="flex items-center gap-2 bg-black/40 px-3 py-1 rounded-xl border border-slate-700/80 text-[11px]">
-              <Activity className="w-3.5 h-3.5 text-[#85E510]" />
-              <span className="text-slate-300">Ping:</span>
-              <strong className="text-emerald-400 font-mono">{liveServerStats.queryLatencyMs}ms</strong>
-            </div>
-
-            <button
-              type="button"
-              onClick={fetchLiveTelemetry}
-              disabled={isRefreshingTelemetry}
-              className="flex items-center gap-1.5 bg-[#0B1118] hover:bg-slate-800 text-[#85E510] px-3 py-1 rounded-xl border border-[#85E510]/30 text-[11px] font-bold transition-all cursor-pointer"
-              title="Refresh Live Telemetric Data"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingTelemetry ? 'animate-spin' : ''}`} />
-              <span>{isRefreshingTelemetry ? 'Pinging...' : 'Sync'}</span>
-            </button>
-
-            {/* Direct Link to Telemetric Velocity & Fleet Cockpit */}
-            <Link
-              to="/receiver/telemetric-velocity"
-              className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-[#85E510]/20 hover:bg-[#85E510]/30 text-[#85E510] hover:text-white border border-[#85E510]/40 text-[11px] font-bold transition-all"
-              title="Open Full Telemetric Velocity & Fleet Cockpit"
-            >
-              <Radio className="w-3.5 h-3.5 animate-pulse" />
-              <span>Fleet Velocity Cockpit &rarr;</span>
-            </Link>
-
-            {telemetryAmounts.latestTransmitted ? (
-              <div className="flex items-center gap-2 bg-black/40 px-3 py-1 rounded-xl border border-slate-700/80 text-[11px]">
-                <Clock className="w-3.5 h-3.5 text-[#85E510]" />
-                <span className="text-slate-300">Last Received:</span>
-                <strong className="text-white font-mono">
-                  {telemetryAmounts.latestTransmitted.createdAt
-                    ? new Date(telemetryAmounts.latestTransmitted.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                    : 'Just now'}
-                </strong>
-                <span className="text-slate-400">({telemetryAmounts.latestTransmitted.senderName || 'Sender'})</span>
-              </div>
-            ) : (
-              <span className="text-slate-400 text-xs">Waiting for incoming transmission...</span>
-            )}
-          </div>
-        </div>
-
-        {/* 4 Metric Amount Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-              <span>Total Received</span>
-              <UsersIcon className="w-3.5 h-3.5 text-[#85E510]" />
-            </div>
-            <div className="mt-1 text-xl sm:text-2xl font-black font-heading text-white">
-              {telemetryAmounts.total.toLocaleString()}
-            </div>
-            <div className="text-[10px] text-slate-400 mt-0.5">
-              {pagedStudents.length.toLocaleString()} on this page &bull; {sortedFiltered.length.toLocaleString()} in view &bull; {hiddenCount.toLocaleString()} hidden
-            </div>
-          </div>
-
-          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-              <span>Transmitted Today</span>
-              <Calendar className="w-3.5 h-3.5 text-emerald-400" />
-            </div>
-            <div className="mt-1 text-xl sm:text-2xl font-black font-heading text-[#85E510] flex items-center gap-2">
-              <span>{telemetryAmounts.today.toLocaleString()}</span>
-              {telemetryAmounts.today > 0 && (
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-[#85E510]/20 text-[#85E510] font-black border border-[#85E510]/40 font-mono">
-                  +{telemetryAmounts.today} New
-                </span>
-              )}
-            </div>
-            <div className="text-[10px] text-slate-400 mt-0.5">Live 0-start daily intake count</div>
-          </div>
-
-          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-              <span>Biometric Photos Encoded</span>
-              <ImageIcon className="w-3.5 h-3.5 text-blue-400" />
-            </div>
-            <div className="mt-1 text-xl sm:text-2xl font-black font-heading text-white flex items-center gap-1.5">
-              <span>{telemetryAmounts.withPhoto.toLocaleString()}</span>
-              <span className="text-xs text-slate-400 font-normal font-mono">
-                ({telemetryAmounts.total > 0 ? ((telemetryAmounts.withPhoto / telemetryAmounts.total) * 100).toFixed(1) : 100}%)
-              </span>
-            </div>
-            <div className="text-[10px] text-slate-400 mt-0.5">Verified portrait photos in R2</div>
-          </div>
-
-          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-              <span>Fleet Velocity &amp; Senders</span>
-              <Radio className="w-3.5 h-3.5 text-purple-400" />
-            </div>
-            <div className="mt-1 text-xl sm:text-2xl font-black font-heading text-white flex items-baseline gap-1.5">
-              <span>{telemetryAmounts.activeSenders} Stations</span>
-              <span className="text-xs text-[#85E510] font-mono font-bold">
-                {telemetryAmounts.activeSenders > 0
-                  ? `${(telemetryAmounts.today / telemetryAmounts.activeSenders).toFixed(1)} rec/sender today`
-                  : 'no registered senders'}
-              </span>
-            </div>
-            <div className="text-[10px] text-slate-400 mt-0.5">Field operator fleet streaming</div>
-          </div>
-        </div>
-      </div>
-
       {!isServerApiOnline() && (
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-rose-300 bg-rose-50 dark:bg-[#1b0d10] dark:border-rose-800 px-4 py-3">
-          <div className="text-xs text-rose-900 dark:text-rose-200 font-semibold leading-relaxed">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3">
+          <div className="text-xs text-rose-900 font-semibold leading-relaxed">
             The live sync API is not answering, so this list is the registry snapshot shipped with
             the build &mdash; {students.length.toLocaleString()} records, newest transmitted{' '}
             {students.reduce((max, s) => ((s.createdAt || '') > max ? s.createdAt || '' : max), '') || 'n/a'}.
@@ -2052,8 +2423,8 @@ export const ReceiverStudentsPage: React.FC = () => {
       )}
 
       {liveServerStats.available && liveServerStats.totalStudents > students.length && (
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 dark:bg-[#1a1608] dark:border-amber-700 px-4 py-3">
-          <div className="text-xs text-amber-900 dark:text-amber-200 font-semibold leading-relaxed">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3">
+          <div className="text-xs text-amber-900 font-semibold leading-relaxed">
             This station has {students.length.toLocaleString()} of{' '}
             {liveServerStats.totalStudents.toLocaleString()} registry records loaded. The sync
             feed returned an incomplete page set &mdash; no records were deleted, reload to fetch the rest.
@@ -2070,110 +2441,109 @@ export const ReceiverStudentsPage: React.FC = () => {
       )}
 
       {liveServerStats.available && !liveServerStats.statsComplete && (
-        <div className="rounded-2xl border border-sky-300 bg-sky-50 dark:bg-[#0b1620] dark:border-sky-800 px-4 py-2.5 text-[11px] text-sky-900 dark:text-sky-200 font-semibold">
+        <div className="rounded-2xl border border-sky-300 bg-sky-50 px-4 py-2.5 text-[11px] text-sky-900 font-semibold">
           Server counts incomplete{liveServerStats.statsMissing.length > 0 ? ` (${liveServerStats.statsMissing.join(', ')})` : ''}
           &mdash; those figures are reused from the last complete snapshot, not measured now.
         </div>
       )}
 
-      {/* View Switcher: Master Table vs School Directory Folders */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3 rounded-2xl border border-[#E2E8F0] shadow-xs">
-        <div className="flex items-center gap-2">
+      {/* View Switcher — segmented light control */}
+      <div className="flex flex-col gap-3 rounded-2xl border border-[#E3E9DD] bg-white/90 p-2.5 shadow-[0_1px_6px_rgba(15,23,42,0.04)] sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex w-full items-center gap-1 rounded-xl bg-[#F3F7EE] p-1 sm:w-auto">
           <button
             type="button"
             onClick={() => { setViewMode('table'); setSelectedSchoolFolder(null); }}
-            className={`px-4 py-2 rounded-xl text-xs font-black flex items-center gap-2 transition-all cursor-pointer ${
-              viewMode === 'table'
-                ? 'bg-[#0B1118] text-[#9EE617] shadow-sm'
-                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-            }`}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-xs font-black transition-all cursor-pointer sm:flex-none ${
+ viewMode === 'table'
+ ? 'bg-white text-[#0B1118] shadow-sm ring-1 ring-[#CDEBB4]'
+ : 'text-[#5C6B51] hover:text-[#0B1118]'
+ }`}
           >
-            <FileSpreadsheet className="w-4 h-4" />
-            <span>Master Directory Table ({sortedFiltered.length.toLocaleString()})</span>
+            <FileSpreadsheet className={`h-4 w-4 ${viewMode === 'table' ? 'text-[#3F7A06]' : 'text-[#8A9680]'}`} />
+            <span>Master Table</span>
+            <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-black tabular-nums ${
+ viewMode === 'table' ? 'bg-[#EAF7DA] text-[#3F7A06]' : 'bg-white/70 text-[#7C8B70]'
+ }`}>
+              {sortedFiltered.length.toLocaleString()}
+            </span>
           </button>
 
           <button
             type="button"
             onClick={() => setViewMode('folders')}
-            className={`px-4 py-2 rounded-xl text-xs font-black flex items-center gap-2 transition-all cursor-pointer ${
-              viewMode === 'folders'
-                ? 'bg-[#0B1118] text-[#9EE617] shadow-sm'
-                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-            }`}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-xs font-black transition-all cursor-pointer sm:flex-none ${
+ viewMode === 'folders'
+ ? 'bg-white text-[#0B1118] shadow-sm ring-1 ring-[#CDEBB4]'
+ : 'text-[#5C6B51] hover:text-[#0B1118]'
+ }`}
           >
-            <FolderOpen className="w-4 h-4 text-[#9EE617]" />
-            <span>📁 School Directory Folders ({schoolFolders.length} Schools)</span>
-            <span className="ml-1 px-1.5 py-0.2 rounded-full bg-[#9EE617]/20 text-[#256002] text-[10px] font-black border border-[#9EE617]/30">
-              NEW
+            <FolderOpen className={`h-4 w-4 ${viewMode === 'folders' ? 'text-[#3F7A06]' : 'text-[#8A9680]'}`} />
+            <span>School Folders</span>
+            <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-black tabular-nums ${
+ viewMode === 'folders' ? 'bg-[#EAF7DA] text-[#3F7A06]' : 'bg-white/70 text-[#7C8B70]'
+ }`}>
+              {schoolFolders.length}
             </span>
           </button>
         </div>
 
-        <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
-          <Cloud className="w-3.5 h-3.5 text-blue-500" />
-          <span>Cloudflare R2 Storage: <strong className="text-slate-800">{liveServerStats.r2Bucket}</strong></span>
-          <span className="text-slate-300">&bull;</span>
-          <span className="text-emerald-600 font-bold flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            100% Zero-Drop Active
+        <div className="flex flex-wrap items-center gap-2 px-1 text-[11px] font-semibold text-[#7C8B70]">
+          <span className="inline-flex items-center gap-1.5">
+            <Cloud className="h-3.5 w-3.5 text-[#3B82F6]" />
+            R2 <strong className="text-[#26301F]">{liveServerStats.r2Bucket || '—'}</strong>
           </span>
-        </div>
-      </div>
-
-      {viewMode === 'table' ? (
-        <>
-          {/* Top Calendar Date Filter */}
-      <div className="bg-white p-3 rounded-2xl border border-[#E2E8F0] shadow-xs flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-xl bg-[#9EE617]/20 border border-[#9EE617]/40 flex items-center justify-center">
-            <Calendar className="w-4 h-4 text-[#256002]" />
-          </div>
-          <div>
-            <span className="text-xs font-black text-[#0B1118]">Transmit Date Filter</span>
-            <p className="text-[10px] text-slate-500 font-medium">Filter directory records by day transmitted</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => { setSelectedDate(e.target.value); setPage(1); }}
-            className="h-9 rounded-xl border border-[#CBD5E1] bg-[#F8FAF9] px-3 text-xs font-bold text-[#0B1118] focus:border-[#9EE617] focus:outline-none cursor-pointer"
-          />
-          {selectedDate && (
-            <button
-              type="button"
-              onClick={() => setSelectedDate('')}
-              className="h-9 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-700 transition-colors cursor-pointer"
-            >
-              Clear Date
-            </button>
-          )}
+          <span className="h-3 w-px bg-[#DDE7D3]" />
+          <span className="inline-flex items-center gap-1.5 text-[#3F7A06]">
+            <span className="h-1.5 w-1.5 rounded-full bg-[#6FBF0A]" />
+            Zero-drop feed
+          </span>
           <button
             type="button"
-            onClick={() => setCalendarNoteModalOpen(true)}
-            className="h-9 px-3 rounded-xl bg-[#0B1118] hover:bg-slate-800 text-xs font-bold text-[#9EE617] flex items-center gap-1.5 transition-colors cursor-pointer"
-            title="Note taking for pausing bulked students"
+            onClick={() => setIsDirectoryFullscreen(true)}
+            className="ml-1 inline-flex items-center gap-1.5 rounded-lg border border-[#DDE7D3] bg-white px-2 py-1 text-[11px] font-bold text-[#4B5B42] transition-colors hover:border-[#85E510] cursor-pointer"
+            title="View students in full screen"
           >
-            <span>Pause Bulked Note</span>
-            {pausedIds.size > 0 && (
-              <span className="px-1.5 py-0.2 bg-amber-500 text-black text-[10px] font-black rounded-full">
-                {pausedIds.size}
-              </span>
-            )}
+            <Maximize2 className="h-3 w-3" />
+            Full screen
           </button>
         </div>
       </div>
 
+      <div className={isDirectoryFullscreen ? 'fixed inset-0 z-[80] space-y-4 overflow-y-auto bg-[#F7FAF2] p-3 sm:p-5' : 'space-y-4'}>
+        {isDirectoryFullscreen && (
+          <div className="sticky top-0 z-10 -mx-3 -mt-3 flex flex-nowrap items-center justify-between gap-2 border-b border-white/10 bg-[#0B1118] px-3 py-2.5 text-white shadow-lg sm:-mx-5 sm:-mt-5 sm:px-5">
+            <div className="flex min-w-0 items-center gap-2 text-xs font-black">
+              <Maximize2 className="h-4 w-4 shrink-0 text-[#9EE617]" />
+              <span className="truncate">Student Directory — Full Screen</span>
+              <span className="hidden shrink-0 rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-[#CFE8B6] sm:inline">
+                {filtered.length.toLocaleString()} records
+              </span>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="hidden whitespace-nowrap text-[11px] font-semibold text-[#B9C4AE] md:inline">
+                {selectedDates.length === 0 ? 'All days' : `${selectedDates.length} ${selectedDates.length === 1 ? 'day' : 'days'} selected`}
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsDirectoryFullscreen(false)}
+                className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl bg-[#85E510] px-3 py-1.5 text-[11px] font-black text-[#062404] transition-colors hover:bg-[#9EE617] cursor-pointer"
+              >
+                <Minimize2 className="h-3.5 w-3.5" />
+                Exit<span className="hidden sm:inline">&nbsp;full screen (Esc)</span>
+              </button>
+            </div>
+          </div>
+        )}
 
-
+      {viewMode === 'table' ? (
+        <>
+          {renderDateStrip()}
       {/* Filter and Search Bar */}
-      <div className="bg-white p-4 rounded-2xl border border-[#E2E8F0] shadow-xs space-y-3">
+      <div className="bg-white p-4 rounded-2xl border border-[#E2E8F0] shadow-sm space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2.5">
           {/* Search Box */}
           <div className="lg:col-span-2 relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+            <Search className="w-4 h-4 text-[#8A9680] absolute left-3 top-3" />
             <input
               type="text"
               value={search}
@@ -2185,7 +2555,7 @@ export const ReceiverStudentsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setSearch('')}
-                className="absolute right-3 top-2.5 text-slate-400 hover:text-black cursor-pointer"
+                className="absolute right-3 top-2.5 text-[#8A9680] hover:text-black cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -2281,167 +2651,48 @@ export const ReceiverStudentsPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Dynamic Grade & Sub-Sections Navigation Bar */}
-        {activeGradeItem ? (
-          <div className="flex flex-wrap items-center gap-2 p-3 bg-gradient-to-r from-emerald-50/90 via-emerald-50/40 to-slate-50 border border-emerald-200/90 rounded-2xl shadow-xs">
-            <div className="flex items-center gap-1.5 text-xs font-black text-emerald-950 mr-1">
-              <Layers className="w-4 h-4 text-emerald-700" />
-              <span>{activeGradeItem.displayLabel} Sub-Sections:</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => { setSectionFilter('ALL'); setPage(1); }}
-              className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
-                sectionFilter === 'ALL'
-                  ? 'bg-[#0B1118] text-[#9EE617] shadow-sm ring-1 ring-[#9EE617]/50'
-                  : 'bg-white border border-slate-200 text-slate-700 hover:bg-emerald-100/50 hover:border-emerald-300'
-              }`}
-            >
-              All {activeGradeItem.displayLabel} ({activeGradeItem.totalCount})
-            </button>
-            {activeGradeItem.sections.map(sec => (
-              <button
-                key={sec.section}
-                type="button"
-                onClick={() => { setSectionFilter(sec.section); setPage(1); }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer ${
-                  sectionFilter === sec.section
-                    ? 'bg-[#256002] text-white shadow-sm ring-2 ring-[#9EE617]/60'
-                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-emerald-100/50 hover:border-emerald-300'
-                }`}
-              >
-                <span>Section {sec.section}</span>
-                <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-black ${
-                  sectionFilter === sec.section ? 'bg-[#9EE617] text-[#0B1118]' : 'bg-slate-100 text-slate-700'
-                }`}>
-                  {sec.count}
-                </span>
-              </button>
-            ))}
-            {activeGradeItem.noSectionCount > 0 && (
+        {/* Live day summary */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#E2E8F0] pt-3">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-[#6B7A60]">
+            <Calendar className="h-3.5 w-3.5 text-[#3F7A06]" />
+            <span>
+              {selectedDates.length === 0
+                ? `All ${distinctDates.reduce((n, d) => n + (calendarDateCounts[d] || 0), 0).toLocaleString()} records \u00b7 no day filter`
+                : `${selectedDates.length} ${selectedDates.length === 1 ? 'day' : 'days'} picked`}
+            </span>
+            <span className="h-3 w-px bg-[#DDE7D3]" />
+            <span className="text-[#26301F]">
+              <strong className="font-black tabular-nums">{filtered.length.toLocaleString()}</strong> match every filter
+            </span>
+            {selectedDates.length > 0 && (
               <button
                 type="button"
-                onClick={() => { setSectionFilter('NONE'); setPage(1); }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                  sectionFilter === 'NONE'
-                    ? 'bg-[#256002] text-white shadow-sm ring-2 ring-[#9EE617]/60'
-                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-emerald-100/50 hover:border-emerald-300'
-                }`}
+                onClick={clearSelectedDates}
+                className="ml-1 rounded-md px-1.5 py-0.5 text-[11px] font-bold text-[#3F7A06] underline decoration-dotted hover:text-[#0B1118] cursor-pointer"
               >
-                <span>General / Unassigned</span>
-                <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-black ${
-                  sectionFilter === 'NONE' ? 'bg-[#9EE617] text-[#0B1118]' : 'bg-slate-100 text-slate-700'
-                }`}>
-                  {activeGradeItem.noSectionCount}
-                </span>
+                Clear days
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => { setGradeFilter('ALL'); setSectionFilter('ALL'); setPage(1); }}
-              className="ml-auto text-xs font-bold text-slate-500 hover:text-slate-800 underline cursor-pointer"
-            >
-              Clear Grade Filter
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 pt-0.5 custom-scrollbar">
-            <span className="text-[11px] font-black text-slate-500 whitespace-nowrap flex items-center gap-1 mr-1">
-              <Layers className="w-3.5 h-3.5 text-emerald-600" />
-              Quick Grade & Sub-Sections:
-            </span>
-            {gradeHierarchy.map(g => (
-              <button
-                key={g.baseGrade}
-                type="button"
-                onClick={() => { setGradeFilter(g.baseGrade); setSectionFilter('ALL'); setPage(1); }}
-                className="px-2.5 py-1 rounded-lg text-xs font-bold bg-white border border-slate-200 hover:border-emerald-400 hover:bg-emerald-50/50 text-slate-700 whitespace-nowrap transition-all flex items-center gap-1 cursor-pointer"
-                title={`${g.displayLabel}: ${g.totalCount} students across ${g.sections.length} sections`}
-              >
-                <span>{g.displayLabel}</span>
-                <span className="text-[10px] text-slate-600 bg-slate-100 px-1 py-0.2 rounded font-mono">
-                  {g.totalCount}
-                </span>
-                {g.sections.length > 0 && (
-                  <span className="text-[9px] font-black text-emerald-800 bg-emerald-100/80 px-1 py-0.2 rounded">
-                    {g.sections.map(s => s.section).join(',')}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Everyday Calendar Data Viewer */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-[#E2E8F0]">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1.5 text-xs font-black text-[#0B1118]">
-              <Calendar className="w-4 h-4 text-[#256002]" />
-              <span>Everyday Calendar Viewer:</span>
-            </div>
-
-            {/* Native Date Picker */}
-            <div className="relative flex items-center">
-              <input
-                type="date"
-                value={selectedDate}
-                onChange={(e) => { setSelectedDate(e.target.value); setPage(1); }}
-                className="bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-1.5 text-xs font-bold text-[#0B1118] focus:border-[#9EE617] cursor-pointer"
-              />
-              {selectedDate && (
-                <button
-                  type="button"
-                  onClick={() => { setSelectedDate(''); setPage(1); }}
-                  className="ml-1 p-1 text-slate-400 hover:text-black rounded-lg hover:bg-slate-100"
-                  title="Clear calendar date filter"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-
-            {/* Quick Calendar Date Chips */}
-            <div className="flex flex-wrap items-center gap-1.5 ml-1">
-              <button
-                type="button"
-                onClick={() => { setSelectedDate(''); setPage(1); }}
-                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  !selectedDate
-                    ? 'bg-[#0B1118] text-[#9EE617] shadow-xs'
-                    : 'bg-[#F1F5F9] text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                All Days ({students.length})
-              </button>
-              {distinctDates.slice(0, 6).map(dt => (
-                <button
-                  key={dt}
-                  type="button"
-                  onClick={() => { setSelectedDate(dt); setPage(1); }}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                    selectedDate === dt
-                      ? 'bg-[#9EE617] text-[#0B1118] shadow-xs'
-                      : 'bg-[#F1F5F9] text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  <span>{dt}</span>
-                  <span className="text-[10px] font-black opacity-80">({calendarDateCounts[dt]})</span>
-                </button>
-              ))}
-            </div>
           </div>
 
-          {selectedDate && (
-            <div className="text-xs font-bold text-[#256002] bg-[#9EE617]/20 px-3 py-1 rounded-xl flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-[#256002] animate-pulse" />
-              <span>Viewing {filtered.length} student(s) registered on {selectedDate}</span>
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={() => setCalendarNoteModalOpen(true)}
+            className="flex h-8 items-center gap-1.5 rounded-lg border border-[#E3E9DD] bg-white px-3 text-[11px] font-bold text-[#4B5B42] transition-colors hover:border-[#85E510] cursor-pointer"
+            title="Note taking for pausing bulked students"
+          >
+            <span>Pause Bulked Note</span>
+            {pausedIds.size > 0 && (
+              <span className="rounded-full bg-amber-500 px-1.5 py-0.2 text-[10px] font-black text-black">
+                {pausedIds.size}
+              </span>
+            )}
+          </button>
         </div>
       </div>
 
       {/* Full-Width Student Directory Table */}
-      <div className="bg-white border border-[#E2E8F0] rounded-2xl shadow-xs overflow-hidden">
+      <div className="bg-white border border-[#E2E8F0] rounded-2xl shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
@@ -2466,7 +2717,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                     {sortField === 'studentId' ? (
                       sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-[#256002]" /> : <ArrowDown className="w-3.5 h-3.5 text-[#256002]" />
                     ) : (
-                      <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-600" />
+                      <ArrowUpDown className="w-3 h-3 text-[#8A9680] group-hover:text-[#4B5B42]" />
                     )}
                   </button>
                 </th>
@@ -2481,7 +2732,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                     {sortField === 'grade' ? (
                       sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-[#256002]" /> : <ArrowDown className="w-3.5 h-3.5 text-[#256002]" />
                     ) : (
-                      <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-600" />
+                      <ArrowUpDown className="w-3 h-3 text-[#8A9680] group-hover:text-[#4B5B42]" />
                     )}
                   </button>
                 </th>
@@ -2502,7 +2753,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                     {sortField === 'createdAt' ? (
                       sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-[#256002]" /> : <ArrowDown className="w-3.5 h-3.5 text-[#256002]" />
                     ) : (
-                      <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-600" />
+                      <ArrowUpDown className="w-3 h-3 text-[#8A9680] group-hover:text-[#4B5B42]" />
                     )}
                   </button>
                 </th>
@@ -2514,11 +2765,11 @@ export const ReceiverStudentsPage: React.FC = () => {
               {pagedStudents.length === 0 ? (
                 <tr>
                   <td colSpan={13} className="py-12 text-center text-[#64748B]">
-                    <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-2 text-slate-400">
+                    <div className="w-12 h-12 rounded-full bg-[#F6FAEF] flex items-center justify-center mx-auto mb-2 text-[#8A9680]">
                       <Search className="w-6 h-6" />
                     </div>
                     <div className="font-bold text-sm text-[#0B1118]">No students found</div>
-                    <p className="text-xs text-slate-500 mt-0.5">Try adjusting your search query or branch filters</p>
+                    <p className="text-xs text-[#7C8B70] mt-0.5">Try adjusting your search query or branch filters</p>
                   </td>
                 </tr>
               ) : (
@@ -2532,8 +2783,8 @@ export const ReceiverStudentsPage: React.FC = () => {
                     <tr
                       key={s.studentId}
                       className={`hover:bg-[#F8FAF9] transition-colors ${
-                        isSelected ? 'bg-[#BEF264]/10' : ''
-                      }`}
+ isSelected ? 'bg-[#BEF264]/10' : ''
+ }`}
                     >
                       {/* Checkbox */}
                       <td className="py-3.5 px-4 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
@@ -2550,7 +2801,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                         <div className="flex items-center gap-3">
                           <div
                             onClick={(e) => handleOpenPhotoEditor(s, e)}
-                            className="relative w-10 h-10 rounded-xl overflow-hidden bg-slate-100 border border-[#CBD5E1] shrink-0 cursor-pointer group shadow-2xs"
+                            className="relative w-10 h-10 rounded-xl overflow-hidden bg-[#F6FAEF] border border-[#CBD5E1] shrink-0 cursor-pointer group shadow-2xs"
                             title="Click photograph to crop and edit online"
                           >
                             <img
@@ -2573,7 +2824,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                             >
                               {s.fullName}
                             </div>
-                            <div className="text-[10px] text-slate-500 flex items-center gap-1.5 font-medium mt-0.5">
+                            <div className="text-[10px] text-[#7C8B70] flex items-center gap-1.5 font-medium mt-0.5">
                               <span>{s.sex || 'Male'}</span>
                               <span>&bull;</span>
                               <span className="text-[#366804] font-semibold">{s.status || 'Accepted'}</span>
@@ -2583,34 +2834,34 @@ export const ReceiverStudentsPage: React.FC = () => {
                       </td>
 
                       {/* Student ID */}
-                      <td className="py-3.5 px-4 font-mono font-bold text-[#0B1118] text-[11px] whitespace-nowrap">
+                      <td className="py-3.5 px-4 font-bold text-[#0B1118] text-[11px] whitespace-nowrap">
                         {s.studentId}
                       </td>
 
                       {/* Grade & Section */}
                       <td className="py-3.5 px-4 whitespace-nowrap">
-                        <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-[#0B1118] font-bold text-[11px]">
+                        <span className="px-2.5 py-1 rounded-lg bg-[#F6FAEF] text-[#0B1118] font-bold text-[11px]">
                           {getGradeDisplay(s)}
                         </span>
                       </td>
 
                       {/* School & Branch */}
                       <td className="py-3.5 px-4 whitespace-nowrap">
-                        <div className="font-bold text-[#0B1118] truncate max-w-[160px]">{s.school || 'YMS'}</div>
-                        <div className="text-[10px] text-slate-500 flex items-center gap-1 mt-0.5">
+                        <div className="font-bold text-[#0B1118] truncate max-w-[160px]">{s.school || 'Unassigned'}</div>
+                        <div className="text-[10px] text-[#7C8B70] flex items-center gap-1 mt-0.5">
                           <MapPin className="w-2.5 h-2.5 text-[#366804]" />
-                          <span className="font-semibold text-slate-700">{getStudentBranch(s)}</span>
+                          <span className="font-semibold text-[#2B3A22]">{getStudentBranch(s)}</span>
                         </div>
                       </td>
 
                       {/* Phone */}
-                      <td className="py-3.5 px-4 font-mono text-[11px] text-slate-700 whitespace-nowrap">
+                      <td className="py-3.5 px-4 text-[11px] text-[#2B3A22] whitespace-nowrap">
                         {s.phone || '-'}
                       </td>
 
                       {/* Blood Type */}
                       <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                        <span className="px-2.5 py-1 rounded-md font-mono text-[11px] font-bold bg-slate-100 text-slate-800 border border-slate-200">
+                        <span className="px-2.5 py-1 rounded-md text-[11px] font-bold bg-[#F6FAEF] text-[#0B1118] border border-[#E3EFD7]">
                           {s.bloodType || 'Unknown'}
                         </span>
                       </td>
@@ -2622,7 +2873,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                             🚌 Bus
                           </span>
                         ) : (
-                          <span className="text-[10px] text-slate-400 font-medium">No Bus</span>
+                          <span className="text-[10px] text-[#8A9680] font-medium">No Bus</span>
                         )}
                       </td>
 
@@ -2663,10 +2914,10 @@ export const ReceiverStudentsPage: React.FC = () => {
                                 return next;
                               });
                             }}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 hover:bg-[#85E510]/20 text-slate-500 hover:text-[#1D5102] font-medium text-[10px] cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#F6FAEF] hover:bg-[#85E510]/20 text-[#7C8B70] hover:text-[#1D5102] font-medium text-[10px] cursor-pointer"
                             title="Unbulked (Click to bulk)"
                           >
-                            <span className="w-1.5 h-1.5 rounded-full bg-slate-300" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#C9D5BC]" />
                             <span>Unbulked</span>
                           </span>
                         )}
@@ -2674,7 +2925,7 @@ export const ReceiverStudentsPage: React.FC = () => {
 
                       {/* Sender */}
                       <td className="py-3.5 px-4 whitespace-nowrap">
-                        <span className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 text-[10px] font-bold">
+                        <span className="px-2.5 py-1 rounded-full bg-[#F6FAEF] text-[#2B3A22] text-[10px] font-bold">
                           {s.senderName || 'Field Sender'}
                         </span>
                       </td>
@@ -2683,10 +2934,10 @@ export const ReceiverStudentsPage: React.FC = () => {
                       <td className="py-3.5 px-4 whitespace-nowrap">
                         {(() => {
                           const iso = s.createdAt || (s as any).registrationDate || s.updatedAt || s.recordHistory?.[0]?.date;
-                          if (!iso) return <span className="font-mono text-[10px] text-slate-400">—</span>;
+                          if (!iso) return <span className="text-[10px] text-[#8A9680]">—</span>;
                           try {
                             const d = new Date(iso);
-                            if (isNaN(d.getTime())) return <span className="font-mono text-[10px] text-slate-600">{iso}</span>;
+                            if (isNaN(d.getTime())) return <span className="text-[10px] text-[#4B5B42]">{iso}</span>;
                             const yyyy = d.getFullYear();
                             const mm = String(d.getMonth() + 1).padStart(2, '0');
                             const dd = String(d.getDate()).padStart(2, '0');
@@ -2700,7 +2951,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                             const isRecent = diffMinutes >= 0 && diffMinutes <= 30;
 
                             return (
-                              <div className="flex flex-col gap-0.5 font-mono text-[10px]">
+                              <div className="flex flex-col gap-0.5 text-[10px]">
                                 <div className="flex items-center gap-1.5 font-bold text-[#0B1118]">
                                   <Calendar className="w-3 h-3 text-[#256002]" />
                                   <span>{dateStr}</span>
@@ -2710,8 +2961,8 @@ export const ReceiverStudentsPage: React.FC = () => {
                                     </span>
                                   )}
                                 </div>
-                                <div className="flex items-center gap-1.5 text-slate-500 font-semibold">
-                                  <Clock className="w-3 h-3 text-slate-400" />
+                                <div className="flex items-center gap-1.5 text-[#7C8B70] font-semibold">
+                                  <Clock className="w-3 h-3 text-[#8A9680]" />
                                   <span>{timeStr}</span>
                                   {isToday && !isRecent && (
                                     <span className="text-[9px] text-[#256002] font-bold px-1 rounded bg-[#9EE617]/20">
@@ -2722,7 +2973,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                               </div>
                             );
                           } catch (e) {
-                            return <span className="font-mono text-[10px] text-slate-600">{iso}</span>;
+                            return <span className="text-[10px] text-[#4B5B42]">{iso}</span>;
                           }
                         })()}
                       </td>
@@ -2732,7 +2983,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                         <button
                           type="button"
                           onClick={(e) => downloadSingleQr(s, e)}
-                          className="p-1.5 rounded-lg bg-slate-100 hover:bg-[#9EE617]/20 hover:text-[#256002] text-slate-700 transition-colors cursor-pointer"
+                          className="p-1.5 rounded-lg bg-[#F6FAEF] hover:bg-[#9EE617]/20 hover:text-[#256002] text-[#2B3A22] transition-colors cursor-pointer"
                           title="Download QR Code (PNG - Token: Student ID)"
                         >
                           <QrIcon className="w-4 h-4" />
@@ -2746,7 +2997,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                           <button
                             type="button"
                             onClick={(e) => handleOpenDetail(s, e)}
-                            className="p-1.5 rounded-lg text-slate-600 hover:text-[#256002] hover:bg-[#9EE617]/20 transition-colors cursor-pointer"
+                            className="p-1.5 rounded-lg text-[#4B5B42] hover:text-[#256002] hover:bg-[#9EE617]/20 transition-colors cursor-pointer"
                             title="View Student Details Dossier"
                           >
                             <Eye className="w-4 h-4" />
@@ -2756,7 +3007,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                           <button
                             type="button"
                             onClick={(e) => handleOpenPhotoEditor(s, e)}
-                            className="p-1.5 rounded-lg text-slate-600 hover:text-[#256002] hover:bg-[#9EE617]/20 transition-colors cursor-pointer"
+                            className="p-1.5 rounded-lg text-[#4B5B42] hover:text-[#256002] hover:bg-[#9EE617]/20 transition-colors cursor-pointer"
                             title="Crop & Edit Student Photograph (3:4 Portrait)"
                           >
                             <Crop className="w-4 h-4" />
@@ -2766,7 +3017,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                           <button
                             type="button"
                             onClick={(e) => downloadSinglePhoto(s, e)}
-                            className="p-1.5 rounded-lg text-slate-600 hover:text-[#256002] hover:bg-[#9EE617]/20 transition-colors cursor-pointer"
+                            className="p-1.5 rounded-lg text-[#4B5B42] hover:text-[#256002] hover:bg-[#9EE617]/20 transition-colors cursor-pointer"
                             title="Download Biometric Photograph"
                           >
                             <Download className="w-4 h-4" />
@@ -2776,7 +3027,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                           <button
                             type="button"
                             onClick={(e) => handleOpenEditData(s, e)}
-                            className="p-1.5 rounded-lg text-slate-600 hover:text-[#256002] hover:bg-[#9EE617]/20 transition-colors cursor-pointer"
+                            className="p-1.5 rounded-lg text-[#4B5B42] hover:text-[#256002] hover:bg-[#9EE617]/20 transition-colors cursor-pointer"
                             title="Edit Student Information (Text/Academic)"
                           >
                             <Edit2 className="w-4 h-4" />
@@ -2789,7 +3040,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                               e.stopPropagation();
                               setDeleteTarget(s);
                             }}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                            className="p-1.5 rounded-lg text-[#8A9680] hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
                             title="Delete Student"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -2806,11 +3057,11 @@ export const ReceiverStudentsPage: React.FC = () => {
 
         {/* Pagination Bar */}
         <div className="p-3.5 bg-[#F8FAF9] border-t border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-          <div className="text-slate-600 font-medium">
+          <div className="text-[#4B5B42] font-medium">
             Showing <span className="font-bold text-[#0B1118]">{pagedStudents.length > 0 ? (page - 1) * pageSize + 1 : 0}</span> to{' '}
             <span className="font-bold text-[#0B1118]">{Math.min(filtered.length, page * pageSize)}</span> of{' '}
             <span className="font-bold text-[#0B1118]">{filtered.length.toLocaleString()}</span> entries{' '}
-            <span className="text-slate-500">({pageSize} per page)</span>
+            <span className="text-[#7C8B70]">({pageSize} per page)</span>
           </div>
 
           <div className="flex items-center gap-1.5">
@@ -2818,7 +3069,7 @@ export const ReceiverStudentsPage: React.FC = () => {
               type="button"
               disabled={page <= 1}
               onClick={() => setPage(p => Math.max(1, p - 1))}
-              className="p-1.5 rounded-lg border border-[#CBD5E1] bg-white disabled:opacity-40 hover:bg-slate-50 cursor-pointer"
+              className="p-1.5 rounded-lg border border-[#CBD5E1] bg-white disabled:opacity-40 hover:bg-[#FBFDF7] cursor-pointer"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -2831,7 +3082,7 @@ export const ReceiverStudentsPage: React.FC = () => {
               type="button"
               disabled={page >= totalPages}
               onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              className="p-1.5 rounded-lg border border-[#CBD5E1] bg-white disabled:opacity-40 hover:bg-slate-50 cursor-pointer"
+              className="p-1.5 rounded-lg border border-[#CBD5E1] bg-white disabled:opacity-40 hover:bg-[#FBFDF7] cursor-pointer"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -2857,11 +3108,12 @@ export const ReceiverStudentsPage: React.FC = () => {
             SCHOOL DIRECTORY FOLDERS SECTION (Each School in its Dedicated Folder)
            ========================================================================= */
         <div className="space-y-4">
+          {renderDateStrip()}
           {!selectedSchoolFolder ? (
             /* ALL SCHOOLS FOLDER OVERVIEW */
             <div className="space-y-4">
               {/* Folder Section Header & Controls */}
-              <div className="bg-white p-4 rounded-2xl border border-[#E2E8F0] shadow-xs space-y-3">
+              <div className="bg-white p-4 rounded-2xl border border-[#E2E8F0] shadow-sm space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-2.5">
                     <div className="w-10 h-10 rounded-2xl bg-[#9EE617]/20 border border-[#9EE617]/40 flex items-center justify-center">
@@ -2871,15 +3123,15 @@ export const ReceiverStudentsPage: React.FC = () => {
                       <h3 className="font-heading font-black text-sm text-[#0B1118]">
                         School Compartment Folders ({filteredSchoolFolders.length})
                       </h3>
-                      <p className="text-[11px] text-slate-500 font-medium">
+                      <p className="text-[11px] text-[#7C8B70] font-medium">
                         Every school is organized into a dedicated folder with verified biometric photos, grades, and exact transmission timestamps
                       </p>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200">
-                      Total Active Folders: <strong className="text-slate-900">{filteredSchoolFolders.length} Schools</strong>
+                    <span className="text-xs font-bold text-[#7C8B70] bg-[#F6FAEF] px-3 py-1.5 rounded-xl border border-[#E3EFD7]">
+                      Total Active Folders: <strong className="text-[#0B1118]">{filteredSchoolFolders.length} Schools</strong>
                     </span>
                   </div>
                 </div>
@@ -2887,19 +3139,19 @@ export const ReceiverStudentsPage: React.FC = () => {
                 {/* Search & Branch Filter Row */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
                   <div className="sm:col-span-2 relative">
-                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                    <Search className="w-4 h-4 text-[#8A9680] absolute left-3 top-2.5" />
                     <input
                       type="text"
                       value={folderSearchQuery}
                       onChange={(e) => setFolderSearchQuery(e.target.value)}
-                      placeholder="Search school folders (e.g. Sena Yerosen, 1234, YMS 1, Debebech)..."
+                      placeholder="Search school folders (e.g. Sena Yerosen, 1234, YMS, Debebech)..."
                       className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-9 pr-3 py-2 text-xs font-bold text-[#0B1118] focus:border-[#9EE617] focus:ring-1 focus:ring-[#9EE617]"
                     />
                     {folderSearchQuery && (
                       <button
                         type="button"
                         onClick={() => setFolderSearchQuery('')}
-                        className="absolute right-3 top-2.5 text-slate-400 hover:text-black cursor-pointer"
+                        className="absolute right-3 top-2.5 text-[#8A9680] hover:text-black cursor-pointer"
                       >
                         <X className="w-3.5 h-3.5" />
                       </button>
@@ -2925,27 +3177,41 @@ export const ReceiverStudentsPage: React.FC = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {filteredSchoolFolders.map((folder) => {
                   const isAdama = folder.branch === 'Adama';
+                  const dayCount = folderDayCount(folder);
+                  const dayFiltered = selectedDates.length > 0;
 
                   return (
                     <div
                       key={folder.schoolName}
-                      className="bg-white border border-[#E2E8F0] hover:border-[#9EE617] rounded-2xl p-4 shadow-xs hover:shadow-md transition-all flex flex-col justify-between group"
+                      onContextMenu={(e) => openFolderMenu(e, { kind: 'folder', folderName: folder.schoolName })}
+                      className="bg-white border border-[#E2E8F0] hover:border-[#9EE617] rounded-2xl p-4 shadow-sm hover:shadow-md transition-all flex flex-col justify-between group"
                     >
                       <div>
                         {/* Header badge & icon */}
                         <div className="flex items-center justify-between mb-3">
                           <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black tracking-wide border ${
-                            isAdama
-                              ? 'bg-amber-50 text-amber-800 border-amber-200'
-                              : folder.branch === 'Addis Ababa'
-                              ? 'bg-blue-50 text-blue-800 border-blue-200'
-                              : 'bg-purple-50 text-purple-800 border-purple-200'
-                          }`}>
+ isAdama
+ ? 'bg-amber-50 text-amber-800 border-amber-200'
+ : folder.branch === 'Addis Ababa'
+ ? 'bg-blue-50 text-blue-800 border-blue-200'
+ : 'bg-purple-50 text-purple-800 border-purple-200'
+ }`}>
                             {folder.branch}
                           </span>
 
-                          <div className="w-8 h-8 rounded-xl bg-[#F8FAF9] group-hover:bg-[#9EE617]/20 border border-[#E2E8F0] group-hover:border-[#9EE617]/50 flex items-center justify-center transition-colors">
-                            <Folder className="w-4 h-4 text-slate-600 group-hover:text-[#256002]" />
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={(e) => openFolderMenu(e, { kind: 'folder', folderName: folder.schoolName })}
+                              className="grid h-7 w-7 place-items-center rounded-lg text-[#7C8B70] transition-colors hover:bg-[#F6FAEF] hover:text-[#0B1118] cursor-pointer"
+                              title="Folder actions (open, select, edit, move, delete)"
+                              aria-label="Folder actions"
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </button>
+                            <div className="w-8 h-8 rounded-xl bg-[#F8FAF9] group-hover:bg-[#9EE617]/20 border border-[#E2E8F0] group-hover:border-[#9EE617]/50 flex items-center justify-center transition-colors">
+                              <Folder className="w-4 h-4 text-[#4B5B42] group-hover:text-[#256002]" />
+                            </div>
                           </div>
                         </div>
 
@@ -2963,20 +3229,27 @@ export const ReceiverStudentsPage: React.FC = () => {
                         {/* Student Count */}
                         <div className="mt-2 flex items-baseline gap-1.5">
                           <span className="text-2xl font-black font-heading text-[#0B1118]">
-                            {folder.totalStudents.toLocaleString()}
+                            {dayCount.toLocaleString()}
                           </span>
-                          <span className="text-xs text-slate-500 font-bold">Students Enrolled</span>
+                          <span className="text-xs text-[#7C8B70] font-bold">
+                            {dayFiltered ? `on ${selectedDates.length === 1 ? 'the selected day' : 'the selected days'}` : 'Students Enrolled'}
+                          </span>
                         </div>
+                        {dayFiltered && (
+                          <div className="mt-0.5 text-[10px] font-semibold text-[#8A9680]">
+                            {folder.totalStudents.toLocaleString()} in folder total
+                          </div>
+                        )}
 
                         {/* Photo Verification Rate */}
                         <div className="mt-3 space-y-1">
-                          <div className="flex justify-between text-[11px] font-bold text-slate-600">
+                          <div className="flex justify-between text-[11px] font-bold text-[#4B5B42]">
                             <span>Biometric Verification</span>
-                            <span className={folder.photoPercent >= 90 ? 'text-emerald-600 font-black' : 'text-slate-600'}>
+                            <span className={folder.photoPercent >= 90 ? 'text-emerald-600 font-black' : 'text-[#4B5B42]'}>
                               {folder.photoPercent}%
                             </span>
                           </div>
-                          <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                          <div className="w-full bg-[#F6FAEF] h-1.5 rounded-full overflow-hidden">
                             <div
                               className="bg-[#9EE617] h-full transition-all duration-300"
                               style={{ width: `${folder.photoPercent}%` }}
@@ -2990,42 +3263,38 @@ export const ReceiverStudentsPage: React.FC = () => {
                             {folder.grades.slice(0, 4).map(g => (
                               <span
                                 key={g.grade}
-                                className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-bold"
+                                className="px-1.5 py-0.5 rounded bg-[#F6FAEF] text-[#2B3A22] text-[10px] font-bold"
                               >
                                 {g.grade}: {g.count}
                               </span>
                             ))}
                             {folder.grades.length > 4 && (
-                              <span className="px-1 py-0.5 text-slate-400 text-[10px] font-bold">
+                              <span className="px-1 py-0.5 text-[#8A9680] text-[10px] font-bold">
                                 +{folder.grades.length - 4} more
                               </span>
                             )}
                           </div>
                         ) : (
-                          <div className="mt-3 text-[11px] text-slate-400 italic">
+                          <div className="mt-3 text-[11px] text-[#8A9680] italic">
                             Awaiting field registrations
                           </div>
                         )}
 
                         {/* Last Transmitted */}
                         {folder.latestTransmitted && (
-                          <div className="mt-2.5 text-[10px] text-slate-500 flex items-center gap-1 font-mono">
-                            <Clock className="w-3 h-3 text-slate-400" />
+                          <div className="mt-2.5 text-[10px] text-[#7C8B70] flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-[#8A9680]" />
                             <span>Last sent: {new Date(folder.latestTransmitted).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                           </div>
                         )}
                       </div>
 
                       {/* Action Buttons */}
-                      <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-2">
+                      <div className="mt-4 flex items-center justify-between gap-2 border-t border-[#EDF4E5] pt-3">
                         <button
                           type="button"
-                          onClick={() => {
-                            setSelectedSchoolFolder(folder.schoolName);
-                            setFolderGradeTab('ALL');
-                            setFolderSearchQuery('');
-                          }}
-                          className="flex-1 py-2 px-3 rounded-xl bg-[#0B1118] hover:bg-slate-800 text-[#9EE617] text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                          onClick={() => openSchoolFolder(folder.schoolName)}
+                          className="flex-1 py-2 px-3 rounded-xl bg-[#0B1118] hover:bg-slate-800 text-[#9EE617] text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm"
                         >
                           <FolderOpen className="w-3.5 h-3.5" />
                           <span>Open Folder</span>
@@ -3039,7 +3308,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                             setViewMode('table');
                             setPage(1);
                           }}
-                          className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
+                          className="p-2 rounded-xl bg-[#F6FAEF] hover:bg-[#E3EFD7] text-[#2B3A22] transition-colors cursor-pointer"
                           title="View this school in Master Table"
                         >
                           <FileSpreadsheet className="w-3.5 h-3.5" />
@@ -3048,13 +3317,17 @@ export const ReceiverStudentsPage: React.FC = () => {
                         {folder.totalStudents > 0 && (
                           <button
                             type="button"
-                            onClick={() => downloadSelectedPhotosZip(folder.students)}
+                            onClick={() => downloadSelectedPhotosZip(folderStudentsFor(folder.schoolName))}
                             className="p-2 rounded-xl bg-[#9EE617]/20 hover:bg-[#9EE617]/30 text-[#256002] transition-colors cursor-pointer"
-                            title="Download All Photos for this School (.ZIP)"
+                            title={dayFiltered ? 'Download photos for the selected days (.ZIP)' : 'Download all photos for this school (.ZIP)'}
                           >
                             <Download className="w-3.5 h-3.5" />
                           </button>
                         )}
+                      </div>
+
+                      <div className="mt-2 text-center text-[9px] font-semibold uppercase tracking-[0.14em] text-[#B3BEA9] opacity-0 transition-opacity group-hover:opacity-100">
+                        Right-click for select · edit · move · delete
                       </div>
                     </div>
                   );
@@ -3066,13 +3339,13 @@ export const ReceiverStudentsPage: React.FC = () => {
             currentSchoolFolder && (
               <div className="space-y-4">
                 {/* Folder Breadcrumb & Header */}
-                <div className="bg-white p-4 rounded-2xl border border-[#E2E8F0] shadow-xs space-y-3">
+                <div className="bg-white p-4 rounded-2xl border border-[#E2E8F0] shadow-sm space-y-3">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
                         onClick={() => setSelectedSchoolFolder(null)}
-                        className="py-1.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                        className="py-1.5 px-3 rounded-xl bg-[#F6FAEF] hover:bg-[#E3EFD7] text-[#2B3A22] text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                       >
                         <ChevronLeft className="w-4 h-4" />
                         <span>All Folders</span>
@@ -3098,7 +3371,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                           setViewMode('table');
                           setPage(1);
                         }}
-                        className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-black flex items-center gap-1.5 transition-colors cursor-pointer"
+                        className="py-2 px-3 rounded-xl bg-[#F6FAEF] hover:bg-[#E3EFD7] text-[#0B1118] text-xs font-black flex items-center gap-1.5 transition-colors cursor-pointer"
                       >
                         <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
                         <span>View in Master Table</span>
@@ -3108,7 +3381,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => downloadSelectedPhotosZip(currentFolderStudents)}
-                          className="py-2 px-3.5 rounded-xl bg-[#0B1118] hover:bg-slate-800 text-[#9EE617] text-xs font-black flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                          className="py-2 px-3.5 rounded-xl bg-[#0B1118] hover:bg-slate-800 text-[#9EE617] text-xs font-black flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
                         >
                           <Archive className="w-3.5 h-3.5" />
                           <span>Download Folder Photos (ZIP)</span>
@@ -3118,9 +3391,17 @@ export const ReceiverStudentsPage: React.FC = () => {
                   </div>
 
                   {/* Folder Sub-Header Info */}
-                  <div className="flex flex-wrap items-center gap-4 text-xs font-bold text-slate-600 pt-1 border-t border-slate-100">
+                  <div className="flex flex-wrap items-center gap-4 text-xs font-bold text-[#4B5B42] pt-1 border-t border-[#EDF4E5]">
                     <div>
-                      Total Students: <strong className="text-slate-900">{currentSchoolFolder.totalStudents.toLocaleString()}</strong>
+                      {selectedDates.length > 0 ? 'On selected days' : 'Total Students'}:{' '}
+                      <strong className="text-[#0B1118]">
+                        {(selectedDates.length > 0 ? currentFolderStudents.length : currentSchoolFolder.totalStudents).toLocaleString()}
+                      </strong>
+                      {selectedDates.length > 0 && (
+                        <span className="ml-1 font-medium text-[#7C8B70]">
+                          of {currentSchoolFolder.totalStudents.toLocaleString()} in folder
+                        </span>
+                      )}
                     </div>
                     <div>&bull;</div>
                     <div>
@@ -3129,11 +3410,27 @@ export const ReceiverStudentsPage: React.FC = () => {
                     {currentSchoolFolder.latestTransmitted && (
                       <>
                         <div>&bull;</div>
-                        <div className="text-slate-500">
-                          Latest Entry: <strong className="text-slate-800 font-mono">{new Date(currentSchoolFolder.latestTransmitted).toLocaleString()}</strong>
+                        <div className="text-[#7C8B70]">
+                          Latest Entry: <strong className="text-[#0B1118]">{new Date(currentSchoolFolder.latestTransmitted).toLocaleString()}</strong>
                         </div>
                       </>
                     )}
+                    <div className="ml-auto flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const ids = currentFolderStudents.map(s => s.studentId);
+                          setSelectedIds(prev => new Set([...prev, ...ids]));
+                          setActionNotice(`${ids.length} record(s) from ${currentSchoolFolder.schoolName} added to the selection`);
+                        }}
+                        className="rounded-lg border border-[#E3E9DD] bg-white px-2.5 py-1 text-[11px] font-bold text-[#3F7A06] transition-colors hover:border-[#85E510] cursor-pointer"
+                      >
+                        Select all in folder ({currentFolderStudents.length})
+                      </button>
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#A6B29B]">
+                        Right-click a card for actions
+                      </span>
+                    </div>
                   </div>
 
                   {/* Grade Compartment Filter Tabs */}
@@ -3142,12 +3439,12 @@ export const ReceiverStudentsPage: React.FC = () => {
                       type="button"
                       onClick={() => { setFolderGradeTab('ALL'); setFolderSectionTab('ALL'); }}
                       className={`px-3 py-1.5 rounded-xl text-xs font-black whitespace-nowrap transition-all cursor-pointer ${
-                        folderGradeTab === 'ALL'
-                          ? 'bg-[#0B1118] text-[#9EE617]'
-                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                      }`}
+ folderGradeTab === 'ALL'
+ ? 'bg-[#0B1118] text-[#9EE617]'
+ : 'bg-[#F6FAEF] hover:bg-[#E3EFD7] text-[#2B3A22]'
+ }`}
                     >
-                      All Grades ({currentSchoolFolder.totalStudents})
+                      All Grades ({folderDayCount(currentSchoolFolder)})
                     </button>
 
                     {currentSchoolGradeHierarchy.map(g => (
@@ -3156,15 +3453,15 @@ export const ReceiverStudentsPage: React.FC = () => {
                         type="button"
                         onClick={() => { setFolderGradeTab(g.baseGrade); setFolderSectionTab('ALL'); }}
                         className={`px-3 py-1.5 rounded-xl text-xs font-black whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
-                          folderGradeTab === g.baseGrade
-                            ? 'bg-[#0B1118] text-[#9EE617]'
-                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                        }`}
+ folderGradeTab === g.baseGrade
+ ? 'bg-[#0B1118] text-[#9EE617]'
+ : 'bg-[#F6FAEF] hover:bg-[#E3EFD7] text-[#2B3A22]'
+ }`}
                       >
                         <span>{g.displayLabel}</span>
-                        <span className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
-                          folderGradeTab === g.baseGrade ? 'bg-[#9EE617] text-[#0B1118]' : 'bg-slate-200 text-slate-700'
-                        }`}>
+                        <span className={`px-1.5 py-0.2 rounded text-[10px] ${
+ folderGradeTab === g.baseGrade ? 'bg-[#9EE617] text-[#0B1118]' : 'bg-[#E3EFD7] text-[#2B3A22]'
+ }`}>
                           {g.totalCount}
                         </span>
                       </button>
@@ -3182,10 +3479,10 @@ export const ReceiverStudentsPage: React.FC = () => {
                         type="button"
                         onClick={() => setFolderSectionTab('ALL')}
                         className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                          folderSectionTab === 'ALL'
-                            ? 'bg-[#0B1118] text-[#9EE617]'
-                            : 'bg-white border border-slate-200 text-slate-700 hover:bg-emerald-100/50'
-                        }`}
+ folderSectionTab === 'ALL'
+ ? 'bg-[#0B1118] text-[#9EE617]'
+ : 'bg-white border border-[#E3EFD7] text-[#2B3A22] hover:bg-emerald-100/50'
+ }`}
                       >
                         All {currentFolderActiveGrade.displayLabel} ({currentFolderActiveGrade.totalCount})
                       </button>
@@ -3195,15 +3492,15 @@ export const ReceiverStudentsPage: React.FC = () => {
                           type="button"
                           onClick={() => setFolderSectionTab(sec.section)}
                           className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
-                            folderSectionTab === sec.section
-                              ? 'bg-[#256002] text-white shadow-xs'
-                              : 'bg-white border border-slate-200 text-slate-700 hover:bg-emerald-100/50'
-                          }`}
+ folderSectionTab === sec.section
+ ? 'bg-[#256002] text-white shadow-sm'
+ : 'bg-white border border-[#E3EFD7] text-[#2B3A22] hover:bg-emerald-100/50'
+ }`}
                         >
                           <span>Section {sec.section}</span>
-                          <span className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
-                            folderSectionTab === sec.section ? 'bg-[#9EE617] text-[#0B1118]' : 'bg-slate-100 text-slate-600'
-                          }`}>
+                          <span className={`px-1.5 py-0.2 rounded text-[10px] ${
+ folderSectionTab === sec.section ? 'bg-[#9EE617] text-[#0B1118]' : 'bg-[#F6FAEF] text-[#4B5B42]'
+ }`}>
                             {sec.count}
                           </span>
                         </button>
@@ -3213,10 +3510,10 @@ export const ReceiverStudentsPage: React.FC = () => {
                           type="button"
                           onClick={() => setFolderSectionTab('NONE')}
                           className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
-                            folderSectionTab === 'NONE'
-                              ? 'bg-[#256002] text-white shadow-xs'
-                              : 'bg-white border border-slate-200 text-slate-700 hover:bg-emerald-100/50'
-                          }`}
+ folderSectionTab === 'NONE'
+ ? 'bg-[#256002] text-white shadow-sm'
+ : 'bg-white border border-[#E3EFD7] text-[#2B3A22] hover:bg-emerald-100/50'
+ }`}
                         >
                           <span>General ({currentFolderActiveGrade.noSectionCount})</span>
                         </button>
@@ -3226,7 +3523,7 @@ export const ReceiverStudentsPage: React.FC = () => {
 
                   {/* Search inside folder */}
                   <div className="relative pt-1">
-                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
+                    <Search className="w-4 h-4 text-[#8A9680] absolute left-3 top-3.5" />
                     <input
                       type="text"
                       value={folderSearchQuery}
@@ -3238,7 +3535,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => setFolderSearchQuery('')}
-                        className="absolute right-3 top-3 text-slate-400 hover:text-black cursor-pointer"
+                        className="absolute right-3 top-3 text-[#8A9680] hover:text-black cursor-pointer"
                       >
                         <X className="w-3.5 h-3.5" />
                       </button>
@@ -3249,17 +3546,21 @@ export const ReceiverStudentsPage: React.FC = () => {
                 {/* Student Photo Card Grid inside Folder */}
                 {currentFolderStudents.length === 0 ? (
                   <div className="bg-white rounded-2xl p-12 text-center border border-[#E2E8F0] space-y-3">
-                    <div className="w-16 h-16 rounded-full bg-slate-100 mx-auto flex items-center justify-center">
-                      <Folder className="w-8 h-8 text-slate-400" />
+                    <div className="w-16 h-16 rounded-full bg-[#F6FAEF] mx-auto flex items-center justify-center">
+                      <Folder className="w-8 h-8 text-[#8A9680]" />
                     </div>
                     <h4 className="font-heading font-black text-sm text-[#0B1118]">
                       {currentSchoolFolder.totalStudents === 0
                         ? `Folder for ${currentSchoolFolder.schoolName} is ready!`
+                        : selectedDates.length > 0
+                        ? 'No students in this folder on the selected days'
                         : 'No students match this grade or search filter'}
                     </h4>
-                    <p className="text-xs text-slate-500 max-w-md mx-auto">
+                    <p className="text-xs text-[#7C8B70] max-w-md mx-auto">
                       {currentSchoolFolder.totalStudents === 0
                         ? `This school is active in the ${currentSchoolFolder.branch} branch. Senders can select "${currentSchoolFolder.schoolName}" in the registration console to begin transmitting student records.`
+                        : selectedDates.length > 0
+                        ? 'Clear the day filter or add the day this folder was transmitted.'
                         : 'Try selecting a different grade tab or clearing your search query.'}
                     </p>
                     {currentSchoolFolder.totalStudents === 0 && (
@@ -3276,7 +3577,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-                    {currentFolderStudents.map(s => {
+                    {currentFolderStudents.slice(0, folderCardLimit).map(s => {
                       const photoSources = getPhotoCandidates(s);
                       const photoUrl = photoSources[0] || null;
                       const hasRealPhoto = s.photoIntegrityStatus === 'PHOTO_VERIFIED' ||
@@ -3286,7 +3587,12 @@ export const ReceiverStudentsPage: React.FC = () => {
                         <div
                           key={s.studentId}
                           onClick={(e) => handleOpenDetail(s, e)}
-                          className="bg-white rounded-2xl border border-[#E2E8F0] hover:border-[#9EE617] p-2.5 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between group"
+                          onContextMenu={(e) => openFolderMenu(e, { kind: 'student', folderName: currentSchoolFolder.schoolName, studentId: s.studentId })}
+                          className={`flex cursor-pointer flex-col justify-between rounded-2xl border bg-white p-2.5 shadow-sm transition-all hover:shadow-md group ${
+ selectedIds.has(s.studentId)
+ ? 'border-[#85E510] ring-2 ring-[#85E510]/40'
+ : 'border-[#E2E8F0] hover:border-[#9EE617]'
+ }`}
                         >
                           <div>
                             {/* 3:4 Studio Portrait Frame */}
@@ -3305,13 +3611,13 @@ export const ReceiverStudentsPage: React.FC = () => {
 
                               {/* Cloudflare R2 verified pill */}
                               {hasRealPhoto && (
-                                <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-xs text-[#9EE617] text-[9px] font-black tracking-tight border border-[#9EE617]/40">
+                                <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-[#0B1118]/55 backdrop-blur-sm backdrop-blur-sm text-[#9EE617] text-[9px] font-black tracking-tight border border-[#9EE617]/40">
                                   R2
                                 </span>
                               )}
 
                               <div className="absolute bottom-1.5 left-1.5 right-1.5 flex justify-between items-center">
-                                <span className="px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-xs text-white text-[9px] font-bold">
+                                <span className="px-1.5 py-0.5 rounded bg-[#0B1118]/45 backdrop-blur-sm backdrop-blur-sm text-white text-[9px] font-bold">
                                   {s.grade}
                                 </span>
                               </div>
@@ -3321,57 +3627,108 @@ export const ReceiverStudentsPage: React.FC = () => {
                             <h5 className="font-heading font-black text-xs text-[#0B1118] truncate group-hover:text-[#256002] transition-colors" title={s.fullName}>
                               {s.fullName}
                             </h5>
-                            <div className="font-mono text-[10px] font-bold text-slate-500">
+                            <div className="text-[10px] font-bold text-[#7C8B70]">
                               {s.studentId}
                             </div>
 
                             {/* Exact Date Transmitted */}
-                            <div className="mt-1 text-[9px] text-slate-400 font-mono truncate" title={s.createdAt || ''}>
+                            <div className="mt-1 text-[9px] text-[#8A9680] truncate" title={s.createdAt || ''}>
                               {s.createdAt ? new Date(s.createdAt).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Saved'}
                             </div>
                           </div>
 
                           {/* Action Row */}
-                          <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between">
-                            <button
-                              type="button"
-                              onClick={(e) => handleOpenPhotoEditor(s, e)}
-                              className="p-1 rounded text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 transition-colors"
-                              title="Edit/Crop Photo"
+                          <div className="mt-2 flex items-center justify-between gap-1 border-t border-[#EDF4E5] pt-2">
+                            <label
+                              className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-1.5 py-1 text-[10px] font-bold transition-colors ${
+ selectedIds.has(s.studentId)
+ ? 'bg-[#EAF7DA] text-[#2F5E04]'
+ : 'text-[#7C8B70] hover:bg-[#FBFDF7] hover:text-[#0B1118]'
+ }`}
+                              title={selectedIds.has(s.studentId) ? 'Remove from selection' : 'Select this record'}
+                              onClick={(e) => e.stopPropagation()}
                             >
-                              <Crop className="w-3.5 h-3.5" />
-                            </button>
+                              <span
+                                className={`grid h-3.5 w-3.5 shrink-0 place-items-center rounded border transition-colors ${
+ selectedIds.has(s.studentId)
+ ? 'border-[#6FBF0A] bg-[#6FBF0A] text-white'
+ : 'border-[#DBEDC9] bg-white'
+ }`}
+                              >
+                                {selectedIds.has(s.studentId) && <Check className="h-2.5 w-2.5 stroke-[4]" />}
+                              </span>
+                              <input
+                                type="checkbox"
+                                checked={selectedIds.has(s.studentId)}
+                                onChange={() => {
+                                  setSelectedIds(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(s.studentId)) next.delete(s.studentId);
+                                    else next.add(s.studentId);
+                                    return next;
+                                  });
+                                }}
+                                className="sr-only"
+                              />
+                              <span>Select</span>
+                            </label>
 
-                            <button
-                              type="button"
-                              onClick={(e) => handleOpenEditData(s, e)}
-                              className="p-1 rounded text-slate-400 hover:text-blue-700 hover:bg-blue-50 transition-colors"
-                              title="Edit Student Data"
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenPhotoEditor(s, e)}
+                                className="p-1 rounded text-[#8A9680] hover:text-emerald-700 hover:bg-emerald-50 transition-colors"
+                                title="Edit/Crop Photo"
+                              >
+                                <Crop className="w-3.5 h-3.5" />
+                              </button>
 
-                            <button
-                              type="button"
-                              onClick={(e) => downloadSinglePhoto(s, e)}
-                              className="p-1 rounded text-slate-400 hover:text-[#256002] hover:bg-[#9EE617]/20 transition-colors"
-                              title="Download Photo"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                            </button>
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenEditData(s, e)}
+                                className="p-1 rounded text-[#8A9680] hover:text-blue-700 hover:bg-blue-50 transition-colors"
+                                title="Edit Student Data"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
 
-                            <button
-                              type="button"
-                              onClick={(e) => downloadSingleQr(s, e)}
-                              className="p-1 rounded text-slate-400 hover:text-slate-800 hover:bg-slate-100 transition-colors"
-                              title="Download QR Code (PNG)"
-                            >
-                              <QrIcon className="w-3.5 h-3.5" />
-                            </button>
+                              <button
+                                type="button"
+                                onClick={(e) => downloadSinglePhoto(s, e)}
+                                className="p-1 rounded text-[#8A9680] hover:text-[#256002] hover:bg-[#9EE617]/20 transition-colors"
+                                title="Download Photo"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={(e) => downloadSingleQr(s, e)}
+                                className="p-1 rounded text-[#8A9680] hover:text-[#0B1118] hover:bg-[#F6FAEF] transition-colors"
+                                title="Download QR Code (PNG)"
+                              >
+                                <QrIcon className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
                         </div>
                       );
                     })}
+                  </div>
+                )}
+
+                {currentFolderStudents.length > folderCardLimit && (
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-[#E3EFD7] bg-white px-3.5 py-2.5">
+                    <span className="text-[11px] font-semibold text-[#7C8B70]">
+                      Showing {folderCardLimit.toLocaleString()} of {currentFolderStudents.length.toLocaleString()} records in this folder
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setFolderCardLimit(n => n + 120)}
+                      className="shrink-0 rounded-lg bg-[#85E510] px-3 py-1.5 text-[11px] font-black text-[#062404] transition-colors hover:bg-[#76CF0C] cursor-pointer"
+                    >
+                      Show next {Math.min(120, currentFolderStudents.length - folderCardLimit).toLocaleString()}
+                    </button>
                   </div>
                 )}
               </div>
@@ -3379,24 +3736,25 @@ export const ReceiverStudentsPage: React.FC = () => {
           )}
         </div>
       )}
+      </div>
 
       {/* =========================================================================
           SLIDE-OVER DRAWER: STUDENT PROFILE DETAILS (Exact Match to User's Screenshot)
          ========================================================================= */}
       {isDetailDrawerOpen && detailStudent && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex justify-end animate-in fade-in duration-150">
+        <div className="fixed inset-0 z-50 bg-[#0B1118]/45 backdrop-blur-sm backdrop-blur-sm flex justify-end animate-in fade-in duration-150">
           <div className="bg-white w-full max-w-md h-full shadow-2xl flex flex-col overflow-hidden border-l border-[#dce7e1] animate-in slide-in-from-right duration-200">
             {/* Drawer Header */}
             <div className="p-5 border-b border-[#eef5f1] flex items-center justify-between bg-white">
               <div>
                 <h3 className="text-sm font-bold text-[#080808]">Student Profile Details</h3>
-                <span className="text-[11px] font-mono text-[#8fe617] font-semibold">{detailStudent.studentId}</span>
+                <span className="text-[11px] text-[#3F7A06] font-semibold">{detailStudent.studentId}</span>
               </div>
 
               <button
                 type="button"
                 onClick={() => setIsDetailDrawerOpen(false)}
-                className="rounded-lg p-1 text-[#6b7771] hover:text-[#080808] hover:bg-slate-100 transition-colors cursor-pointer"
+                className="rounded-lg p-1 text-[#6b7771] hover:text-[#080808] hover:bg-[#F6FAEF] transition-colors cursor-pointer"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -3406,7 +3764,7 @@ export const ReceiverStudentsPage: React.FC = () => {
             <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar">
               {/* Studio Portrait Showcase Card */}
               <div className="flex flex-col items-center justify-center space-y-3 p-4 rounded-2xl border border-[#dce7e1] bg-[#f8fafc]">
-                <span className="text-xs font-mono uppercase tracking-wider text-[#6b7771] font-semibold">
+                <span className="text-xs uppercase tracking-wider text-[#6b7771] font-semibold">
                   Official Studio Portrait (3:4)
                 </span>
 
@@ -3423,9 +3781,9 @@ export const ReceiverStudentsPage: React.FC = () => {
                     className="w-full h-full object-cover group-hover/drawerPhoto:scale-105 transition-transform"
                     onError={photoSourceError(getPhotoCandidates(detailStudent), DEFAULT_AVATAR)}
                   />
-                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover/drawerPhoto:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1.5 text-white text-xs font-semibold pointer-events-none">
-                    <Crop className="h-6 w-6 text-[#8fe617]" />
-                    <span className="bg-black/60 px-2.5 py-1 rounded-full text-[11px] font-mono border border-white/20">Click to Edit Photo</span>
+                  <div className="absolute inset-0 bg-[#0B1118]/40 backdrop-blur-sm opacity-0 group-hover/drawerPhoto:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1.5 text-white text-xs font-semibold pointer-events-none">
+                    <Crop className="h-6 w-6 text-[#3F7A06]" />
+                    <span className="bg-[#0B1118]/45 backdrop-blur-sm px-2.5 py-1 rounded-full text-[11px] border border-white/20">Click to Edit Photo</span>
                   </div>
                 </div>
 
@@ -3434,16 +3792,16 @@ export const ReceiverStudentsPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => downloadSinglePhoto(detailStudent)}
-                    className="inline-flex items-center justify-center gap-2 py-2 px-3 text-xs font-semibold rounded-xl bg-white border border-[#dce7e1] text-[#080808] hover:bg-slate-50 transition-colors cursor-pointer shadow-2xs"
+                    className="inline-flex items-center justify-center gap-2 py-2 px-3 text-xs font-semibold rounded-xl bg-white border border-[#dce7e1] text-[#080808] hover:bg-[#FBFDF7] transition-colors cursor-pointer shadow-2xs"
                   >
-                    <Download className="h-3.5 w-3.5 text-[#8fe617]" />
+                    <Download className="h-3.5 w-3.5 text-[#3F7A06]" />
                     <span>Download Original Portrait (.jpg)</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => handleOpenPhotoEditor(detailStudent)}
-                    className="inline-flex items-center justify-center gap-2 py-2 px-3 text-xs font-bold rounded-xl bg-[#8fe617] text-[#062404] hover:bg-[#7ecc10] transition-all shadow-xs cursor-pointer"
+                    className="inline-flex items-center justify-center gap-2 py-2 px-3 text-xs font-bold rounded-xl bg-[#85E510] text-[#062404] hover:bg-[#76CF0C] transition-all shadow-sm cursor-pointer"
                   >
                     <Crop className="h-3.5 w-3.5" />
                     <span>Crop &amp; Edit Portrait</span>
@@ -3458,22 +3816,22 @@ export const ReceiverStudentsPage: React.FC = () => {
                         alert('Image link copied to clipboard!');
                       }
                     }}
-                    className="inline-flex items-center justify-center gap-2 py-2 px-3 text-xs font-semibold rounded-xl bg-white border border-[#dce7e1] text-[#080808] hover:bg-slate-50 transition-colors cursor-pointer shadow-2xs"
+                    className="inline-flex items-center justify-center gap-2 py-2 px-3 text-xs font-semibold rounded-xl bg-white border border-[#dce7e1] text-[#080808] hover:bg-[#FBFDF7] transition-colors cursor-pointer shadow-2xs"
                   >
-                    <Link2 className="h-3.5 w-3.5 text-[#8fe617]" />
+                    <Link2 className="h-3.5 w-3.5 text-[#3F7A06]" />
                     <span>Copy Direct Image Link</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => handleOpenPhotoEditor(detailStudent)}
-                    className="inline-flex items-center justify-center gap-2 py-2 px-3 text-xs font-semibold rounded-xl bg-white border border-[#dce7e1] text-[#080808] hover:bg-slate-50 transition-colors cursor-pointer shadow-2xs"
+                    className="inline-flex items-center justify-center gap-2 py-2 px-3 text-xs font-semibold rounded-xl bg-white border border-[#dce7e1] text-[#080808] hover:bg-[#FBFDF7] transition-colors cursor-pointer shadow-2xs"
                   >
                     <Upload className="h-3.5 w-3.5 text-amber-500" />
                     <span>Replace Photo File Directly</span>
                   </button>
 
-                  <div className="text-[11px] font-mono text-[#6b7771] text-center truncate pt-0.5">
+                  <div className="text-[11px] text-[#6b7771] text-center truncate pt-0.5">
                     /api/uploads?studentId={detailStudent.studentId}
                   </div>
                 </div>
@@ -3503,20 +3861,20 @@ export const ReceiverStudentsPage: React.FC = () => {
 
                 <div className="pt-2 flex justify-between items-baseline">
                   <span className="text-[#6b7771] text-xs font-medium">School:</span>
-                  <span className="text-[#080808] font-semibold text-xs">{detailStudent.school || "YMS"}</span>
+                  <span className="text-[#080808] font-semibold text-xs">{detailStudent.school || "Unassigned"}</span>
                 </div>
 
                 <div className="pt-2 flex justify-between items-baseline">
                   <span className="text-[#6b7771] text-xs font-medium">Blood Group:</span>
-                  <span className="text-[#43A047] font-black font-mono text-xs">
+                  <span className="text-[#43A047] font-black text-xs">
                     {detailStudent.bloodType && detailStudent.bloodType.trim() ? detailStudent.bloodType : "AB+"}
                   </span>
                 </div>
 
                 <div className="pt-2 flex justify-between items-center">
                   <span className="text-[#6b7771] text-xs font-medium">Data Sent By:</span>
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-xs font-mono font-bold bg-[#8fe617]/15 text-[#366804] border border-[#8fe617]/40">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#8fe617]" />
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-xs font-bold bg-[#EAF7DA] text-[#366804] border border-[#CDEBB4]">
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#6FBF0A]" />
                     {detailStudent.senderName || (detailStudent as any).senderId || "miskrdires12"}
                   </span>
                 </div>
@@ -3525,17 +3883,17 @@ export const ReceiverStudentsPage: React.FC = () => {
                 <div className="pt-3 border-t border-[#dce7e1] flex items-center justify-between p-3 rounded-2xl bg-[#f8fafc] border">
                   <div className="space-y-1">
                     <div className="text-xs font-bold text-[#080808] flex items-center gap-1.5">
-                      <QrIcon className="h-4 w-4 text-[#8fe617]" />
+                      <QrIcon className="h-4 w-4 text-[#3F7A06]" />
                       <span>Real Verified QR Code</span>
                     </div>
-                    <div className="text-[10px] text-[#6b7771] font-mono">
+                    <div className="text-[10px] text-[#6b7771]">
                       Token strictly {detailStudent.studentId}
                     </div>
                     <div className="flex items-center gap-2 pt-1">
                       <button
                         type="button"
                         onClick={() => downloadSingleQr(detailStudent)}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold bg-[#8fe617] text-[#062404] hover:bg-[#7ecc10] transition-all shadow-xs cursor-pointer"
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold bg-[#85E510] text-[#062404] hover:bg-[#76CF0C] transition-all shadow-sm cursor-pointer"
                         title="Save QR Code"
                       >
                         <Download className="h-3 w-3" />
@@ -3553,7 +3911,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                       <img src={detailQrDataUrl} alt="QR Code" className="w-14 h-14 object-contain" />
                     ) : (
                       <div className="w-14 h-14 flex items-center justify-center">
-                        <RefreshCw className="w-4 h-4 animate-spin text-slate-400" />
+                        <RefreshCw className="w-4 h-4 animate-spin text-[#8A9680]" />
                       </div>
                     )}
                   </div>
@@ -3599,14 +3957,14 @@ export const ReceiverStudentsPage: React.FC = () => {
           EDIT STUDENT DATA MODAL (All fields EXCEPT Photo and QR)
          ========================================================================= */}
       {isEditModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-[#0B1118]/45 backdrop-blur-sm backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white border border-[#CBD5E1] rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+            <div className="flex items-center justify-between pb-3 border-b border-[#E3EFD7]">
               <div>
                 <h3 className="font-heading font-black text-base text-[#0B1118]">
                   {editingDataStudent ? 'Edit Student Information' : 'Add Student to Directory'}
                 </h3>
-                <p className="text-[11px] text-slate-500 font-mono">
+                <p className="text-[11px] text-[#7C8B70]">
                   {editingDataStudent
                     ? `${editingDataStudent.studentId} • Academic & Contact metadata`
                     : `${newStudentId} • Academic & Contact metadata`}
@@ -3615,7 +3973,7 @@ export const ReceiverStudentsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => (isNewStudentMode ? closeAddStudentModal() : setIsEditModalOpen(false))}
-                className="p-1 text-slate-400 hover:text-black cursor-pointer"
+                className="p-1 text-[#8A9680] hover:text-black cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -3640,7 +3998,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                       required
                       value={newStudentId}
                       onChange={(e) => setNewStudentId(e.target.value.toUpperCase())}
-                      className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 font-mono font-bold text-xs"
+                      className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 font-bold text-xs"
                     />
                   </div>
                 )}
@@ -3663,10 +4021,10 @@ export const ReceiverStudentsPage: React.FC = () => {
                       type="button"
                       onClick={() => setEditSex('Male')}
                       className={`py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer border ${
-                        editSex === 'Male'
-                          ? 'bg-[#0B1118] text-white border-[#0B1118] shadow-sm ring-2 ring-[#85E510]/50'
-                          : 'bg-[#F8FAF9] text-[#64748B] border-[#CBD5E1] hover:bg-slate-100 hover:text-[#0B1118]'
-                      }`}
+ editSex === 'Male'
+ ? 'bg-[#0B1118] text-white border-[#0B1118] shadow-sm ring-2 ring-[#85E510]/50'
+ : 'bg-[#F8FAF9] text-[#64748B] border-[#CBD5E1] hover:bg-[#F6FAEF] hover:text-[#0B1118]'
+ }`}
                     >
                       <span className="text-sm">♂</span>
                       <span>Male</span>
@@ -3675,10 +4033,10 @@ export const ReceiverStudentsPage: React.FC = () => {
                       type="button"
                       onClick={() => setEditSex('Female')}
                       className={`py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer border ${
-                        editSex === 'Female'
-                          ? 'bg-[#0B1118] text-white border-[#0B1118] shadow-sm ring-2 ring-[#85E510]/50'
-                          : 'bg-[#F8FAF9] text-[#64748B] border-[#CBD5E1] hover:bg-slate-100 hover:text-[#0B1118]'
-                      }`}
+ editSex === 'Female'
+ ? 'bg-[#0B1118] text-white border-[#0B1118] shadow-sm ring-2 ring-[#85E510]/50'
+ : 'bg-[#F8FAF9] text-[#64748B] border-[#CBD5E1] hover:bg-[#F6FAEF] hover:text-[#0B1118]'
+ }`}
                     >
                       <span className="text-sm">♀</span>
                       <span>Female</span>
@@ -3762,7 +4120,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                 <div className="col-span-2">
                   <label className="font-bold text-[#0B1118] block mb-1 flex items-center justify-between">
                     <span>Student Phone Number</span>
-                    <span className="text-[10px] text-slate-400 font-normal">Auto 09/07 &rarr; +2519/+2517 (blank if empty)</span>
+                    <span className="text-[10px] text-[#8A9680] font-normal">Auto 09/07 &rarr; +2519/+2517 (blank if empty)</span>
                   </label>
                   <input
                     type="tel"
@@ -3770,7 +4128,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                     onChange={(e) => setEditPhone(formatPhoneNumber(e.target.value))}
                     onBlur={() => setEditPhone(formatPhoneNumber(editPhone))}
                     placeholder="e.g. 0911223344"
-                    className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 font-mono font-bold text-xs"
+                    className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 font-bold text-xs"
                   />
                 </div>
 
@@ -3793,7 +4151,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                     onChange={(e) => setEditEmergencyPhone(formatPhoneNumber(e.target.value))}
                     onBlur={() => setEditEmergencyPhone(formatPhoneNumber(editEmergencyPhone))}
                     placeholder="e.g. 0911223344"
-                    className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 font-mono text-xs"
+                    className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs"
                   />
                 </div>
 
@@ -3822,23 +4180,23 @@ export const ReceiverStudentsPage: React.FC = () => {
 
               {isNewStudentMode && addStatus.kind !== 'idle' && (
                 <div className={`rounded-xl border px-3 py-2 text-[11px] font-bold ${
-                  addStatus.kind === 'error'
-                    ? 'bg-rose-50 border-rose-300 text-rose-900'
-                    : addStatus.kind === 'queued'
-                      ? 'bg-amber-50 border-amber-300 text-amber-900'
-                      : addStatus.kind === 'sent'
-                        ? 'bg-emerald-50 border-[#9EE617] text-[#256002]'
-                        : 'bg-slate-50 border-slate-200 text-slate-600'
-                }`}>
+ addStatus.kind === 'error'
+ ? 'bg-rose-50 border-rose-300 text-rose-900'
+ : addStatus.kind === 'queued'
+ ? 'bg-amber-50 border-amber-300 text-amber-900'
+ : addStatus.kind === 'sent'
+ ? 'bg-emerald-50 border-[#9EE617] text-[#256002]'
+ : 'bg-[#FBFDF7] border-[#E3EFD7] text-[#4B5B42]'
+ }`}>
                   {addStatus.text}
                 </div>
               )}
 
-              <div className="pt-3 flex justify-end gap-2 border-t border-slate-200">
+              <div className="pt-3 flex justify-end gap-2 border-t border-[#E3EFD7]">
                 <button
                   type="button"
                   onClick={() => (isNewStudentMode ? closeAddStudentModal() : setIsEditModalOpen(false))}
-                  className="px-4 py-2 rounded-xl border border-[#CBD5E1] bg-white text-xs font-bold text-[#64748B] hover:bg-slate-50 cursor-pointer"
+                  className="px-4 py-2 rounded-xl border border-[#CBD5E1] bg-white text-xs font-bold text-[#64748B] hover:bg-[#FBFDF7] cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -3854,7 +4212,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                 <button
                   type="submit"
                   disabled={isAddingStudent}
-                  className="px-5 py-2 rounded-xl bg-[#9EE617] hover:bg-[#8FE617] disabled:opacity-60 text-[#062404] text-xs font-black shadow-xs cursor-pointer"
+                  className="px-5 py-2 rounded-xl bg-[#9EE617] hover:bg-[#8FE617] disabled:opacity-60 text-[#062404] text-xs font-black shadow-sm cursor-pointer"
                 >
                   {isNewStudentMode ? (isAddingStudent ? 'Adding...' : 'Add Student') : 'Save Changes'}
                 </button>
@@ -3868,7 +4226,7 @@ export const ReceiverStudentsPage: React.FC = () => {
           INTERACTIVE DOWNLOAD PROGRESS MODAL
          ========================================================================= */}
       {progressModal.isOpen && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-[#0B1118]/55 backdrop-blur-sm backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#0B1118] text-white border border-[#2D3748] rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-[#9EE617]/20 border border-[#9EE617]/40 flex items-center justify-center text-[#9EE617]">
@@ -3878,14 +4236,14 @@ export const ReceiverStudentsPage: React.FC = () => {
                 <h3 className="font-heading font-black text-sm text-white">
                   {progressModal.title}
                 </h3>
-                <p className="text-xs text-slate-400 mt-0.5">Please wait while files are processed</p>
+                <p className="text-xs text-[#8A9680] mt-0.5">Please wait while files are processed</p>
               </div>
             </div>
 
             {/* Progress Bar */}
             <div className="space-y-1.5">
-              <div className="flex justify-between text-xs font-mono font-bold">
-                <span className="text-slate-400 truncate max-w-[240px]">{progressModal.statusText}</span>
+              <div className="flex justify-between text-xs font-bold">
+                <span className="text-[#8A9680] truncate max-w-[240px]">{progressModal.statusText}</span>
                 <span className="text-[#9EE617]">
                   {progressModal.total > 0
                     ? Math.round((progressModal.current / progressModal.total) * 100)
@@ -3902,7 +4260,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                   }}
                 />
               </div>
-              <div className="text-[11px] text-slate-400 flex justify-between">
+              <div className="text-[11px] text-[#8A9680] flex justify-between">
                 <span>Processed: {progressModal.current} of {progressModal.total}</span>
                 <span>Active thread</span>
               </div>
@@ -3915,9 +4273,9 @@ export const ReceiverStudentsPage: React.FC = () => {
           DELETE MODAL (Temporary hide vs Permanent purge)
          ========================================================================= */}
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-[#0B1118]/45 backdrop-blur-sm backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white border border-[#CBD5E1] rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
-            <div className="p-5 border-b border-[#E2E8F0] flex items-center justify-between bg-slate-50">
+            <div className="p-5 border-b border-[#E2E8F0] flex items-center justify-between bg-[#FBFDF7]">
               <div className="flex items-center gap-2 text-rose-600">
                 <AlertTriangle className="w-5 h-5" />
                 <h3 className="font-heading font-black text-base text-[#0B1118]">Delete Confirmation</h3>
@@ -3925,15 +4283,15 @@ export const ReceiverStudentsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setDeleteTarget(null)}
-                className="p-1 text-slate-400 hover:text-black cursor-pointer"
+                className="p-1 text-[#8A9680] hover:text-black cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="p-5 space-y-4 text-xs">
-              <div className="p-3 bg-slate-100 rounded-xl flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-white border border-slate-300 overflow-hidden shrink-0">
+              <div className="p-3 bg-[#F6FAEF] rounded-xl flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-white border border-[#DBEDC9] overflow-hidden shrink-0">
                   <img
                     src={getPhotoUrl(deleteTarget.capturedPhoto || deleteTarget.photoBase64 || deleteTarget.photoPath || deleteTarget.previewPath) || DEFAULT_AVATAR}
                     alt=""
@@ -3942,7 +4300,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                 </div>
                 <div>
                   <div className="font-bold text-[#0B1118]">{deleteTarget.fullName}</div>
-                  <div className="font-mono text-[#64748B] text-[11px]">{deleteTarget.studentId}</div>
+                  <div className="text-[#64748B] text-[11px]">{deleteTarget.studentId}</div>
                 </div>
               </div>
 
@@ -3986,9 +4344,9 @@ export const ReceiverStudentsPage: React.FC = () => {
           BULK DELETE MODAL (Selected Students Deletion)
          ========================================================================= */}
       {isBulkDeleteModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-[#0B1118]/45 backdrop-blur-sm backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white border border-[#CBD5E1] rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
-            <div className="p-5 border-b border-[#E2E8F0] flex items-center justify-between bg-slate-50">
+            <div className="p-5 border-b border-[#E2E8F0] flex items-center justify-between bg-[#FBFDF7]">
               <div className="flex items-center gap-2 text-rose-600">
                 <Trash2 className="w-5 h-5" />
                 <h3 className="font-heading font-black text-base text-[#0B1118]">
@@ -3998,18 +4356,18 @@ export const ReceiverStudentsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setIsBulkDeleteModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-black cursor-pointer"
+                className="p-1 text-[#8A9680] hover:text-black cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="p-5 space-y-4 text-xs">
-              <div className="p-3 bg-slate-100 rounded-xl">
+              <div className="p-3 bg-[#F6FAEF] rounded-xl">
                 <div className="font-bold text-[#0B1118] text-sm">
                   {selectedIds.size} student record{selectedIds.size === 1 ? '' : 's'} selected
                 </div>
-                <p className="text-[11px] text-slate-500 mt-0.5">
+                <p className="text-[11px] text-[#7C8B70] mt-0.5">
                   Choose whether to temporarily hide these records or permanently erase them from both the active station and the master server.
                 </p>
               </div>
@@ -4024,7 +4382,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                   type="button"
                   disabled={isBulkDeleting}
                   onClick={() => executeBulkDelete(false)}
-                  className="w-full py-2.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs cursor-pointer shadow-xs transition-colors"
+                  className="w-full py-2.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs cursor-pointer shadow-sm transition-colors"
                 >
                   {isBulkDeleting ? 'Updating records...' : `Hide ${selectedIds.size} Records from Directory`}
                 </button>
@@ -4040,7 +4398,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                   type="button"
                   disabled={isBulkDeleting}
                   onClick={() => executeBulkDelete(true)}
-                  className="w-full py-2.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs cursor-pointer shadow-xs transition-colors"
+                  className="w-full py-2.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs cursor-pointer shadow-sm transition-colors"
                 >
                   {isBulkDeleting ? 'Erasing records...' : `Permanently Delete ${selectedIds.size} Records`}
                 </button>
@@ -4051,7 +4409,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                   type="button"
                   disabled={isBulkDeleting}
                   onClick={() => setIsBulkDeleteModalOpen(false)}
-                  className="w-full py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-colors cursor-pointer"
+                  className="w-full py-2 rounded-xl bg-[#F6FAEF] hover:bg-[#E3EFD7] text-[#2B3A22] font-bold text-xs transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -4065,12 +4423,12 @@ export const ReceiverStudentsPage: React.FC = () => {
           MISTAKE ANALYZER POP-UP MODAL (Screen Overlay in Student Directory)
          ========================================================================= */}
       {isMistakeModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 select-none animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-50 bg-[#0B1118]/45 backdrop-blur-sm backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 select-none animate-in fade-in duration-200">
           <div className="bg-white border border-[#CBD5E1] rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col overflow-hidden shadow-2xl">
             {/* Modal Header */}
             <div className="px-6 py-4 border-b border-[#E2E8F0] flex items-center justify-between bg-white shrink-0">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-amber-100 border border-amber-200 flex items-center justify-center text-amber-700 shadow-xs">
+                <div className="w-10 h-10 rounded-2xl bg-amber-100 border border-amber-200 flex items-center justify-center text-amber-700 shadow-sm">
                   <AlertTriangle className="w-5 h-5 stroke-[2.2]" />
                 </div>
                 <div>
@@ -4091,7 +4449,7 @@ export const ReceiverStudentsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setIsMistakeModalOpen(false)}
-                className="w-9 h-9 rounded-xl border border-slate-200 hover:border-slate-300 flex items-center justify-center text-slate-500 hover:text-black hover:bg-slate-100 transition-all cursor-pointer"
+                className="w-9 h-9 rounded-xl border border-[#E3EFD7] hover:border-[#DBEDC9] flex items-center justify-center text-[#7C8B70] hover:text-black hover:bg-[#F6FAEF] transition-all cursor-pointer"
                 title="Close Analyzer"
               >
                 <X className="w-4 h-4" />
@@ -4105,10 +4463,10 @@ export const ReceiverStudentsPage: React.FC = () => {
                   type="button"
                   onClick={() => setMistakeFilterType('ALL')}
                   className={`p-3 rounded-2xl border transition-all cursor-pointer text-left ${
-                    mistakeFilterType === 'ALL'
-                      ? 'bg-[#9EE617] border-black text-black font-black shadow-xs'
-                      : 'bg-white border-slate-200 hover:border-slate-300 text-slate-700'
-                  }`}
+ mistakeFilterType === 'ALL'
+ ? 'bg-[#9EE617] border-black text-black font-black shadow-sm'
+ : 'bg-white border-[#E3EFD7] hover:border-[#DBEDC9] text-[#2B3A22]'
+ }`}
                 >
                   <div className="text-[10px] font-bold uppercase tracking-wider opacity-75">All Anomalies</div>
                   <div className="text-2xl font-black">{mistakeItems.length}</div>
@@ -4118,10 +4476,10 @@ export const ReceiverStudentsPage: React.FC = () => {
                   type="button"
                   onClick={() => setMistakeFilterType('Missing Photo')}
                   className={`p-3 rounded-2xl border transition-all cursor-pointer text-left ${
-                    mistakeFilterType === 'Missing Photo'
-                      ? 'bg-amber-100 border-amber-400 text-amber-950 font-black shadow-xs'
-                      : 'bg-white border-slate-200 hover:border-amber-300 text-slate-700'
-                  }`}
+ mistakeFilterType === 'Missing Photo'
+ ? 'bg-amber-100 border-amber-400 text-amber-950 font-black shadow-sm'
+ : 'bg-white border-[#E3EFD7] hover:border-amber-300 text-[#2B3A22]'
+ }`}
                 >
                   <div className="text-[10px] font-bold uppercase tracking-wider text-amber-800">Missing Photos</div>
                   <div className="text-2xl font-black text-amber-600">
@@ -4133,10 +4491,10 @@ export const ReceiverStudentsPage: React.FC = () => {
                   type="button"
                   onClick={() => setMistakeFilterType('Duplicate ID')}
                   className={`p-3 rounded-2xl border transition-all cursor-pointer text-left ${
-                    mistakeFilterType === 'Duplicate ID'
-                      ? 'bg-rose-100 border-rose-400 text-rose-950 font-black shadow-xs'
-                      : 'bg-white border-slate-200 hover:border-rose-300 text-slate-700'
-                  }`}
+ mistakeFilterType === 'Duplicate ID'
+ ? 'bg-rose-100 border-rose-400 text-rose-950 font-black shadow-sm'
+ : 'bg-white border-[#E3EFD7] hover:border-rose-300 text-[#2B3A22]'
+ }`}
                 >
                   <div className="text-[10px] font-bold uppercase tracking-wider text-rose-800">Duplicate IDs</div>
                   <div className="text-2xl font-black text-rose-600">
@@ -4148,10 +4506,10 @@ export const ReceiverStudentsPage: React.FC = () => {
                   type="button"
                   onClick={() => setMistakeFilterType('Invalid Phone Number')}
                   className={`p-3 rounded-2xl border transition-all cursor-pointer text-left ${
-                    mistakeFilterType === 'Invalid Phone Number'
-                      ? 'bg-purple-100 border-purple-400 text-purple-950 font-black shadow-xs'
-                      : 'bg-white border-slate-200 hover:border-purple-300 text-slate-700'
-                  }`}
+ mistakeFilterType === 'Invalid Phone Number'
+ ? 'bg-purple-100 border-purple-400 text-purple-950 font-black shadow-sm'
+ : 'bg-white border-[#E3EFD7] hover:border-purple-300 text-[#2B3A22]'
+ }`}
                 >
                   <div className="text-[10px] font-bold uppercase tracking-wider text-purple-800">Phone Issues</div>
                   <div className="text-2xl font-black text-purple-600">
@@ -4162,7 +4520,7 @@ export const ReceiverStudentsPage: React.FC = () => {
 
               {/* Search Within Anomalies */}
               <div className="mt-3 relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                <Search className="w-4 h-4 text-[#8A9680] absolute left-3 top-2.5" />
                 <input
                   type="text"
                   value={mistakeSearch}
@@ -4185,10 +4543,10 @@ export const ReceiverStudentsPage: React.FC = () => {
 
                 if (filteredMistakes.length === 0) {
                   return (
-                    <div className="py-12 text-center text-slate-500">
+                    <div className="py-12 text-center text-[#7C8B70]">
                       <CheckCircle2 className="w-12 h-12 text-[#85E510] mx-auto mb-2 stroke-[1.8]" />
                       <div className="font-heading font-black text-base text-[#0B1118]">No Active Anomalies Found</div>
-                      <p className="text-xs text-slate-500 mt-1">All student records match quality standards.</p>
+                      <p className="text-xs text-[#7C8B70] mt-1">All student records match quality standards.</p>
                     </div>
                   );
                 }
@@ -4201,13 +4559,13 @@ export const ReceiverStudentsPage: React.FC = () => {
                   return (
                     <div
                       key={m.key}
-                      className="p-3.5 rounded-2xl border border-slate-200 hover:border-slate-300 bg-white shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all"
+                      className="p-3.5 rounded-2xl border border-[#E3EFD7] hover:border-[#DBEDC9] bg-white shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all"
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         {/* Student Photo */}
                         <div
                           onClick={() => handleOpenPhotoEditor(s)}
-                          className="w-12 h-14 rounded-xl overflow-hidden bg-slate-100 border border-slate-300 shrink-0 cursor-pointer group relative shadow-2xs"
+                          className="w-12 h-14 rounded-xl overflow-hidden bg-[#F6FAEF] border border-[#DBEDC9] shrink-0 cursor-pointer group relative shadow-2xs"
                           title="Click to crop and edit photo in 3:4 portrait"
                         >
                           <img key={`${s.studentId}:${s.updatedAt || ''}:${photoSrc}`} src={photoSrc} onError={photoSourceError(photoSources, DEFAULT_AVATAR)} alt={s.fullName} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
@@ -4221,30 +4579,30 @@ export const ReceiverStudentsPage: React.FC = () => {
                             <span className="font-heading font-black text-xs text-[#0B1118] truncate">
                               {s.fullName}
                             </span>
-                            <span className="font-mono text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                            <span className="text-[10px] font-bold text-[#4B5B42] bg-[#F6FAEF] px-1.5 py-0.5 rounded">
                               {s.studentId}
                             </span>
                             <span className={`text-[9px] font-black px-2 py-0.5 rounded-full uppercase ${
-                              m.type === 'Missing Photo' ? 'bg-amber-100 text-amber-800 border border-amber-300' :
-                              m.type === 'Duplicate ID' ? 'bg-rose-100 text-rose-800 border border-rose-300' :
-                              'bg-purple-100 text-purple-800 border border-purple-300'
-                            }`}>
+ m.type === 'Missing Photo' ? 'bg-amber-100 text-amber-800 border border-amber-300' :
+ m.type === 'Duplicate ID' ? 'bg-rose-100 text-rose-800 border border-rose-300' :
+ 'bg-purple-100 text-purple-800 border border-purple-300'
+ }`}>
                               {m.type}
                             </span>
                           </div>
 
-                          <div className="text-[11px] text-slate-600 font-medium">
+                          <div className="text-[11px] text-[#4B5B42] font-medium">
                             {m.detail}
                           </div>
 
-                          <div className="text-[10px] text-slate-400 flex items-center gap-2">
+                          <div className="text-[10px] text-[#8A9680] flex items-center gap-2">
                             <span>{getGradeDisplay(s)}</span>
                             <span>&bull;</span>
-                            <span>{s.school || 'YMS'}</span>
+                            <span>{s.school || 'Unassigned'}</span>
                             {s.phone && (
                               <>
                                 <span>&bull;</span>
-                                <span className="font-mono">{s.phone}</span>
+                                <span className="">{s.phone}</span>
                               </>
                             )}
                           </div>
@@ -4281,7 +4639,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => handleOpenEditData(s)}
-                          className="py-1.5 px-2.5 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold text-[11px] shadow-2xs flex items-center gap-1 cursor-pointer transition-all"
+                          className="py-1.5 px-2.5 rounded-xl border border-[#E3EFD7] hover:bg-[#F6FAEF] text-[#2B3A22] font-bold text-[11px] shadow-2xs flex items-center gap-1 cursor-pointer transition-all"
                           title="Edit academic and contact info"
                         >
                           <Edit2 className="w-3.5 h-3.5" />
@@ -4292,7 +4650,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => setResolvedMistakeKeys(prev => new Set([...prev, m.key]))}
-                          className="p-1.5 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-400 hover:text-slate-600 cursor-pointer"
+                          className="p-1.5 rounded-xl border border-[#E3EFD7] hover:bg-[#F6FAEF] text-[#8A9680] hover:text-[#4B5B42] cursor-pointer"
                           title="Dismiss anomaly"
                         >
                           <X className="w-3.5 h-3.5" />
@@ -4306,7 +4664,7 @@ export const ReceiverStudentsPage: React.FC = () => {
 
             {/* Modal Footer */}
             <div className="p-4 border-t border-[#E2E8F0] bg-[#F8FAF9] flex items-center justify-between shrink-0">
-              <span className="text-xs text-slate-500 font-medium">
+              <span className="text-xs text-[#7C8B70] font-medium">
                 Click "Edit Photo" to crop in default 3:4 portrait or "Edit Data" to resolve registry mistakes.
               </span>
               <button
@@ -4322,8 +4680,8 @@ export const ReceiverStudentsPage: React.FC = () => {
       )}
       {/* Pause Bulked Note Modal */}
       {calendarNoteModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl p-5 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0B1118]/45 backdrop-blur-sm backdrop-blur-sm">
+          <div className="w-full max-w-md bg-white rounded-2xl border border-[#E3EFD7] shadow-2xl p-5 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Calendar className="w-5 h-5 text-[#256002]" />
@@ -4332,13 +4690,13 @@ export const ReceiverStudentsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setCalendarNoteModalOpen(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-black cursor-pointer"
+                className="p-1 rounded-lg text-[#8A9680] hover:text-black cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="text-xs text-slate-600">
+            <p className="text-xs text-[#4B5B42]">
               Enter pause reason or notes for selected bulked students:
             </p>
 
@@ -4347,14 +4705,14 @@ export const ReceiverStudentsPage: React.FC = () => {
               onChange={(e) => setCalendarPauseNote(e.target.value)}
               placeholder="e.g. Card printer maintenance, pending ID badge validation, student reshoot needed..."
               rows={3}
-              className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-xs text-slate-800 focus:outline-none focus:border-[#9EE617]"
+              className="w-full p-3 rounded-xl border border-[#E3EFD7] bg-[#FBFDF7] text-xs text-[#0B1118] focus:outline-none focus:border-[#9EE617]"
             />
 
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setCalendarNoteModalOpen(false)}
-                className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                className="px-3 py-1.5 rounded-xl border border-[#E3EFD7] text-xs font-bold text-[#4B5B42] hover:bg-[#FBFDF7] cursor-pointer"
               >
                 Cancel
               </button>
@@ -4385,6 +4743,294 @@ export const ReceiverStudentsPage: React.FC = () => {
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {/* Right-click context menu (school folders and student cards) */}
+      {folderMenu && (() => {
+        const menuFolderName = folderMenu.folderName;
+        const menuStudent = folderMenu.kind === 'student'
+          ? students.find(s => s.studentId === folderMenu.studentId) || null
+          : null;
+        const itemClass =
+          'flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] font-bold text-[#26301F] transition-colors hover:bg-[#F3F7EE] cursor-pointer';
+        return (
+          <div
+            className="fixed z-[90] w-[236px] overflow-hidden rounded-xl border border-[#E3E9DD] bg-white py-1 shadow-2xl animate-in fade-in zoom-in-95 duration-100"
+            style={{ left: folderMenu.x, top: folderMenu.y }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <div className="truncate border-b border-[#EEF3E8] px-3 pb-1.5 pt-1 text-[10px] font-black uppercase tracking-[0.14em] text-[#8A9680]">
+              {folderMenu.kind === 'folder' ? menuFolderName : menuStudent?.fullName || menuFolderName}
+            </div>
+
+            {folderMenu.kind === 'folder' ? (
+              <>
+                <button type="button" className={itemClass} onClick={() => openSchoolFolder(menuFolderName)}>
+                  <FolderOpen className="h-3.5 w-3.5 text-[#3F7A06]" />
+                  Open folder
+                </button>
+                <button type="button" className={itemClass} onClick={() => selectFolderRecords(menuFolderName)}>
+                  <Check className="h-3.5 w-3.5 text-[#3F7A06]" />
+                  Select {selectedDates.length > 0 ? 'records on these days' : 'all records'}
+                </button>
+                <button
+                  type="button"
+                  className={itemClass}
+                  onClick={() => {
+                    const folder = schoolFolders.find(f => f.schoolName === menuFolderName);
+                    startRenameFolder(menuFolderName, folder?.branch || getBranchForSchool(menuFolderName));
+                  }}
+                >
+                  <Edit2 className="h-3.5 w-3.5 text-[#2563EB]" />
+                  Edit folder (rename / branch)
+                </button>
+                <button
+                  type="button"
+                  className={itemClass}
+                  onClick={() => startMoveStudents(folderStudentsFor(menuFolderName).map(s => s.studentId), menuFolderName)}
+                >
+                  <MoveRight className="h-3.5 w-3.5 text-[#7C3AED]" />
+                  Move students to another school…
+                </button>
+                <button
+                  type="button"
+                  className={itemClass}
+                  onClick={() => {
+                    downloadSelectedPhotosZip(folderStudentsFor(menuFolderName));
+                    setFolderMenu(null);
+                  }}
+                >
+                  <Download className="h-3.5 w-3.5 text-[#3F7A06]" />
+                  Download photos (ZIP)
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 border-t border-[#EEF3E8] px-3 py-2 text-left text-[11px] font-bold text-rose-600 transition-colors hover:bg-rose-50 cursor-pointer"
+                  onClick={() => deleteFolderRecords(menuFolderName)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete records{selectedDates.length > 0 ? ' on these days' : ''}
+                </button>
+              </>
+            ) : menuStudent ? (
+              <>
+                <button type="button" className={itemClass} onClick={() => { handleOpenDetail(menuStudent); setFolderMenu(null); }}>
+                  <Eye className="h-3.5 w-3.5 text-[#2563EB]" />
+                  Open dossier
+                </button>
+                <button type="button" className={itemClass} onClick={() => { handleOpenEditData(menuStudent); setFolderMenu(null); }}>
+                  <Edit2 className="h-3.5 w-3.5 text-[#2563EB]" />
+                  Edit student data
+                </button>
+                <button type="button" className={itemClass} onClick={() => { handleOpenPhotoEditor(menuStudent); setFolderMenu(null); }}>
+                  <Crop className="h-3.5 w-3.5 text-[#3F7A06]" />
+                  Crop / edit photo
+                </button>
+                <button
+                  type="button"
+                  className={itemClass}
+                  onClick={() => {
+                    const wasSelected = selectedIds.has(menuStudent.studentId);
+                    setSelectedIds(prev => {
+                      const next = new Set(prev);
+                      if (next.has(menuStudent.studentId)) next.delete(menuStudent.studentId);
+                      else next.add(menuStudent.studentId);
+                      return next;
+                    });
+                    setActionNotice(
+                      wasSelected
+                        ? `${menuStudent.fullName} removed from the selection`
+                        : `${menuStudent.fullName} selected`
+                    );
+                    setFolderMenu(null);
+                  }}
+                >
+                  <Check className="h-3.5 w-3.5 text-[#3F7A06]" />
+                  {selectedIds.has(menuStudent.studentId) ? 'Remove from selection' : 'Select record'}
+                </button>
+                <button
+                  type="button"
+                  className={itemClass}
+                  onClick={() => startMoveStudents([menuStudent.studentId], menuFolderName)}
+                >
+                  <MoveRight className="h-3.5 w-3.5 text-[#7C3AED]" />
+                  Move to another school…
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 border-t border-[#EEF3E8] px-3 py-2 text-left text-[11px] font-bold text-rose-600 transition-colors hover:bg-rose-50 cursor-pointer"
+                  onClick={() => { setDeleteTarget(menuStudent); setFolderMenu(null); }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete record
+                </button>
+              </>
+            ) : null}
+          </div>
+        );
+      })()}
+
+      {/* Move students to another school */}
+      {moveTarget && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-[#0B1118]/40 backdrop-blur-sm p-4" onClick={() => { if (!isMoving) setMoveTarget(null); }}>
+          <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-[#EEF3E8] px-5 py-4">
+              <div className="flex items-center gap-2">
+                <div className="grid h-9 w-9 place-items-center rounded-xl bg-[#EAF7DA]">
+                  <MoveRight className="h-4 w-4 text-[#3F7A06]" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-[#0B1118]">Move students</h3>
+                  <p className="text-[11px] font-medium text-[#8A9680]">
+                    {moveTarget.ids.length} record(s) from {moveTarget.fromSchool}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { if (!isMoving) setMoveTarget(null); }}
+                className="rounded-lg p-1 text-[#8A9680] hover:bg-[#F6FAEF] hover:text-black cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 px-5 py-4">
+              <label className="block text-[10px] font-black uppercase tracking-[0.12em] text-[#7C8B70]">
+                Destination school
+              </label>
+              <select
+                value={moveDestination}
+                onChange={(e) => setMoveDestination(e.target.value)}
+                className="w-full rounded-xl border border-[#CBD5E1] bg-[#F8FAF9] px-3 py-2 text-xs font-bold text-[#0B1118] focus:border-[#9EE617] focus:outline-none"
+              >
+                <option value="">Choose a school…</option>
+                {Object.entries(BRANCH_SCHOOL_MAP).map(([branch, schools]) => (
+                  <optgroup key={branch} label={`${branch} Branch`}>
+                    {schools
+                      .filter(name => name !== moveTarget.fromSchool)
+                      .map(name => (
+                        <option key={`${branch}-${name}`} value={name}>{name}</option>
+                      ))}
+                  </optgroup>
+                ))}
+              </select>
+              {moveDestination && (
+                <p className="rounded-xl border border-[#CDEBB4] bg-[#F3FBE8] px-3 py-2 text-[11px] font-semibold text-[#3F7A06]">
+                  These records will be filed under <strong>{moveDestination}</strong> · {getBranchForSchool(moveDestination)} branch.
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-[#EEF3E8] px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setMoveTarget(null)}
+                disabled={isMoving}
+                className="rounded-xl border border-[#E2E8F0] px-3 py-1.5 text-xs font-bold text-[#4B5B42] hover:bg-[#FBFDF7] disabled:opacity-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmMove}
+                disabled={!moveDestination || isMoving}
+                className="rounded-xl bg-[#85E510] px-4 py-1.5 text-xs font-black text-[#062404] hover:bg-[#9EE617] disabled:opacity-50 cursor-pointer"
+              >
+                {isMoving ? 'Moving…' : 'Move records'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit / rename folder */}
+      {renameTarget && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-[#0B1118]/40 backdrop-blur-sm p-4" onClick={() => { if (!isRenaming) setRenameTarget(null); }}>
+          <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-[#EEF3E8] px-5 py-4">
+              <div className="flex items-center gap-2">
+                <div className="grid h-9 w-9 place-items-center rounded-xl bg-[#EAF7DA]">
+                  <Edit2 className="h-4 w-4 text-[#3F7A06]" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-[#0B1118]">Edit folder</h3>
+                  <p className="text-[11px] font-medium text-[#8A9680]">
+                    Re-files every record in {renameTarget.schoolName}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { if (!isRenaming) setRenameTarget(null); }}
+                className="rounded-lg p-1 text-[#8A9680] hover:bg-[#F6FAEF] hover:text-black cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 px-5 py-4">
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-[0.12em] text-[#7C8B70]">School name</label>
+                <input
+                  type="text"
+                  value={renameSchoolValue}
+                  onChange={(e) => setRenameSchoolValue(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-[#CBD5E1] bg-[#F8FAF9] px-3 py-2 text-xs font-bold text-[#0B1118] focus:border-[#9EE617] focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-[0.12em] text-[#7C8B70]">Branch</label>
+                <select
+                  value={renameBranchValue}
+                  onChange={(e) => setRenameBranchValue(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-[#CBD5E1] bg-[#F8FAF9] px-3 py-2 text-xs font-bold text-[#0B1118] focus:border-[#9EE617] focus:outline-none"
+                >
+                  {DEFAULT_BRANCHES.map(branch => (
+                    <option key={branch} value={branch}>{branch}</option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-[11px] font-medium text-[#8A9680]">
+                Records keep their IDs, photos and transmit dates — only their school folder changes.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-[#EEF3E8] px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setRenameTarget(null)}
+                disabled={isRenaming}
+                className="rounded-xl border border-[#E2E8F0] px-3 py-1.5 text-xs font-bold text-[#4B5B42] hover:bg-[#FBFDF7] disabled:opacity-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmRename}
+                disabled={!renameSchoolValue.trim() || isRenaming}
+                className="rounded-xl bg-[#85E510] px-4 py-1.5 text-xs font-black text-[#062404] hover:bg-[#9EE617] disabled:opacity-50 cursor-pointer"
+              >
+                {isRenaming ? 'Saving…' : 'Save changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Action toast */}
+      {actionNotice && (
+        <div className="fixed bottom-5 right-5 z-[100] flex max-w-sm items-start gap-2.5 rounded-2xl border border-[#CDEBB4] bg-white px-4 py-3 shadow-2xl animate-in slide-in-from-bottom-2">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#3F7A06]" />
+          <span className="text-[11px] font-bold leading-relaxed text-[#26301F]">{actionNotice}</span>
+          <button
+            type="button"
+            onClick={() => setActionNotice(null)}
+            className="ml-1 shrink-0 rounded p-0.5 text-[#8A9680] hover:text-black cursor-pointer"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
     </div>

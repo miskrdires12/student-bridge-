@@ -75,7 +75,7 @@ export const AppLayout: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#0B1118] text-[#0B1118] dark:text-[#F1F5F9] flex font-sans selection:bg-[#9EE617] selection:text-[#062404] w-full max-w-full transition-colors">
+    <div className="min-h-screen bg-[#F8FAFC] text-[#0B1118] flex font-sans selection:bg-[#9EE617] selection:text-[#062404] w-full max-w-full transition-colors">
       {/* Role-Specific Persistent Sidebar */}
       <Sidebar
         currentStation={currentStation}
@@ -97,7 +97,7 @@ export const AppLayout: React.FC = () => {
           isSidebarOpen={isDesktopViewport ? desktopSidebarOpen : mobileSidebarOpen}
         />
 
-        <main className="flex-1 min-w-0 bg-[#F8FAFC] dark:bg-[#0B1118] p-3 sm:p-5 lg:p-6 overflow-y-auto overflow-x-hidden w-full max-w-full transition-colors">
+        <main className="flex-1 min-w-0 bg-[#F8FAFC] p-3 sm:p-5 lg:p-6 overflow-y-auto overflow-x-hidden w-full max-w-full transition-colors">
           <div className="max-w-[1780px] mx-auto w-full overflow-x-hidden">
             <Outlet />
           </div>

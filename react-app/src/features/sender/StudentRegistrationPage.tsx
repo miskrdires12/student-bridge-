@@ -17,8 +17,9 @@ import { queueOfflineOperation, cloudJsonResponse } from '@/lib/offlineQueue';
 import { Student } from '@/types';
 import { PhoneCropModal } from '@/components/PhoneCropModal';
 import { CameraCaptureModal } from '@/components/CameraCaptureModal';
+import { PageShell, PageHero, FactGrid, FactCard } from '@/components/ui/PageKit';
 import { R2_PUBLIC_BASE_URL, fetchDeliveryReceipts, syncStationId, DeliveryReceipt } from '@/lib/syncEngine';
-import { parseGradeAndSection } from '@/lib/gradeUtils';
+import { parseGradeAndSection, branchForSchoolName } from '@/lib/gradeUtils';
 
 // How long the sender keeps asking the cloud which stations applied its last send. Receivers on
 // the bus answer within a second or two; the window covers a station whose tab was just opening.
@@ -100,9 +101,18 @@ export const StudentRegistrationPage: React.FC = () => {
   const [grade, setGrade] = useState(() => initialDraft.grade || '');
   const [phone, setPhone] = useState(() => initialDraft.phone || '');
   const [bloodType, setBloodType] = useState(() => initialDraft.bloodType || '');
-  const [location, setLocation] = useState(() => initialDraft.location || 'Addis Ababa');
+  // The campus decides the branch. A restored draft, or the operator's own account branch, picks the
+  // starting campus; a Sena Yerosen school always resolves to Adama no matter what the branch select
+  // held, so an Adama record can never be saved under Addis Ababa again.
+  const [location, setLocation] = useState(() => {
+    const fromDraftSchool = branchForSchoolName(initialDraft.school);
+    if (fromDraftSchool) return fromDraftSchool;
+    if (initialDraft.location && DEFAULT_BRANCHES.includes(initialDraft.location)) return initialDraft.location;
+    const fromUser = branchForSchoolName(user?.school) || (user?.branch && DEFAULT_BRANCHES.includes(user.branch) ? user.branch : null);
+    return fromUser || 'Addis Ababa';
+  });
   const [school, setSchool] = useState(() => {
-    const forDraftBranch = BRANCH_SCHOOL_MAP[initialDraft.location || 'Addis Ababa'] || [];
+    const forDraftBranch = BRANCH_SCHOOL_MAP[location] || [];
     const restored = (initialDraft.school || '').trim();
     if (restored && (forDraftBranch.length === 0 || forDraftBranch.includes(restored))) return restored;
     return forDraftBranch[0] || 'YMS';
@@ -360,7 +370,7 @@ export const StudentRegistrationPage: React.FC = () => {
       className={`text-[11px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-md border transition-colors ${
         count > 0
           ? 'text-amber-700 bg-amber-50 border-amber-200'
-          : 'text-[#4D8A07] bg-[#85E510]/20 border-[#85E510]/40'
+          : 'text-[#3F7A06] bg-[#85E510]/20 border-[#85E510]/40'
       }`}
       title={count > 0
         ? `${count} required ${scopeLabel} item${count === 1 ? '' : 's'} still unfilled`
@@ -400,15 +410,19 @@ export const StudentRegistrationPage: React.FC = () => {
     setter(clean);
   };
 
-  // Available schools dynamically filtered by selected branch location
-  const availableSchools = BRANCH_SCHOOL_MAP[location] || ['YMS'];
-
   const handleLocationChange = (newLoc: string) => {
     setLocation(newLoc);
     const schoolsForBranch = BRANCH_SCHOOL_MAP[newLoc] || [];
     if (schoolsForBranch.length > 0 && !schoolsForBranch.includes(school)) {
       setSchool(schoolsForBranch[0]);
     }
+  };
+
+  // Picking a campus picks its branch in the same beat: the two fields can no longer disagree.
+  const handleSchoolChange = (newSchool: string) => {
+    setSchool(newSchool);
+    const schoolBranch = branchForSchoolName(newSchool);
+    if (schoolBranch) setLocation(schoolBranch);
   };
 
   // File Upload Fallback
@@ -472,7 +486,14 @@ export const StudentRegistrationPage: React.FC = () => {
     if (e && e.preventDefault) e.preventDefault();
     setSubmitError(null);
 
-    if (isIdTaken) {
+    // A resend of the record already staged on this station is not a duplicate: re-adding it is
+    // what the retry button is for, and blocking here meant the HD photo stage never ran again.
+    const stagedSame = getStudents().some(s =>
+      (s.studentId || '').trim().toUpperCase() === studentId.trim().toUpperCase() &&
+      (s.fullName || '').trim().toLowerCase() === fullName.trim().toLowerCase()
+    );
+
+    if (isIdTaken && !stagedSame) {
       setSubmitError('The Student ID is already taken. Please generate or specify a unique ID.');
       return;
     }
@@ -491,8 +512,15 @@ export const StudentRegistrationPage: React.FC = () => {
     setSubmitStatusText('Telegram Protocol: Generating low-size preview & delivering record envelope...');
 
     try {
-      const cleanGrade = (grade.trim() || 'General').replace(/[\/\\:*?"<>|\s]+/g, '_');
-      const cleanName = fullName.trim().replace(/[\/\\:*?"<>|\s]+/g, '_') || 'Student';
+      // Keys must survive a URL round-trip: an apostrophe or parenthesis in a child's name used to
+      // sign a different canonical path than the one R2 received, and the portrait was refused.
+      const sanitizeSegment = (value: string, fallback: string) =>
+        value
+          .trim()
+          .replace(/[^A-Za-z0-9._-]+/g, '_')
+          .replace(/^_+|_+$/g, '') || fallback;
+      const cleanGrade = sanitizeSegment((grade.trim() || 'General').replace(/[\/\\:*?"<>|\s]+/g, '_'), 'General');
+      const cleanName = sanitizeSegment(fullName.trim().replace(/[\/\\:*?"<>|\s]+/g, '_'), 'Student');
       const photoKey = `${cleanGrade}/${cleanName}.jpg`;
       const expectedPhotoUrl = `/api/photos/${photoKey}`;
 
@@ -779,79 +807,36 @@ export const StudentRegistrationPage: React.FC = () => {
   const activeTask = userTasks.length > 0 ? userTasks[0] : null;
 
   return (
-    <div className="space-y-5 max-w-5xl mx-auto pb-12">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#E2E8F0]">
-        <div>
-          <h1 className="text-2xl font-heading font-black text-[#0B1118] tracking-tight">
-            Register Student
-          </h1>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold text-[#64748B] bg-white px-3 py-1.5 rounded-xl border border-[#E2E8F0]">
-            Operator: <strong className="text-[#0B1118]">{user?.username || 'Sender'}</strong>
-          </span>
-        </div>
-      </div>
-
-      {/* Sender Transmission Telemetry (Daily, Weekly, Monthly, Total) - Small & Compact */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <div className="bg-white border border-[#E2E8F0] rounded-xl p-2.5 shadow-xs">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
-            <span>Today</span>
-            <Calendar className="w-3.5 h-3.5 text-[#85E510]" />
-          </div>
-          <div className="mt-0.5 text-base sm:text-lg font-heading font-black text-[#0B1118]">
-            {senderMetrics.today.toLocaleString()}
-          </div>
-        </div>
-
-        <div className="bg-white border border-[#E2E8F0] rounded-xl p-2.5 shadow-xs">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
-            <span>This Week</span>
-            <TrendingUp className="w-3.5 h-3.5 text-[#85E510]" />
-          </div>
-          <div className="mt-0.5 text-base sm:text-lg font-heading font-black text-[#0B1118]">
-            {senderMetrics.week.toLocaleString()}
-          </div>
-        </div>
-
-        <div className="bg-white border border-[#E2E8F0] rounded-xl p-2.5 shadow-xs">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
-            <span>This Month</span>
-            <BarChart2 className="w-3.5 h-3.5 text-[#85E510]" />
-          </div>
-          <div className="mt-0.5 text-base sm:text-lg font-heading font-black text-[#0B1118]">
-            {senderMetrics.month.toLocaleString()}
-          </div>
-        </div>
-
-        <div className="bg-white border border-[#E2E8F0] rounded-xl p-2.5 shadow-xs">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
-            <span>Total Sent</span>
-            <CheckCircle2 className="w-3.5 h-3.5 text-[#85E510]" />
-          </div>
-          <div className="mt-0.5 text-base sm:text-lg font-heading font-black text-[#0B1118]">
-            {senderMetrics.total.toLocaleString()}
-          </div>
-        </div>
-      </div>
+    <PageShell className="mx-auto max-w-5xl">
+      <PageHero
+        icon={UserCheck}
+        title="Register Student"
+        count={user?.username || 'Sender'}
+        live="Cloud sync"
+        subtitle="Capture a portrait, enter the student's details and transmit. The record is held on this station until the server confirms it."
+      >
+        <FactGrid cols={4}>
+          <FactCard label="Today" value={senderMetrics.today.toLocaleString()} hint="since 00:00 (EAT)" icon={Calendar} />
+          <FactCard label="This Week" value={senderMetrics.week.toLocaleString()} hint="Monday to Sunday" icon={TrendingUp} />
+          <FactCard label="This Month" value={senderMetrics.month.toLocaleString()} hint="calendar month" icon={BarChart2} />
+          <FactCard label="Total Sent" value={senderMetrics.total.toLocaleString()} hint="lifetime, this account" icon={CheckCircle2} />
+        </FactGrid>
+      </PageHero>
 
       {/* Day by day - the per-day ledger the server's own totals are summed from, so a sender can
           check the salary day against the four figures above without asking the office. */}
       {Object.keys(senderMetrics.daily || {}).length > 0 && (
-        <div className="bg-white border border-[#E2E8F0] rounded-xl p-2.5 shadow-xs">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+        <div className="rounded-2xl border border-[#E3EFD7] bg-white px-3.5 py-2.5 shadow-sm">
+          <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#7C8B70]">
             Day by day (Addis)
           </div>
-          <div className="mt-1 flex flex-wrap gap-1.5">
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
             {Object.entries(senderMetrics.daily)
               .sort((a, b) => b[0].localeCompare(a[0]))
               .slice(0, 14)
               .map(([day, count]) => (
-                <span key={day} className="text-[11px] font-semibold text-[#0B1118] bg-[#F1F5F9] rounded-lg px-2 py-0.5 tabular-nums">
-                  {day} <strong className="text-[#4D7C0F]">{count}</strong>
+                <span key={day} className="rounded-lg border border-[#E9F2DE] bg-[#FBFDF7] px-2 py-0.5 text-[11px] font-semibold tabular-nums text-[#0B1118]">
+                  {day} <strong className="text-[#2F5E04]">{count}</strong>
                 </span>
               ))}
           </div>
@@ -893,7 +878,7 @@ export const StudentRegistrationPage: React.FC = () => {
 
       {/* Resolved Mistake Reminder Notes (Always shown for sender whose data was corrected) */}
       {correctionNotices.length > 0 && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 shadow-xs space-y-2.5">
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 shadow-sm space-y-2.5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-amber-900 font-heading font-black text-xs">
               <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
@@ -1094,7 +1079,7 @@ export const StudentRegistrationPage: React.FC = () => {
             <h2 className="mt-4 font-heading text-lg font-black text-[#0B1118] uppercase tracking-tight">
               {sentPopupFolded ? 'Already registered' : 'Data successfully sent'}
             </h2>
-            <p className="mt-1 text-sm font-black text-[#4D8A07]">
+            <p className="mt-1 text-sm font-black text-[#3F7A06]">
               {new Date(sentPopupAt).toLocaleDateString([], { year: 'numeric', month: 'long', day: 'numeric' })}
             </p>
             <button
@@ -1146,11 +1131,11 @@ export const StudentRegistrationPage: React.FC = () => {
       {/* Main Grid: 2 White Cards */}
       <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Card 1: Student Photograph Card (6 cols) */}
-        <div className="lg:col-span-6 bg-white border border-[#E2E8F0] rounded-2xl p-6 shadow-sm flex flex-col justify-between space-y-5">
+        <div className="lg:col-span-6 bg-white border border-[#E3EFD7] rounded-2xl p-6 shadow-sm flex flex-col justify-between space-y-5">
           <div>
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-black text-[#202833] uppercase tracking-wider flex items-center gap-2">
-                <Camera className="w-4 h-4 text-[#4D8A07]" />
+              <h2 className="text-sm font-black text-[#0B1118] uppercase tracking-wider flex items-center gap-2">
+                <Camera className="w-4 h-4 text-[#3F7A06]" />
                 <span>Student Photograph</span>
               </h2>
               <div className="flex items-center gap-2">
@@ -1164,7 +1149,7 @@ export const StudentRegistrationPage: React.FC = () => {
             </div>
 
             {/* Photo Preview Container */}
-            <div className="relative aspect-[3/4] w-full max-w-[340px] sm:max-w-[380px] mx-auto bg-[#F4F7F5] rounded-2xl border-2 border-dashed border-[#CBD5E1] overflow-hidden flex flex-col items-center justify-center shadow-inner group">
+            <div className="relative aspect-[3/4] w-full max-w-[340px] sm:max-w-[380px] mx-auto bg-[#F4F7F5] rounded-2xl border-2 border-dashed border-[#E3E9DD] overflow-hidden flex flex-col items-center justify-center shadow-inner group">
               {capturedPhoto ? (
                 <div className="relative w-full h-full bg-slate-900 flex items-center justify-center overflow-hidden">
                   <img
@@ -1177,10 +1162,10 @@ export const StudentRegistrationPage: React.FC = () => {
                     }}
                     className="w-full h-full object-cover"
                   />
-                  <div className="absolute top-2 left-2 px-2 py-0.5 bg-black/60 backdrop-blur-xs rounded-md text-[9px] font-mono font-bold text-[#85E510] border border-[#85E510]/30 flex items-center gap-1">
+                  <div className="absolute top-2 left-2 px-2 py-0.5 bg-black/60 backdrop-blur-sm rounded-md text-[9px] font-mono font-bold text-[#85E510] border border-[#85E510]/30 flex items-center gap-1">
                     <CheckCircle2 className="w-2.5 h-2.5" /> Biometric OK
                   </div>
-                  <div className="absolute bottom-2 right-2 px-2.5 py-1 bg-black/70 backdrop-blur-xs rounded-lg text-[10px] font-mono text-white border border-white/10">
+                  <div className="absolute bottom-2 right-2 px-2.5 py-1 bg-black/70 backdrop-blur-sm rounded-lg text-[10px] font-mono text-white border border-white/10">
                     {studentId}
                   </div>
                   {/* Quick Edit Overlay */}
@@ -1194,13 +1179,13 @@ export const StudentRegistrationPage: React.FC = () => {
                   </button>
                 </div>
               ) : (
-                <div className="p-6 text-center text-[#64748B] flex flex-col items-center space-y-3">
-                  <div className="w-16 h-16 rounded-2xl bg-white border border-[#E2E8F0] flex items-center justify-center text-[#4D8A07] shadow-sm">
+                <div className="p-6 text-center text-[#7C8B70] flex flex-col items-center space-y-3">
+                  <div className="w-16 h-16 rounded-2xl bg-white border border-[#E3EFD7] flex items-center justify-center text-[#3F7A06] shadow-sm">
                     <Camera className="w-8 h-8" />
                   </div>
                   <div>
-                    <div className="text-xs font-bold text-[#202833]">No Photograph Captured</div>
-                    <p className="text-[11px] text-[#94A3B8] mt-1 max-w-[240px]">
+                    <div className="text-xs font-bold text-[#0B1118]">No Photograph Captured</div>
+                    <p className="text-[11px] text-[#A6B29B] mt-1 max-w-[240px]">
                       Click below to open the dedicated biometric camera popup with Eye Line and Nose crosshairs.
                     </p>
                   </div>
@@ -1247,9 +1232,9 @@ export const StudentRegistrationPage: React.FC = () => {
                     fileInputRef.current?.click();
                   }
                 }}
-                className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-50 border border-[#85E510] text-[#202833] font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs"
+                className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-50 border border-[#85E510] text-[#0B1118] font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
               >
-                <Scissors className="w-4 h-4 text-[#4D8A07]" />
+                <Scissors className="w-4 h-4 text-[#3F7A06]" />
                 <span>{capturedPhoto ? 'Edit & Crop Photo' : 'Upload & Crop Photo'}</span>
               </button>
 
@@ -1287,12 +1272,12 @@ export const StudentRegistrationPage: React.FC = () => {
         </div>
 
         {/* Card 2: Student Information Card (6 cols) */}
-        <div className="lg:col-span-6 bg-white border border-[#E2E8F0] rounded-2xl p-6 shadow-sm flex flex-col justify-between space-y-6">
+        <div className="lg:col-span-6 bg-white border border-[#E3EFD7] rounded-2xl p-6 shadow-sm flex flex-col justify-between space-y-6">
           <div>
-            <div className="flex items-center justify-between mb-4 pb-2 border-b border-[#F1F5F9]">
+            <div className="flex items-center justify-between mb-4 pb-2 border-b border-[#EDF4E5]">
               <h2 className="text-sm font-black text-[#0B1118] uppercase tracking-wider flex items-center gap-2">
-                <span>STUDENT INFORMATION</span>
-                <span className="text-[10px] font-bold text-slate-400 normal-case tracking-normal">7 required</span>
+                <span>Student Information</span>
+                <span className="text-[10px] font-bold text-[#A6B29B] normal-case tracking-normal">7 required</span>
               </h2>
               {remainingChip(informationRemaining, 'information')}
             </div>
@@ -1308,14 +1293,14 @@ export const StudentRegistrationPage: React.FC = () => {
                         <X className="w-3.5 h-3.5" /> Taken
                       </span>
                     ) : (
-                      <span className="text-[11px] font-bold text-[#4D8A07] flex items-center gap-1">
+                      <span className="text-[11px] font-bold text-[#3F7A06] flex items-center gap-1">
                         <Check className="w-3.5 h-3.5" /> Available
                       </span>
                     )}
                     <button
                       type="button"
                       onClick={() => setStudentId(generateNewId())}
-                      className="text-[10px] text-[#4D8A07] hover:underline font-bold flex items-center gap-1 cursor-pointer ml-1"
+                      className="text-[10px] text-[#3F7A06] hover:underline font-bold flex items-center gap-1 cursor-pointer ml-1"
                     >
                       <RefreshCw className="w-2.5 h-2.5" /> Auto-Gen
                     </button>
@@ -1328,7 +1313,7 @@ export const StudentRegistrationPage: React.FC = () => {
                     value={studentId}
                     onChange={(e) => setStudentId(e.target.value.toUpperCase())}
                     placeholder="SB-2026-12788"
-                    className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-[#0B1118] focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] transition-all"
+                    className="w-full bg-[#FBFDF7] border border-[#E3E9DD] rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-[#0B1118] focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] transition-all"
                   />
                 </div>
               </div>
@@ -1344,7 +1329,7 @@ export const StudentRegistrationPage: React.FC = () => {
                   value={fullName}
                   onChange={(e) => handleNameChange(e.target.value)}
                   placeholder="Loza Bereket"
-                  className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3.5 py-2.5 text-xs text-[#0B1118] font-medium focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] transition-all"
+                  className="w-full bg-[#FBFDF7] border border-[#E3E9DD] rounded-xl px-3.5 py-2.5 text-xs text-[#0B1118] font-medium focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] transition-all"
                 />
               </div>
 
@@ -1360,7 +1345,7 @@ export const StudentRegistrationPage: React.FC = () => {
                     className={`py-2.5 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer border ${
                       sex === 'Male'
                         ? 'bg-[#0B1118] text-white border-[#0B1118] shadow-sm ring-2 ring-[#85E510]/50'
-                        : 'bg-[#F8FAF9] text-[#64748B] border-[#CBD5E1] hover:bg-slate-100 hover:text-[#0B1118]'
+                        : 'bg-[#FBFDF7] text-[#7C8B70] border-[#E3E9DD] hover:bg-slate-100 hover:text-[#0B1118]'
                     }`}
                   >
                     <span className="text-sm">♂</span>
@@ -1372,7 +1357,7 @@ export const StudentRegistrationPage: React.FC = () => {
                     className={`py-2.5 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer border ${
                       sex === 'Female'
                         ? 'bg-[#0B1118] text-white border-[#0B1118] shadow-sm ring-2 ring-[#85E510]/50'
-                        : 'bg-[#F8FAF9] text-[#64748B] border-[#CBD5E1] hover:bg-slate-100 hover:text-[#0B1118]'
+                        : 'bg-[#FBFDF7] text-[#7C8B70] border-[#E3E9DD] hover:bg-slate-100 hover:text-[#0B1118]'
                     }`}
                   >
                     <span className="text-sm">♀</span>
@@ -1382,7 +1367,7 @@ export const StudentRegistrationPage: React.FC = () => {
               </div>
 
               {/* Main Form: Branch Location & Assigned School */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 bg-[#FBFDF7] border border-[#E3E9DD] rounded-xl">
                 {/* Branch Location */}
                 <div>
                   <label className="block text-xs font-bold text-[#0B1118] mb-1.5">
@@ -1392,7 +1377,7 @@ export const StudentRegistrationPage: React.FC = () => {
                     <select
                       value={location}
                       onChange={(e) => handleLocationChange(e.target.value)}
-                      className="w-full bg-white border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs font-bold text-[#0B1118] focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] cursor-pointer appearance-none transition-all"
+                      className="w-full bg-white border border-[#E3E9DD] rounded-xl px-3 py-2 text-xs font-bold text-[#0B1118] focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] cursor-pointer appearance-none transition-all"
                     >
                       {DEFAULT_BRANCHES.map(b => (
                         <option key={b} value={b}>{b}</option>
@@ -1405,16 +1390,20 @@ export const StudentRegistrationPage: React.FC = () => {
                 {/* Assigned School */}
                 <div>
                   <label className="block text-xs font-bold text-[#0B1118] mb-1.5">
-                    Assigned School ({location}) <span className="text-red-500">*</span>
+                    Assigned School <span className="text-[#3F7A06]">({location})</span> <span className="text-red-500">*</span>
                   </label>
                   <div className="relative">
                     <select
                       value={school}
-                      onChange={(e) => setSchool(e.target.value)}
-                      className="w-full bg-white border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs font-bold text-[#0B1118] focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] cursor-pointer appearance-none transition-all"
+                      onChange={(e) => handleSchoolChange(e.target.value)}
+                      className="w-full bg-white border border-[#E3E9DD] rounded-xl px-3 py-2 text-xs font-bold text-[#0B1118] focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] cursor-pointer appearance-none transition-all"
                     >
-                      {availableSchools.map(schName => (
-                        <option key={schName} value={schName}>{schName}</option>
+                      {DEFAULT_BRANCHES.map(branchName => (
+                        <optgroup key={branchName} label={`${branchName} Branch`}>
+                          {(BRANCH_SCHOOL_MAP[branchName] || []).map(schName => (
+                            <option key={`${branchName}-${schName}`} value={schName}>{schName}</option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                     <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1432,7 +1421,7 @@ export const StudentRegistrationPage: React.FC = () => {
                   <select
                     value={bloodType}
                     onChange={(e) => setBloodType(e.target.value)}
-                    className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3.5 py-2.5 text-xs font-bold text-[#0B1118] focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] cursor-pointer appearance-none transition-all"
+                    className="w-full bg-[#FBFDF7] border border-[#E3E9DD] rounded-xl px-3.5 py-2.5 text-xs font-bold text-[#0B1118] focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] cursor-pointer appearance-none transition-all"
                   >
                     <option value="">-- No Blood Group Selected --</option>
                     <option value="A+">A+</option>
@@ -1475,12 +1464,12 @@ export const StudentRegistrationPage: React.FC = () => {
                   onChange={(e) => handlePhoneFormat(e.target.value, setPhone)}
                   onBlur={() => handlePhoneFormat(phone, setPhone)}
                   placeholder="251912480376"
-                  className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-[#0B1118] focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] transition-all"
+                  className="w-full bg-[#FBFDF7] border border-[#E3E9DD] rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-[#0B1118] focus:border-[#85E510] focus:ring-1 focus:ring-[#85E510] transition-all"
                 />
               </div>
 
               {/* School Bus Usage (2 Dedicated Radio Buttons - unselected by default, toggleable) */}
-              <div className="bg-[#F8FAF9] border border-[#E2E8F0] p-3.5 rounded-xl space-y-2">
+              <div className="bg-[#FBFDF7] border border-[#E3EFD7] p-3.5 rounded-xl space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="block text-xs font-bold text-[#0B1118]">
                     School Bus Usage
@@ -1532,51 +1521,51 @@ export const StudentRegistrationPage: React.FC = () => {
                 </button>
 
                 {showExtraDetails && (
-                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 bg-[#F8FAF9] rounded-xl border border-[#E2E8F0]">
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 bg-[#FBFDF7] rounded-xl border border-[#E3EFD7]">
                     {/* Guardian Full Name */}
                     <div>
-                      <label className="block text-[11px] font-bold text-[#202833] mb-1">Guardian Full Name</label>
+                      <label className="block text-[11px] font-bold text-[#0B1118] mb-1">Guardian Full Name</label>
                       <input
                         type="text"
                         value={guardianName}
                         onChange={(e) => setGuardianName(e.target.value)}
                         placeholder="Parent / Guardian"
-                        className="w-full bg-white border border-[#CBD5E1] rounded-lg px-2.5 py-1.5 text-xs"
+                        className="w-full bg-white border border-[#E3E9DD] rounded-lg px-2.5 py-1.5 text-xs"
                       />
                     </div>
 
                     {/* Date of Birth */}
                     <div>
-                      <label className="block text-[11px] font-bold text-[#202833] mb-1">Date of Birth</label>
+                      <label className="block text-[11px] font-bold text-[#0B1118] mb-1">Date of Birth</label>
                       <input
                         type="date"
                         value={dateOfBirth}
                         onChange={(e) => setDateOfBirth(e.target.value)}
-                        className="w-full bg-white border border-[#CBD5E1] rounded-lg px-2.5 py-1.5 text-xs"
+                        className="w-full bg-white border border-[#E3E9DD] rounded-lg px-2.5 py-1.5 text-xs"
                       />
                     </div>
 
                     {/* Emergency Contact Phone */}
                     <div>
-                      <label className="block text-[11px] font-bold text-[#202833] mb-1">Emergency Contact Phone</label>
+                      <label className="block text-[11px] font-bold text-[#0B1118] mb-1">Emergency Contact Phone</label>
                       <input
                         type="tel"
                         value={emergencyContact}
                         onChange={(e) => handlePhoneFormat(e.target.value, setEmergencyContact)}
                         placeholder="e.g. 0911223344"
-                        className="w-full bg-white border border-[#CBD5E1] rounded-lg px-2.5 py-1.5 text-xs font-mono"
+                        className="w-full bg-white border border-[#E3E9DD] rounded-lg px-2.5 py-1.5 text-xs font-mono"
                       />
                     </div>
 
                     {/* Residential Address */}
                     <div>
-                      <label className="block text-[11px] font-bold text-[#202833] mb-1">Residential Address</label>
+                      <label className="block text-[11px] font-bold text-[#0B1118] mb-1">Residential Address</label>
                       <input
                         type="text"
                         value={address}
                         onChange={(e) => setAddress(e.target.value)}
                         placeholder="e.g. Woreda 03, House 412"
-                        className="w-full bg-white border border-[#CBD5E1] rounded-lg px-2.5 py-1.5 text-xs"
+                        className="w-full bg-white border border-[#E3E9DD] rounded-lg px-2.5 py-1.5 text-xs"
                       />
                     </div>
                   </div>
@@ -1599,16 +1588,16 @@ export const StudentRegistrationPage: React.FC = () => {
             {totalRemaining > 0 ? (
               <span className="text-[11px] font-bold text-slate-500">Still needed: {outstandingLabels.join(', ')}</span>
             ) : (
-              <span className="text-[11px] font-bold text-[#4D8A07]">All required items complete — ready to transmit</span>
+              <span className="text-[11px] font-bold text-[#3F7A06]">All required items complete — ready to transmit</span>
             )}
           </div>
 
           {/* Action Buttons: Clear Form + Submit */}
-          <div className="pt-4 border-t border-[#E2E8F0] flex flex-col sm:flex-row items-center gap-3">
+          <div className="pt-4 border-t border-[#E3EFD7] flex flex-col sm:flex-row items-center gap-3">
             <button
               type="button"
               onClick={resetFormForNext}
-              className="w-full sm:w-auto py-3.5 px-4 rounded-xl border border-[#CBD5E1] hover:bg-rose-50 hover:border-rose-300 text-slate-700 hover:text-rose-700 font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              className="w-full sm:w-auto py-3.5 px-4 rounded-xl border border-[#E3E9DD] hover:bg-rose-50 hover:border-rose-300 text-slate-700 hover:text-rose-700 font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5"
             >
               <RefreshCw className="w-4 h-4" />
               <span>Clear Form</span>
@@ -1617,7 +1606,7 @@ export const StudentRegistrationPage: React.FC = () => {
             <button
               type={submittedStudent ? "button" : "submit"}
               onClick={submittedStudent ? resetFormForNext : undefined}
-              disabled={isSubmitting || (!submittedStudent && (isIdTaken || !fullName.trim()))}
+              disabled={isSubmitting || (!submittedStudent && !fullName.trim())}
               className="w-full sm:flex-1 py-3.5 px-5 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] disabled:opacity-50 text-[#062404] font-heading font-black text-sm shadow-[0_4px_15px_rgba(133,229,16,0.3)] transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
               {isSubmitting ? (
@@ -1679,6 +1668,6 @@ export const StudentRegistrationPage: React.FC = () => {
           setIsEditorOpen(false);
         }}
       />
-    </div>
+    </PageShell>
   );
 };

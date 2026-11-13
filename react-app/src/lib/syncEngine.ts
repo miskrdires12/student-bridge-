@@ -121,10 +121,20 @@ export function getPhotoUrl(pathOrUrl?: any | null): string | null {
 export function getPhotoCandidates(student?: any | null): string[] {
   if (!student) return [];
   const urls: string[] = [];
-  for (const raw of [student.photoPath, student.originalPhotoPath, student.previewPath, student.thumbnailPath, student.capturedPhoto, student.photoBase64]) {
+  const push = (raw: any) => {
     const url = getPhotoUrl(raw);
     if (url && !urls.includes(url)) urls.push(url);
+  };
+  for (const raw of [student.photoPath, student.originalPhotoPath, student.previewPath, student.thumbnailPath, student.capturedPhoto, student.photoBase64]) {
+    push(raw);
   }
+  // The edge writes a studentId alias and a root-name alias beside every upload. A record whose
+  // grade or name was edited after the send keeps its old key, so the alias is the only path left
+  // that still resolves; without it the row renders a broken image even though the photo exists.
+  const sid = typeof student.studentId === 'string' ? student.studentId.trim() : '';
+  if (sid) push(`/api/photos/${sid}.jpg`);
+  const name = typeof student.fullName === 'string' ? student.fullName.trim().replace(/[\/\\:*?"<>|\s]+/g, '_') : '';
+  if (name) push(`/api/photos/${name}.jpg`);
   return urls;
 }
 

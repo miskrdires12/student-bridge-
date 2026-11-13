@@ -1,17 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { AlertTriangle, CheckCircle2, Search, Filter, Camera, RefreshCw, ArrowRight, ShieldAlert, Check } from 'lucide-react';
-import { getMistakes, updateStudent, getStudents, addCorrectionLog, getCurrentUser } from '@/lib/store';
+import React, { useState } from 'react';
+import { AlertTriangle, CheckCircle2, Search, Camera, RefreshCw, ShieldAlert, Check, Stethoscope } from 'lucide-react';
+import { getMistakes, addCorrectionLog, getCurrentUser } from '@/lib/store';
 import { MistakeItem } from '@/types';
+import { PageShell, PageHero, FactGrid, FactCard, SectionCard, ToolbarButton, Chip, EmptyState } from '@/components/ui/PageKit';
 
 export const MistakeAnalyzerPage: React.FC = () => {
-  const [mistakes, setMistakes] = useState<MistakeItem[]>([]);
+  const [mistakes, setMistakes] = useState<MistakeItem[]>(() => getMistakes());
   const [filterType, setFilterType] = useState('ALL');
   const [search, setSearch] = useState('');
   const [resolvedIds, setResolvedIds] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    setMistakes(getMistakes());
-  }, []);
 
   const handleResolve = (m: MistakeItem) => {
     setResolvedIds(prev => new Set([...prev, m.id]));
@@ -34,177 +31,124 @@ export const MistakeAnalyzerPage: React.FC = () => {
     return matchType && matchSearch;
   });
 
-  const missingPhotoCount = mistakes.filter(m => m.type === 'Missing Photo').length;
-  const duplicateIdCount = mistakes.filter(m => m.type === 'Duplicate ID').length;
-  const phoneIssueCount = mistakes.filter(m => m.type === 'Invalid Phone Number').length;
+  const openMistakes = mistakes.filter(m => !resolvedIds.has(m.id));
+  const missingPhotoCount = openMistakes.filter(m => m.type === 'Missing Photo').length;
+  const duplicateIdCount = openMistakes.filter(m => m.type === 'Duplicate ID').length;
+  const phoneIssueCount = openMistakes.filter(m => m.type === 'Invalid Phone Number').length;
 
   return (
-    <div className="space-y-6">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-[#E2E8F0]">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-heading font-black text-[#202833] tracking-tight">
-              Mistake Analyzer & Quality Control
-            </h1>
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-50 text-amber-800 border border-amber-200 uppercase">
-              {filtered.length} Flagged Anomalies
-            </span>
+    <PageShell>
+      <PageHero
+        icon={Stethoscope}
+        title="Mistake Analyzer"
+        count={`${openMistakes.length} open flags`}
+        live="Scanning registry"
+        subtitle="Automated scan for missing biometric photos, duplicate student IDs and invalid telephone formats across the records this station holds."
+        actions={<ToolbarButton icon={RefreshCw} onClick={() => setMistakes(getMistakes())}>Re-scan registry</ToolbarButton>}
+      >
+        <FactGrid cols={4}>
+          <FactCard label="Missing Portrait" value={missingPhotoCount.toLocaleString()} hint="needs a field retake" icon={Camera} />
+          <FactCard label="Duplicate IDs" value={duplicateIdCount.toLocaleString()} hint="ID collision" icon={ShieldAlert} />
+          <FactCard label="Invalid Phone" value={phoneIssueCount.toLocaleString()} hint="bad number format" icon={AlertTriangle} />
+          <FactCard label="Shown in View" value={filtered.length.toLocaleString()} hint={filterType === 'ALL' ? 'all types' : filterType} icon={CheckCircle2} />
+        </FactGrid>
+      </PageHero>
+
+      <SectionCard padded>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative w-full sm:w-80">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#A6B29B]" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search anomaly by student ID or name..."
+              className="w-full rounded-xl border border-[#E3E9DD] bg-[#FBFDF7] py-2 pl-9 pr-3 text-xs text-[#0B1118] placeholder-[#A6B29B] focus:border-[#85E510] focus:outline-none"
+            />
           </div>
-          <p className="text-xs text-[#64748B] mt-1">
-            Automated heuristic scan detecting missing biometric photos, duplicate IDs, and invalid telephone formats
-          </p>
-        </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setMistakes(getMistakes())}
-            className="px-3.5 py-2 rounded-xl bg-white hover:bg-[#F8FAF9] border border-[#CBD5E1] text-xs font-bold text-[#202833] flex items-center gap-1.5 shadow-sm transition-all"
-          >
-            <RefreshCw className="w-3.5 h-3.5 text-[#4D8A07]" />
-            <span>Re-Scan Registry</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Heuristic Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div
-          onClick={() => setFilterType(filterType === 'Missing Photo' ? 'ALL' : 'Missing Photo')}
-          className={`p-5 rounded-2xl border cursor-pointer transition-all ${
-            filterType === 'Missing Photo'
-              ? 'bg-amber-50 border-amber-400 shadow-sm'
-              : 'bg-white border-[#E2E8F0] hover:border-amber-400'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-[#64748B]">Missing Portrait Photos</span>
-            <Camera className="w-4 h-4 text-amber-600" />
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(['ALL', 'Missing Photo', 'Duplicate ID', 'Invalid Phone Number'] as const).map(type => (
+              <button
+                key={type}
+                onClick={() => setFilterType(type)}
+                className={`cursor-pointer rounded-xl px-3 py-1.5 text-[11px] font-bold transition-all ${
+                  filterType === type
+                    ? 'bg-[#85E510] text-[#062404] shadow-sm'
+                    : 'border border-[#E3E9DD] bg-white text-[#5C6B51] hover:border-[#85E510]'
+                }`}
+              >
+                {type === 'ALL' ? 'All types' : type}
+              </button>
+            ))}
           </div>
-          <div className="mt-2 text-3xl font-heading font-black text-amber-600">{missingPhotoCount}</div>
-          <div className="text-[11px] text-[#64748B] mt-1">Flagged for field retake by Sender</div>
         </div>
+      </SectionCard>
 
-        <div
-          onClick={() => setFilterType(filterType === 'Duplicate ID' ? 'ALL' : 'Duplicate ID')}
-          className={`p-5 rounded-2xl border cursor-pointer transition-all ${
-            filterType === 'Duplicate ID'
-              ? 'bg-red-50 border-red-400 shadow-sm'
-              : 'bg-white border-[#E2E8F0] hover:border-red-400'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-[#64748B]">Duplicate Student IDs</span>
-            <ShieldAlert className="w-4 h-4 text-red-600" />
-          </div>
-          <div className="mt-2 text-3xl font-heading font-black text-red-600">{duplicateIdCount}</div>
-          <div className="text-[11px] text-[#64748B] mt-1">ID collision across registrations</div>
-        </div>
-
-        <div
-          onClick={() => setFilterType(filterType === 'Invalid Phone Number' ? 'ALL' : 'Invalid Phone Number')}
-          className={`p-5 rounded-2xl border cursor-pointer transition-all ${
-            filterType === 'Invalid Phone Number'
-              ? 'bg-purple-50 border-purple-400 shadow-sm'
-              : 'bg-white border-[#E2E8F0] hover:border-purple-400'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-[#64748B]">Invalid Telephone Formats</span>
-            <AlertTriangle className="w-4 h-4 text-purple-600" />
-          </div>
-          <div className="mt-2 text-3xl font-heading font-black text-purple-600">{phoneIssueCount}</div>
-          <div className="text-[11px] text-[#64748B] mt-1">Non-normalized mobile numbers</div>
-        </div>
-      </div>
-
-      {/* Filter and Search Bar */}
-      <div className="bg-white border border-[#E2E8F0] rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm">
-        <div className="relative w-full sm:w-80">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#94A3B8]" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search anomaly by student ID or name..."
-            className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-9 pr-3 py-2 text-xs text-[#202833] placeholder-[#94A3B8] focus:outline-none focus:border-[#85E510]"
-          />
-        </div>
-
-        <div className="flex items-center gap-2 self-end sm:self-auto">
-          {filterType !== 'ALL' && (
-            <button
-              onClick={() => setFilterType('ALL')}
-              className="text-xs text-[#4D8A07] hover:underline font-bold"
-            >
-              Clear Filter
-            </button>
-          )}
-          <span className="text-xs text-[#64748B] font-bold">
-            Showing {filtered.length} issues
-          </span>
-        </div>
-      </div>
-
-      {/* Mistake Items List */}
-      <div className="bg-white border border-[#E2E8F0] rounded-2xl overflow-hidden shadow-sm divide-y divide-[#E2E8F0]">
+      <SectionCard
+        title="Flagged Records"
+        subtitle="Resolving a flag writes a correction entry to the audit log"
+        icon={AlertTriangle}
+        padded={false}
+        actions={<Chip tone="neutral">{filtered.length} shown</Chip>}
+      >
         {filtered.length === 0 ? (
-          <div className="p-12 text-center text-[#64748B] space-y-2">
-            <CheckCircle2 className="w-10 h-10 text-[#4D8A07] mx-auto" />
-            <div className="text-sm font-bold text-[#202833]">Quality Integrity Clear</div>
-            <p className="text-xs max-w-sm mx-auto">
-              No anomalies found in the active scope. All records satisfy biometric, uniqueness, and telephone rules.
-            </p>
+          <div className="p-3.5">
+            <EmptyState
+              icon={CheckCircle2}
+              title="Quality integrity clear"
+              hint="No anomaly matches the active scope. Every record satisfies the biometric, uniqueness and telephone rules."
+            />
           </div>
         ) : (
-          filtered.map(m => (
-            <div key={m.id} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-[#F8FAF9] transition-colors">
-              <div className="flex items-start gap-3">
-                <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
-                  m.severity === 'High' ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-600'
-                }`}>
-                  <AlertTriangle className="w-5 h-5" />
-                </div>
-
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-[#202833] text-sm">{m.name}</span>
-                    <span className="font-mono text-xs font-semibold text-[#366804] bg-[#85E510]/15 px-2 py-0.5 rounded">
-                      {m.studentId}
-                    </span>
-                    <span className="text-xs text-[#64748B]">&bull; {m.school || 'YMS'}</span>
+          <div className="divide-y divide-[#EDF4E5]">
+            {filtered.map(m => (
+              <div key={m.id} className="flex flex-col justify-between gap-4 p-4 transition-colors hover:bg-[#F8FBF4] sm:flex-row sm:items-center">
+                <div className="flex items-start gap-3">
+                  <div className={`mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl ${
+                    m.severity === 'High' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'
+                  }`}>
+                    <AlertTriangle className="h-5 w-5" />
                   </div>
 
-                  <div className="flex items-center gap-2 mt-1.5 text-xs">
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                      m.severity === 'High' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
-                    }`}>
-                      {m.type}
-                    </span>
-                    <span className="text-[#64748B]">Detected: {m.date}</span>
-                    {m.sender && (
-                      <span className="text-slate-600 bg-slate-100 px-2 py-0.5 rounded font-medium">
-                        Originator: <strong className="text-slate-800">{m.sender}</strong>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-bold text-[#0B1118]">{m.name}</span>
+                      <span className="rounded-full border border-[#CDEBB4] bg-[#EAF7DA] px-2 py-0.5 font-mono text-xs font-semibold text-[#2F5E04]">
+                        {m.studentId}
                       </span>
-                    )}
+                      <span className="text-xs text-[#7C8B70]">&bull; {m.school || '—'}</span>
+                    </div>
+
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${
+                        m.severity === 'High' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {m.type}
+                      </span>
+                      <span className="text-[#7C8B70]">Detected: {m.date}</span>
+                      {m.sender && (
+                        <span className="rounded-full border border-[#E9F2DE] bg-[#FBFDF7] px-2 py-0.5 font-medium text-[#5C6B51]">
+                          Originator: <strong className="text-[#0B1118]">{m.sender}</strong>
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="flex items-center gap-2 self-end sm:self-auto">
                 <button
                   type="button"
                   onClick={() => handleResolve(m)}
-                  className="px-3.5 py-1.5 rounded-xl bg-white hover:bg-[#85E510]/20 border border-[#CBD5E1] hover:border-[#85E510] text-xs font-bold text-[#202833] transition-all flex items-center gap-1.5 shadow-sm"
+                  className="inline-flex cursor-pointer items-center gap-1.5 self-end rounded-xl border border-[#E3E9DD] bg-white px-3.5 py-1.5 text-xs font-bold text-[#0B1118] shadow-sm transition-colors hover:border-[#85E510] hover:bg-[#F3FBE8] sm:self-auto"
                 >
-                  <Check className="w-3.5 h-3.5 text-[#4D8A07]" />
+                  <Check className="h-3.5 w-3.5 text-[#3F7A06]" />
                   <span>Mark Resolved</span>
                 </button>
               </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
-      </div>
-    </div>
+      </SectionCard>
+    </PageShell>
   );
 };

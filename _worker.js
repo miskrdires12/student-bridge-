@@ -86,8 +86,8 @@ function fetch(input, init = {}) {
 // BRANCH AND SCHOOL MAPPING (Canonical)
 // -----------------------------------------------------------------------------
 const BRANCH_SCHOOL_MAP = {
-  "Addis Ababa": ["YMS 1", "YMS 2", "YMS 3", "YMS 4", "YMS 5", "YMS 6", "YMS 7", "YMS 8", "YMS 9", "YMS 10", "YMS 11", "YMS 12", "YMS 13", "YMS 14", "YMS 15", "YMS 16", "YMS 17", "YMS 18", "YMS 19", "School of America 1", "School of America 2", "School of America 3", "School of America 4", "Adika Youth", "Warka", "Ferway", "YMS", "School of America"],
-  "Adama": ["Sena Yerosen", "1234", "Yacine", "Debebech"],
+  "Addis Ababa": ["YMS 1", "YMS 2", "YMS 3", "YMS 4", "YMS 5", "YMS 6", "YMS 7", "YMS 8", "YMS 9", "YMS 10", "YMS 11", "YMS 12", "YMS 13", "YMS 14", "YMS 15", "YMS 16", "YMS 17", "YMS 18", "YMS 19", "School of America 1", "School of America 2", "School of America 3", "School of America 4", "School of America 5", "School of America 6", "Adika Youth", "Warka", "Ferway", "YMS"],
+  "Adama": ["Sena Yerosen", "Yacine", "Debebech"],
   "Hawassa": ["Hawassa Campus 1", "Hawassa Campus 2"],
   "Dire Dawa": ["Dire Dawa Academy"],
   "Bahir Dar": ["Bahir Dar Academy"],
@@ -108,7 +108,7 @@ function getBranchForSchoolWorker(school) {
   const s = String(school).trim().toLowerCase();
   const found = SCHOOL_TO_BRANCH_MAP.get(s);
   if (found) return found;
-  if (s.includes("sena") || s.includes("yerosen") || s.includes("1234") || s.includes("adama") || s.includes("yacine") || s.includes("debebech")) return "Adama";
+  if (s.includes("sena") || s.includes("yerosen") || s.includes("adama") || s.includes("yacine") || s.includes("debebech")) return "Adama";
   if (s.includes("hawassa")) return "Hawassa";
   if (s.includes("dire dawa")) return "Dire Dawa";
   if (s.includes("bahir dar")) return "Bahir Dar";
@@ -139,6 +139,12 @@ function extractValidPhone(...candidates) {
     else if (clean.startsWith("9") && clean.length === 9) clean = "+2519" + clean.substring(1);
     else if (clean.startsWith("7") && clean.length === 9) clean = "+2517" + clean.substring(1);
     else if (!clean.startsWith("+") && clean.length >= 9) clean = "+251" + clean;
+
+    // A number that ends in a run of zeroes is a formatter's placeholder, not a parent's phone —
+    // "+251911000000" was carried by 84 rows and opened every exported CSV with a "0000" tail.
+    const digitsOnly = clean.replace(/\D/g, "");
+    if (digitsOnly.length < 9 || /0{6,}$/.test(digitsOnly)) continue;
+
     return clean;
   }
   return null;
@@ -1008,11 +1014,11 @@ let edgeTasks = [];
 let edgeSchools = [
   { id: "sch_yms", name: "YMS", location: "Addis Ababa", status: "Active", studentsCount: 1245 },
   { id: "sch_adika", name: "Adika Youth", location: "Addis Ababa", status: "Active", studentsCount: 982 },
-  { id: "sch_soa", name: "School of America", location: "Addis Ababa", status: "Active", studentsCount: 756 },
+  { id: "sch_soa6", name: "School of America 6", location: "Addis Ababa", status: "Active", studentsCount: 756 },
+  { id: "sch_soa5", name: "School of America 5", location: "Addis Ababa", status: "Active", studentsCount: 0 },
   { id: "sch_ferway", name: "Ferway", location: "Addis Ababa", status: "Active", studentsCount: 542 },
   { id: "sch_warka", name: "Warka", location: "Addis Ababa", status: "Active", studentsCount: 398 },
   { id: "sch_senayerosen", name: "Sena Yerosen", location: "Adama", status: "Active", studentsCount: 940 },
-  { id: "sch_1234", name: "1234", location: "Adama", status: "Active", studentsCount: 0 },
   { id: "sch_yacine", name: "Yacine", location: "Adama", status: "Active", studentsCount: 420 },
   { id: "sch_debebech", name: "Debebech", location: "Adama", status: "Active", studentsCount: 510 },
   { id: "sch_hightech", name: "High Tech", location: "Harar", status: "Active", studentsCount: 380 }
@@ -1442,30 +1448,65 @@ const DEFAULT_PLATFORM_SETTINGS = {
   updatedAt: null
 };
 let platformSettingsCache = null;
+let platformSettingsCachedAt = 0;
+// A settings write followed by a settings read has to agree. An isolate that keeps its first R2
+// read forever answers every later GET with the pre-save copy, which is why a saved folder path
+// looked like it had been ignored.
+const PLATFORM_SETTINGS_TTL_MS = 2000;
 
 async function getPlatformSettings() {
-  if (platformSettingsCache) return platformSettingsCache;
+  if (platformSettingsCache && (Date.now() - platformSettingsCachedAt) < PLATFORM_SETTINGS_TTL_MS) {
+    return platformSettingsCache;
+  }
   try {
     const obj = await getFromR2Bucket("settings/platform.json");
     if (obj && obj.bytes) {
       const parsed = JSON.parse(new TextDecoder().decode(obj.bytes));
       platformSettingsCache = { ...DEFAULT_PLATFORM_SETTINGS, ...parsed };
+      platformSettingsCachedAt = Date.now();
       return platformSettingsCache;
     }
   } catch (e) {}
   platformSettingsCache = { ...DEFAULT_PLATFORM_SETTINGS };
+  platformSettingsCachedAt = Date.now();
   return platformSettingsCache;
 }
 
 async function savePlatformSettings(patch) {
-  const next = { ...(platformSettingsCache || DEFAULT_PLATFORM_SETTINGS), ...patch, updatedAt: new Date().toISOString() };
-  platformSettingsCache = next;
+  // Merge against the stored copy, not this isolate's copy, so two stations saving different
+  // fields cannot overwrite each other with stale defaults.
+  const current = await getPlatformSettings();
+  const next = { ...current, ...patch, updatedAt: new Date().toISOString() };
   try {
     await uploadToR2Bucket("settings/platform.json", new TextEncoder().encode(JSON.stringify(next, null, 2)), "application/json");
   } catch (e) {
-    console.warn("settings persist notice:", e);
+    // The caller must not report success for a write that never reached the bucket.
+    throw new Error(`Settings could not be written to R2: ${e && e.message ? e.message : e}`);
   }
+  platformSettingsCache = next;
+  platformSettingsCachedAt = Date.now();
   return next;
+}
+
+// R2 object keys travel through a URL, and SigV4 signs that exact URL. Restrict every segment to
+// the characters R2 round-trips untouched so a name like "Sa'ad (1)" can never make a portrait
+// unstoreable — a 403 there surfaced to the station as "photo not accepted".
+function sanitizeObjectKey(key) {
+  return String(key || "")
+    .trim()
+    .replace(/^\/+/, "")
+    .split("/")
+    .map(part => part.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, ""))
+    .filter(Boolean)
+    .join("/");
+}
+
+// The signed canonical URI and the requested URL must be the same string. encodeURIComponent
+// leaves ' ! ( ) * alone while R2 canonicalises them, which is why signing the raw key failed
+// with SignatureDoesNotMatch for those names.
+function r2EncodeKeyPath(key) {
+  const rfc3986 = (part) => encodeURIComponent(part).replace(/[!'()*]/g, ch => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
+  return String(key || "").replace(/^\/+/, "").split("/").map(rfc3986).join("/");
 }
 
 function applyPhotoPathTemplate(template, { grade, fullName, studentId }) {
@@ -1476,7 +1517,7 @@ function applyPhotoPathTemplate(template, { grade, fullName, studentId }) {
     .replace(/\{id\}/gi, clean(studentId, "Student"));
   out = out.replace(/[^a-zA-Z0-9_\-.\/{}]/g, "");
   if (!/\.(jpg|jpeg|png|webp|gif)$/i.test(out)) out += ".jpg";
-  return out.replace(/^\/+/, "");
+  return sanitizeObjectKey(out);
 }
 
 // -----------------------------------------------------------------------------
@@ -1630,8 +1671,9 @@ async function getSignatureKey(key, dateStamp, regionName, serviceName) {
 }
 
 async function uploadToR2Bucket(key, bytes, contentType = "image/jpeg") {
-  const path = `/${R2_BUCKET}/${key}`;
-  const url = new URL(path, R2_ENDPOINT);
+  const encodedKey = r2EncodeKeyPath(key);
+  const path = `/${R2_BUCKET}/${encodedKey}`;
+  const url = new URL(`${R2_ENDPOINT.replace(/\/+$/, "")}${path}`);
   const now = new Date();
   const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
   const dateStamp = amzDate.substring(0, 8);
@@ -1675,16 +1717,17 @@ async function uploadToR2Bucket(key, bytes, contentType = "image/jpeg") {
   cachedR2Stats.totalObjects += 1;
   cachedR2Stats.totalBytes += (bytes ? bytes.byteLength : 100000);
 
-  return `${R2_PUBLIC_BASE_URL}/${key}`;
+  return `${R2_PUBLIC_BASE_URL}/${encodedKey}`;
 }
 
 // Signed HEAD on a bucket object. Returns the stored byte length, or 0 when the key is absent.
 async function getR2ObjectSize(key) {
   if (!key) return 0;
   let cleanKey = String(key).replace(/^\/+/, "");
+  try { cleanKey = decodeURIComponent(cleanKey); } catch (e) {}
 
-  const path = `/${R2_BUCKET}/${cleanKey}`;
-  const url = new URL(path, R2_ENDPOINT);
+  const path = `/${R2_BUCKET}/${r2EncodeKeyPath(cleanKey)}`;
+  const url = new URL(`${R2_ENDPOINT.replace(/\/+$/, "")}${path}`);
   const now = new Date();
   const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
   const dateStamp = amzDate.substring(0, 8);
@@ -3475,7 +3518,7 @@ export default {
           storageProvider: "Cloudflare R2 (Zero Egress)",
           storageFileCount: scan.totalObjects,
           storageSizeBytes: scan.totalBytes,
-          storageSizeFormatted: `${formatBytesSb(scan.totalBytes)} (${(scan.totalBytes / 1073741824).toFixed(2)} GB)`,
+          storageSizeFormatted: formatBytesSb(scan.totalBytes),
           r2TotalObjects: scan.totalObjects,
           r2RealStorageVerified: scan.scannedAt > 0,
           storageScannedAt: new Date(scan.scannedAt || Date.now()).toISOString(),
@@ -3626,6 +3669,10 @@ export default {
         if (d1Feed && Array.isArray(d1Feed.students) &&
           (d1Feed.total > 0 || since || (await countStudentsInD1(env)) > 0)) {
           let d1Students = d1Feed.students;
+          // D1 rows are served straight out of the table, so the wire normalisation that the other
+          // read paths apply has to run here too — otherwise a placeholder phone like +251911000000
+          // reaches the CSV with its "0000" tail intact.
+          d1Students.forEach(normalizeStudentWireFields);
           if (edgeDeletedStudents.size > 0) {
             d1Students = d1Students.filter(s => {
               const sidL = (s.studentId || "").toLowerCase();
@@ -3865,7 +3912,9 @@ export default {
         const grade = (body.grade || body.class || "General").toString().trim();
         const fullName = (body.fullName || body.full_name || body.name || studentId || "Student").toString().trim();
         const uploadSettings = await getPlatformSettings();
-        const photoKey = body.filename || body.fileName || body.file_name || body._fileName || applyPhotoPathTemplate(uploadSettings.photoPathTemplate, { grade, fullName, studentId });
+        const photoKey = sanitizeObjectKey(
+          body.filename || body.fileName || body.file_name || body._fileName || applyPhotoPathTemplate(uploadSettings.photoPathTemplate, { grade, fullName, studentId })
+        );
 
         if (!bytes && photoInput && typeof photoInput === "string") {
           let base64Data = photoInput.trim();
@@ -3890,16 +3939,16 @@ export default {
           return new Response(JSON.stringify({ error: "Missing valid image data" }), { status: 400, headers: corsHeaders });
         }
 
-        const cleanGrade = (grade || "General").trim().replace(/[\/\\:*?"<>|\s]+/g, "_");
-        const cleanName = (fullName || studentId || "Student").trim().replace(/[\/\\:*?"<>|\s]+/g, "_");
+        const cleanGrade = sanitizeObjectKey((grade || "General").trim().replace(/[\/\\:*?"<>|\s]+/g, "_"));
+        const cleanName = sanitizeObjectKey((fullName || studentId || "Student").trim().replace(/[\/\\:*?"<>|\s]+/g, "_"));
 
         // Cache in memory immediately so photos are always available even before R2 finishes
         uploadedPhotos.set(photoKey, { contentType, bytes });
         try {
-          const rootKey = `${cleanName}.jpg`;
+          const rootKey = sanitizeObjectKey(`${cleanName}.jpg`);
           uploadedPhotos.set(rootKey, { contentType, bytes });
           if (studentId) {
-            uploadedPhotos.set(`${studentId}.jpg`, { contentType, bytes });
+            uploadedPhotos.set(sanitizeObjectKey(`${studentId}.jpg`), { contentType, bytes });
           }
         } catch (e) {}
 
@@ -3911,10 +3960,10 @@ export default {
         try {
           r2Url = await uploadToR2Bucket(photoKey, bytes, contentType);
           try {
-            const rootKey = `${cleanName}.jpg`;
+            const rootKey = sanitizeObjectKey(`${cleanName}.jpg`);
             await uploadToR2Bucket(rootKey, bytes, contentType);
             if (studentId) {
-              await uploadToR2Bucket(`${studentId}.jpg`, bytes, contentType);
+              await uploadToR2Bucket(sanitizeObjectKey(`${studentId}.jpg`), bytes, contentType);
             }
           } catch (e) {}
           r2StoredBytes = await getR2ObjectSize(photoKey);
@@ -3975,6 +4024,27 @@ export default {
                 cachedAllStudents[sIdx].originalPhotoPath = r2Url;
                 cachedAllStudents[sIdx].photoIntegrityStatus = "PHOTO_VERIFIED";
               }
+            }
+
+            // /api/students is served from D1, so a verified portrait that only reached Postgres
+            // still read back as PENDING_CLOUD_UPLOAD in every directory and export.
+            try {
+              if (d1Ready(env)) {
+                const heldRow = await readStudentFromD1(env, studentId);
+                if (heldRow) {
+                  await patchStudentInD1(env, heldRow.studentId || studentId, {
+                    photoPath: photoUrl,
+                    originalPhotoPath: r2Url,
+                    previewPath: photoUrl,
+                    thumbnailPath: photoUrl,
+                    photoIntegrityStatus: "PHOTO_VERIFIED",
+                    storageKey: photoKey,
+                    storageSyncAt: new Date().toISOString()
+                  });
+                }
+              }
+            } catch (d1PhotoErr) {
+              console.warn("D1 photo state note:", d1PhotoErr);
             }
 
             fetch("https://ntfy.sh/sb_prod_sync_cloudflare_r2_v1", {
@@ -6336,7 +6406,7 @@ export default {
         storageUsedBytes: scan.totalBytes,
         storageUsedMB: Number((scan.totalBytes / (1024 * 1024)).toFixed(2)),
         storageUsedGB: Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(3)),
-        storageFormatted: `${formatBytesSb(scan.totalBytes)} (${(scan.totalBytes / 1073741824).toFixed(2)} GB)`,
+        storageFormatted: formatBytesSb(scan.totalBytes),
         r2TotalObjects: scan.totalObjects,
         r2Bucket: R2_BUCKET,
         r2RealStorageVerified: scan.scannedAt > 0,
@@ -6359,7 +6429,7 @@ export default {
         totalBytes: scan.totalBytes,
         totalMB: Number((scan.totalBytes / (1024 * 1024)).toFixed(2)),
         totalGB: Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(3)),
-        formatted: `${formatBytesSb(scan.totalBytes)} (${(scan.totalBytes / 1073741824).toFixed(2)} GB)`,
+        formatted: formatBytesSb(scan.totalBytes),
         verified: scan.scannedAt > 0,
         storageScanSource: scanHydrateNote,
         byPrefix: scan.byPrefix,

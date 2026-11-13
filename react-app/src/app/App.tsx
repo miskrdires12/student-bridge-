@@ -65,8 +65,8 @@ const RootRedirect: React.FC = () => {
   if (!user) return <Navigate to="/login" replace />;
   if (user.role === 'SENDER') return <Navigate to="/sender/register" replace />;
   if (user.role === 'RECEIVER') return <Navigate to="/receiver/students" replace />;
-  if (user.role === 'ADMIN') return <Navigate to="/admin/dashboard" replace />;
-  return <Navigate to="/super-admin/dashboard" replace />;
+  // ADMIN and SUPER_ADMIN both open on the Live Dashboard.
+  return <Navigate to="/admin/dashboard" replace />;
 };
 
 export const App: React.FC = () => {

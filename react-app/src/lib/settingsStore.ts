@@ -48,7 +48,7 @@ export interface AppSettings {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultBranch: 'Addis Ababa',
-  defaultSchool: 'YMS 1',
+  defaultSchool: 'YMS',
   defaultGrade: 'Grade 10',
   defaultSection: 'A',
   autoFormatPhone: true,

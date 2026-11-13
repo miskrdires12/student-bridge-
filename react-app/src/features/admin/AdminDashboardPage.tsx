@@ -1,1039 +1,1150 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { Link } from "react-router-dom";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Users,
-  Printer,
-  CheckCircle2,
-  Camera,
-  Clock,
-  RefreshCw,
-  X,
-  Search,
-  Download,
-  Sparkles,
-  ArrowRight,
-  Shield,
-  ArrowUpRight,
-  GraduationCap,
-  BarChart3,
-  CheckSquare,
-  Square,
-  FileSpreadsheet,
-  Filter,
-  Trash2,
-  TrendingUp,
-  Layers,
-  HeartPulse,
-  Bus,
-  MapPin,
-  Calendar,
-  Radio,
-  UserCheck,
   Activity,
-  Award
+  ArrowUpRight,
+  BarChart3,
+  Building2,
+  Camera,
+  CheckCircle2,
+  Clock,
+  Copy,
+  Database,
+  HardDrive,
+  MapPin,
+  Pause,
+  Play,
+  Radio,
+  RefreshCw,
+  Server,
+  ShieldCheck,
+  Users,
+  Wifi,
+  Workflow,
 } from "lucide-react";
-import JSZip from "jszip";
-import { getStudents, updateStudent, deleteStudent, getCurrentUser, getAllSendersMetrics, SenderMetrics } from "@/lib/store";
-import { getPhotoUrl } from "@/lib/syncEngine";
-import { Student } from "@/types";
-import { getGradeDisplay, getCleanSection, getStudentBranch } from "@/lib/gradeUtils";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { refreshFleetTelemetry, getAuthHeaders } from "@/lib/store";
+import type { FleetTelemetryPayload } from "@/lib/store";
+import { BRANCH_SCHOOL_MAP, DEFAULT_BRANCHES } from "@/lib/gradeUtils";
+import {
+  PageShell,
+  PageHero,
+  FactGrid,
+  FactCard,
+  ToolbarButton,
+  PrimaryButton,
+} from "@/components/ui/PageKit";
 
-import { DashboardAnalytics } from '@/components/DashboardAnalytics';
+// ---------------------------------------------------------------------------
+// The dashboard draws one server snapshot and nothing else.
+//
+// Every figure here - counters, chart, period block, branch table - comes from
+// a single aggregated answer per endpoint, and the page is only swapped once
+// every part of the snapshot has arrived. That is what stops "one number first,
+// another number a second later": there is no partial render to correct, and a
+// failed refresh keeps the previous complete snapshot on screen.
+// ---------------------------------------------------------------------------
 
-export const AdminDashboardPage: React.FC = () => {
-  const [allStudentsList, setAllStudentsList] = useState<Student[]>([]);
+interface StatsPayload {
+  totalStudents: number | null;
+  totalPhotos: number | null;
+  missingPhotos: number | null;
+  statsComplete?: boolean;
+  statsMissing?: string[];
+  statsSource: string;
+  storageFormatted: string | null;
+  r2TotalObjects: number | null;
+}
+
+interface FlowDay {
+  day: string;
+  count: number;
+  verified: number;
+}
+
+interface FlowHour {
+  hour: string;
+  count: number;
+  verified: number;
+}
+
+interface FlowBranchDay {
+  day: string;
+  branch: string;
+  count: number;
+  verified: number;
+}
+
+interface FlowPayload {
+  success: boolean;
+  rangeDays: number;
+  todayKey: string;
+  oldestKey: string;
+  source: string;
+  days: FlowDay[];
+  hours: FlowHour[];
+  branchDays: FlowBranchDay[];
+  totalInWindow: number;
+  verifiedInWindow: number;
+  generatedAt: string;
+  queryLatencyMs: number;
+}
+
+interface HealthPayload {
+  status: string;
+  version: string;
+  time: string;
+  database: {
+    connected: boolean;
+    liveRecordCount: number;
+    d1RecordCount: number;
+    d1InSync: boolean;
+  };
+}
+
+interface AuditRow {
+  id: string;
+  action: string;
+  entityType: string;
+  createdAt: string;
+  user?: { username?: string; role?: string } | null;
+}
+
+interface DuplicateMember {
+  studentId: string;
+  school: string;
+  branch: string;
+  createdAt: string;
+  photoVerified: boolean;
+}
+
+interface DuplicateGroup {
+  key: string;
+  fullName: string;
+  guardianFullName: string;
+  grade: string;
+  section: string;
+  phone: string;
+  count: number;
+  members: DuplicateMember[];
+}
+
+interface DuplicatesPayload {
+  success: boolean;
+  source: string;
+  totalStudents: number;
+  totalGroups: number;
+  totalDuplicateRows: number;
+  extraRows: number;
+  groups: DuplicateGroup[];
+  truncated: boolean;
+  generatedAt: string;
+  queryLatencyMs: number;
+}
+
+interface Snapshot {
+  fetchedAt: number;
+  stats: StatsPayload;
+  flow: FlowPayload;
+  fleet: FleetTelemetryPayload;
+  health: HealthPayload | null;
+  logs: AuditRow[];
+  duplicates: DuplicatesPayload | null;
+  latency: { stats: number; flow: number; health: number; dupes: number; total: number };
+}
+
+const RANGE_DAYS = { today: 1, "7d": 7, "30d": 30, "90d": 90 } as const;
+type RangeKey = keyof typeof RANGE_DAYS;
+
+const RANGE_LABEL: Record<RangeKey, string> = {
+  today: "Today",
+  "7d": "7D",
+  "30d": "30D",
+  "90d": "90D",
+};
+
+const REFRESH_INTERVAL_MS = 20000;
+
+function fmtInt(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return value.toLocaleString("en-US");
+}
+
+function shiftDayKey(key: string, delta: number): string {
+  const parts = String(key).split("-").map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return key;
+  const t = Date.UTC(parts[0], parts[1] - 1, parts[2]) + delta * 86400000;
+  return new Date(t).toISOString().slice(0, 10);
+}
+
+function mondayOf(key: string): string {
+  const parts = String(key).split("-").map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return key;
+  const idx = (new Date(Date.UTC(parts[0], parts[1] - 1, parts[2])).getUTCDay() + 6) % 7;
+  return shiftDayKey(key, -idx);
+}
+
+function dayShort(key: string): string {
+  const parts = String(key).split("-").map(Number);
+  if (parts.length !== 3) return key;
+  return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2])).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function dayLong(key: string): string {
+  const parts = String(key).split("-").map(Number);
+  if (parts.length !== 3) return key;
+  return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2])).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function formatAgo(from: number, now: number): string {
+  const secs = Math.max(0, Math.round((now - from) / 1000));
+  if (secs < 10) return "just now";
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function actionLabel(action: string): string {
+  return String(action || "")
+    .replace(/[_-]+/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+async function fetchJson<T>(
+  url: string,
+  timeoutMs: number
+): Promise<{ data: T | null; ms: number }> {
+  const started = performance.now();
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const res = await fetch(url, {
+      headers: getAuthHeaders(),
+      cache: "no-store",
+      signal: controller ? controller.signal : undefined,
+    });
+    if (!res.ok) return { data: null, ms: Math.round(performance.now() - started) };
+    const data = (await res.json()) as T;
+    return { data, ms: Math.round(performance.now() - started) };
+  } catch {
+    return { data: null, ms: Math.round(performance.now() - started) };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// The fleet rollup is single-flighted in the store, so one stalled request would hold this page's
+// in-flight flag forever and freeze the refresh. The dashboard gives up waiting and keeps the
+// snapshot it already has; the underlying request finishes on its own.
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
+const card = "rounded-2xl border border-[#E3EFD7] bg-white shadow-sm";
+
+export interface DashboardPageProps {
+  title?: string;
+  subtitle?: string;
+}
+
+export const AdminDashboardPage: React.FC<DashboardPageProps> = ({
+  title = "Live Dashboard",
+  subtitle = "One server snapshot per refresh — counters, chart and branches always agree.",
+}) => {
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState<string>("");
-  const [noticeVisible, setNoticeVisible] = useState(false);
-  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [range, setRange] = useState<RangeKey>("7d");
+  const [now, setNow] = useState(() => Date.now());
+  const [expandedDupes, setExpandedDupes] = useState<Set<string>>(new Set());
 
-  // Deletion Modal State
-  const [deleteModalStudent, setDeleteModalStudent] = useState<Student | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const inFlight = useRef(false);
+  const seq = useRef(0);
+  const hasSnapshot = useRef(false);
 
-  // Time Range & Metrics for Graph
-  const [activeTimeRange, setActiveTimeRange] = useState<"hourly" | "daily" | "trend" | "year">("hourly");
-  const [activeMetric, setActiveMetric] = useState<"volume" | "photos" | "readiness" | "throughput">("volume");
-  const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
-  const chartSvgRef = useRef<SVGSVGElement | null>(null);
+  const loadSnapshot = useCallback(async (mode: "initial" | "timer" | "manual") => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    const mySeq = ++seq.current;
+    if (mode !== "timer") setIsRefreshing(true);
+    const started = performance.now();
 
+    try {
+      const [statsRes, flowRes, healthRes, logsRes, dupesRes, fleet] = await Promise.all([
+        fetchJson<StatsPayload>("/api/stats", 20000),
+        fetchJson<FlowPayload>("/api/dashboard/flow?days=90", 25000),
+        fetchJson<HealthPayload>("/api/health", 20000),
+        fetchJson<AuditRow[]>("/api/audit-logs?limit=12", 20000),
+        fetchJson<DuplicatesPayload>("/api/students/duplicates", 25000),
+        withTimeout(refreshFleetTelemetry().catch(() => null), 25000, null),
+      ]);
 
-  // Lightbox Modal
-  const [inspectingPhotoStudent, setInspectingPhotoStudent] = useState<Student | null>(null);
+      // A slower, earlier request must never overwrite a newer snapshot.
+      if (mySeq !== seq.current) return;
 
-  // Pre-Flight Audit Modal
-  const [auditModalOpen, setAuditModalOpen] = useState(false);
-  const [isAuditing, setIsAuditing] = useState(false);
-  const [auditResults, setAuditResults] = useState<{
-    totalAudited: number;
-    verifiedCount: number;
-    readinessRate: number;
-    missingPhotosCount: number;
-    incompleteCount: number;
-    flaggedList: any[];
-  } | null>(null);
-
-  const [sendersList, setSendersList] = useState<SenderMetrics[]>([]);
-
-  const loadData = useCallback(() => {
-    const list = getStudents();
-    list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-    setAllStudentsList((prev) => {
-      if (prev.length === list.length && prev.length > 0) {
-        if (
-          prev[0]?.id === list[0]?.id &&
-          prev[prev.length - 1]?.id === list[list.length - 1]?.id &&
-          prev[0]?.photoPath === list[0]?.photoPath
-        ) {
-          return prev; // Reference stability: prevents re-rendering and data fluctuating!
-        }
+      const stats = statsRes.data;
+      const flow = flowRes.data;
+      if (!stats || !flow || !flow.success || !Array.isArray(flow.days) || !fleet) {
+        setLoadError(
+          hasSnapshot.current
+            ? "A complete server snapshot did not arrive, so the previous figures are still shown."
+            : "The server snapshot is not ready yet. Retrying automatically."
+        );
+        return;
       }
-      return list;
-    });
-    setSendersList((prev) => {
-      const next = getAllSendersMetrics();
-      if (
-        prev.length === next.length &&
-        prev.every(
-          (p, i) =>
-            p.total === next[i]?.total &&
-            p.today === next[i]?.today &&
-            p.status === next[i]?.status &&
-            p.boundDeviceId === next[i]?.boundDeviceId
-        )
-      ) {
-        return prev;
-      }
-      return next;
-    });
-    setLastUpdated(new Date().toLocaleTimeString());
+
+      hasSnapshot.current = true;
+      setSnapshot({
+        fetchedAt: Date.now(),
+        stats,
+        flow,
+        fleet,
+        health: healthRes.data,
+        logs: Array.isArray(logsRes.data) ? logsRes.data : [],
+        duplicates: dupesRes.data && dupesRes.data.success ? dupesRes.data : null,
+        latency: {
+          stats: statsRes.ms,
+          flow: flowRes.ms,
+          health: healthRes.ms,
+          dupes: dupesRes.ms,
+          total: Math.round(performance.now() - started),
+        },
+      });
+      setLoadError(null);
+    } finally {
+      inFlight.current = false;
+      if (mySeq === seq.current) setIsRefreshing(false);
+    }
   }, []);
 
   useEffect(() => {
-    loadData();
-    const handleDataChange = () => loadData();
-    window.addEventListener('studentbridge_datachange', handleDataChange);
-    window.addEventListener('studentbridge_userchange', handleDataChange);
-    return () => {
-      window.removeEventListener('studentbridge_datachange', handleDataChange);
-      window.removeEventListener('studentbridge_userchange', handleDataChange);
-    };
-  }, [loadData]);
+    loadSnapshot("initial");
+  }, [loadSnapshot]);
 
-  // Polling
   useEffect(() => {
     if (!autoRefresh) return;
     const interval = setInterval(() => {
-      loadData();
-    }, 4000);
+      if (document.visibilityState === "hidden") return;
+      loadSnapshot("timer");
+    }, REFRESH_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [autoRefresh, loadData]);
+  }, [autoRefresh, loadSnapshot]);
 
-  const handleExecuteDelete = async (type: "TEMPORARY" | "PERMANENT") => {
-    if (!deleteModalStudent) return;
-    const target = deleteModalStudent;
-    setIsDeleting(true);
-
-    try {
-      if (type === "TEMPORARY") {
-        await deleteStudent(target.studentId || target.id, false);
-        setExportNotice(`Student ${target.fullName || target.studentId} hidden from Receiver queue.`);
-      } else {
-        await deleteStudent(target.studentId || target.id, true);
-        setExportNotice(`Student ${target.fullName || target.studentId} permanently expunged everywhere.`);
-      }
-      loadData();
-      setTimeout(() => setExportNotice(null), 4000);
-    } catch (err: any) {
-      alert("Error deleting student.");
-    } finally {
-      setIsDeleting(false);
-      setDeleteModalStudent(null);
-    }
-  };
-
-
-  const totalStudents = allStudentsList.length;
-  const photosCount = allStudentsList.filter(s => Boolean(s.photoPath && s.photoPath.trim().length > 0)).length;
-  const readyForPrintCount = photosCount;
-  const pendingVerification = Math.max(0, totalStudents - readyForPrintCount);
-  const missingPhotos = allStudentsList.filter(s => !s.photoPath || s.photoPath.trim().length === 0);
-
-  // Demographics
-  const demographics = useMemo(() => {
-    let maleCount = 0;
-    let femaleCount = 0;
-    allStudentsList.forEach(s => {
-      if ((s.sex || '').toLowerCase() === 'female') femaleCount++;
-      else maleCount++;
-    });
-    return {
-      maleCount,
-      femaleCount,
-      malePercent: totalStudents > 0 ? Math.round((maleCount / totalStudents) * 100) : 0,
-      femalePercent: totalStudents > 0 ? Math.round((femaleCount / totalStudents) * 100) : 0,
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && autoRefresh) loadSnapshot("timer");
     };
-  }, [allStudentsList, totalStudents]);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [autoRefresh, loadSnapshot]);
 
-  // Timeframe stats: A Day, A Week, A Month, A Year - Anchored to Calendar Boundaries
-  const gatheredTimeframeStats = useMemo(() => {
-    const dNow = new Date();
-    // Midnight start of today (00:00:00)
-    const todayStart = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate()).getTime();
-    // 7 days ago at midnight
-    const weekStart = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate() - 7).getTime();
-    // 30 days ago at midnight
-    const monthStart = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate() - 30).getTime();
-    // Start of current calendar year
-    const yearStart = new Date(dNow.getFullYear(), 0, 1).getTime();
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(tick);
+  }, []);
 
-    let dayCount = 0, dayPhotos = 0;
-    let weekCount = 0, weekPhotos = 0;
-    let monthCount = 0, monthPhotos = 0;
-    let yearCount = 0, yearPhotos = 0;
+  const flow = snapshot?.flow;
+  const stats = snapshot?.stats;
+  const fleet = snapshot?.fleet;
 
-    allStudentsList.forEach((s) => {
-      let createdTime = 0;
-      if (s.createdAt) {
-        const parsed = new Date(s.createdAt).getTime();
-        if (!isNaN(parsed) && parsed > 0) {
-          createdTime = parsed;
-        }
-      }
-      const hasPhoto = Boolean(s.photoPath && s.photoPath.trim().length > 0);
+  const dayMap = useMemo(() => {
+    const map = new Map<string, FlowDay>();
+    flow?.days.forEach((d) => map.set(d.day, d));
+    return map;
+  }, [flow]);
 
-      if (createdTime >= todayStart) {
-        dayCount++;
-        if (hasPhoto) dayPhotos++;
-      }
-      if (createdTime >= weekStart) {
-        weekCount++;
-        if (hasPhoto) weekPhotos++;
-      }
-      if (createdTime >= monthStart) {
-        monthCount++;
-        if (hasPhoto) monthPhotos++;
-      }
-      if (createdTime >= yearStart || createdTime === 0) {
-        yearCount++;
-        if (hasPhoto) yearPhotos++;
-      }
-    });
-
-    return {
-      day: { count: dayCount, photos: dayPhotos },
-      week: { count: weekCount, photos: weekPhotos },
-      month: { count: monthCount, photos: monthPhotos },
-      year: { count: yearCount || totalStudents, photos: yearPhotos || photosCount },
-    };
-  }, [allStudentsList, totalStudents, photosCount]);
-
-  // Graph Data Series
-  const activeSeriesData = useMemo(() => {
-    const now = new Date();
-    const todayDateStr = now.toDateString();
-    const currentHour = now.getHours();
-
-    if (activeTimeRange === "hourly") {
-      const hoursList: number[] = [];
-      const maxHour = Math.max(18, currentHour);
-      for (let h = 8; h <= maxHour; h++) hoursList.push(h);
-
-      return hoursList.map((hourNum) => {
-        const matching = allStudentsList.filter((s) => {
-          if (!s.createdAt) return false;
-          const d = new Date(s.createdAt);
-          return d.toDateString() === todayDateStr && d.getHours() === hourNum;
-        });
-
-        const count = matching.length;
-        const photos = matching.filter((s) => Boolean(s.photoPath && s.photoPath.trim().length > 0)).length;
-        const hourLabel = `${hourNum > 12 ? hourNum - 12 : hourNum === 0 ? 12 : hourNum} ${hourNum >= 12 ? "PM" : "AM"}`;
-        const isCurrentHour = hourNum === currentHour;
-
-        return {
-          time: `${hourNum.toString().padStart(2, "0")}:00`,
-          label: isCurrentHour ? `${hourLabel} • Now` : hourLabel,
-          count,
-          photos,
-          readiness: count > 0 ? Math.round((photos / count) * 100) : 0,
-          throughput: count * 8,
-          isCurrentHour,
-        };
-      });
-    } else if (activeTimeRange === "daily") {
-      const daysOfWeek = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-      return Array.from({ length: 7 }).map((_, idx) => {
-        const offset = 6 - idx;
-        const d = new Date();
-        d.setDate(d.getDate() - offset);
-        const targetDateStr = d.toDateString();
-        const dateIso = d.toISOString().split("T")[0];
-
-        const matching = allStudentsList.filter((s) => {
-          if (!s.createdAt) return false;
-          return new Date(s.createdAt).toDateString() === targetDateStr;
-        });
-
-        const count = matching.length;
-        const photos = matching.filter((s) => Boolean(s.photoPath && s.photoPath.trim().length > 0)).length;
-        const dayName = daysOfWeek[d.getDay()];
-        const dayNum = d.getDate();
-        const isToday = offset === 0;
-
-        return {
-          date: dateIso,
-          label: isToday ? `Today (${dayName})` : `${dayName} ${dayNum}`,
-          count,
-          photos,
-          readiness: count > 0 ? Math.round((photos / count) * 100) : 0,
-          throughput: count * 8,
-          isCurrentHour: isToday,
-        };
-      });
-    } else {
-      return Array.from({ length: 4 }).map((_, idx) => {
-        const weekNum = idx + 1;
-        const endDaysAgo = (4 - weekNum) * 7;
-        const startDaysAgo = endDaysAgo + 7;
-        const nowTime = now.getTime();
-        const startTime = nowTime - startDaysAgo * 86400000;
-        const endTime = nowTime - endDaysAgo * 86400000;
-
-        const matching = allStudentsList.filter((s) => {
-          if (!s.createdAt) return false;
-          const t = new Date(s.createdAt).getTime();
-          return t >= startTime && t < endTime;
-        });
-
-        const count = matching.length;
-        const photos = matching.filter((s) => Boolean(s.photoPath && s.photoPath.trim().length > 0)).length;
-
-        return {
-          label: weekNum === 4 ? "This Week" : `Wk ${weekNum}`,
-          count,
-          photos,
-          readiness: count > 0 ? Math.round((photos / count) * 100) : 0,
-          throughput: count * 8,
-        };
-      });
-    }
-  }, [activeTimeRange, allStudentsList]);
-
-  const chartPoints = useMemo(() => {
-    return activeSeriesData.map((d: any) => {
-      let val = d.count || 0;
-      if (activeMetric === "photos") {
-        val = d.count > 0 ? Math.round(((d.photos || 0) / d.count) * 100) : 100;
-      } else if (activeMetric === "readiness") {
-        val = d.count > 0 ? Math.round(((d.photos || 0) / d.count) * 100) : 100;
-      } else if (activeMetric === "throughput") {
-        val = d.throughput || d.count * 8;
-      }
-      return {
-        label: d.label || d.time || d.date,
-        value: val,
-        raw: d,
-      };
-    });
-  }, [activeSeriesData, activeMetric]);
-
-  const svgWidth = 960;
-  const svgHeight = 340;
-  const padLeft = 50;
-  const padRight = 35;
-  const padTop = 30;
-  const padBottom = 40;
-  const plotW = svgWidth - padLeft - padRight;
-  const plotH = svgHeight - padTop - padBottom;
-
-  const maxVal = useMemo(() => {
-    const vals = chartPoints.map((p) => p.value);
-    const m = Math.max(...vals, 10);
-    return activeMetric === "photos" || activeMetric === "readiness" ? 100 : Math.ceil(m * 1.15);
-  }, [chartPoints, activeMetric]);
-
-  const barPlotData = useMemo(() => {
-    if (chartPoints.length === 0) return [];
-    const count = chartPoints.length;
-    const slotWidth = plotW / count;
-    const barWidth = Math.min(52, Math.max(18, slotWidth * 0.62));
-
-    return chartPoints.map((p, i) => {
-      const barX = padLeft + i * slotWidth + (slotWidth - barWidth) / 2;
-      const barHeight = Math.max(8, (p.value / Math.max(1, maxVal)) * plotH);
-      const barY = padTop + plotH - barHeight;
-      return {
-        ...p,
-        barX,
-        barY,
-        barWidth,
-        barHeight,
-        slotX: padLeft + i * slotWidth,
-        slotWidth,
-        centerX: barX + barWidth / 2,
-        isCurrentHour: Boolean((p.raw as any)?.isCurrentHour),
-      };
-    });
-  }, [chartPoints, maxVal, plotW, plotH, padLeft, padTop]);
-
-  const peakIndex = useMemo(() => {
-    if (chartPoints.length === 0) return -1;
-    let maxIdx = 0;
-    for (let i = 1; i < chartPoints.length; i++) {
-      if (chartPoints[i].value > chartPoints[maxIdx].value) maxIdx = i;
-    }
-    return maxIdx;
-  }, [chartPoints]);
-
-  const handleChartPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (!chartSvgRef.current || barPlotData.length === 0) return;
-    const rect = chartSvgRef.current.getBoundingClientRect();
-    const clientX = e.clientX - rect.left;
-    const svgX = (clientX / rect.width) * svgWidth;
-    const relX = svgX - padLeft;
-    if (relX < 0 || relX > plotW) {
-      setHoveredPointIndex(null);
-      return;
-    }
-    const slotWidth = plotW / barPlotData.length;
-    const closestIdx = Math.max(0, Math.min(barPlotData.length - 1, Math.floor(relX / slotWidth)));
-    setHoveredPointIndex(closestIdx);
-  };
-
-  const handleChartPointerLeave = () => {
-    setHoveredPointIndex(null);
-  };
-
-  // Pre-flight audit
-  const runPreflightAudit = useCallback(() => {
-    setIsAuditing(true);
-    setTimeout(() => {
-      const total = allStudentsList.length;
+  const periods = useMemo(() => {
+    if (!flow) return null;
+    const todayKey = flow.todayKey;
+    const yesterdayKey = shiftDayKey(todayKey, -1);
+    const weekStart = mondayOf(todayKey);
+    const monthStart = `${todayKey.slice(0, 8)}01`;
+    const sumSince = (startKey: string) => {
+      let count = 0;
       let verified = 0;
-      let missingPhotosCount = 0;
-      let incompleteCount = 0;
-      const flaggedList: any[] = [];
-
-      allStudentsList.forEach((s) => {
-        const hasPhoto = Boolean(s.photoPath && s.photoPath.trim().length > 0);
-        const hasId = Boolean(s.studentId && s.studentId.trim().length > 0);
-        const hasName = Boolean(s.fullName && s.fullName.trim().length > 0);
-
-        if (hasPhoto && hasId && hasName) {
-          verified += 1;
-        } else {
-          const issues: string[] = [];
-          if (!hasPhoto) {
-            issues.push("Missing 3:4 Portrait Photo");
-            missingPhotosCount += 1;
-          }
-          if (!hasId || !hasName) {
-            issues.push("Incomplete Metadata Records");
-            incompleteCount += 1;
-          }
-
-          flaggedList.push({
-            ...s,
-            auditIssues: issues,
-            readiness: hasPhoto ? 85 : 30,
-          });
+      for (const d of flow.days) {
+        if (d.day >= startKey && d.day <= todayKey) {
+          count += d.count;
+          verified += d.verified;
         }
-      });
+      }
+      return { count, verified };
+    };
+    const today = dayMap.get(todayKey) || { count: 0, verified: 0 };
+    const yesterday = dayMap.get(yesterdayKey) || { count: 0, verified: 0 };
+    return {
+      todayKey,
+      yesterdayKey,
+      today,
+      yesterday,
+      week: sumSince(weekStart),
+      month: sumSince(monthStart),
+    };
+  }, [flow, dayMap]);
 
-      const readinessRate = total > 0 ? Math.round((verified / total) * 100) : 100;
-
-      setAuditResults({
-        totalAudited: total,
-        verifiedCount: verified,
-        readinessRate,
-        missingPhotosCount,
-        incompleteCount,
-        flaggedList,
-      });
-
-      setIsAuditing(false);
-      setAuditModalOpen(true);
-    }, 350);
-  }, [allStudentsList]);
-
-  // Export handlers
-  const handleDownloadSingleStudentPhoto = useCallback(async (student: Student) => {
-    if (!student.photoPath) {
-      alert("This student does not have an attached photo.");
-      return;
+  const chartData = useMemo(() => {
+    if (!flow) return [] as Array<{ label: string; full: string; count: number; verified: number }>;
+    if (range === "today") {
+      // The 24 hour buckets are complete in the payload; only the part of the day that has
+      // actually happened is drawn, so the trailing hours are not a cliff of zeros.
+      const eatNow = new Date((snapshot?.fetchedAt || Date.now()) + 3 * 3600 * 1000);
+      const currentHour = eatNow.getUTCHours();
+      return flow.hours.slice(0, Math.max(1, currentHour + 1)).map((h) => ({
+        label: `${h.hour}:00`,
+        full: `${h.hour}:00`,
+        count: h.count,
+        verified: h.verified,
+      }));
     }
-    const cleanId = (student.studentId || "student").replace(/[/\\]/g, "_");
-    const cleanName = (student.fullName || "photo").replace(/[/\\]/g, "_");
-    const filename = `${cleanId}_${cleanName}.jpg`;
+    return flow.days.slice(-RANGE_DAYS[range]).map((d) => ({
+      label: dayShort(d.day),
+      full: dayLong(d.day),
+      count: d.count,
+      verified: d.verified,
+    }));
+  }, [flow, range, snapshot?.fetchedAt]);
 
-    try {
-      const res = await fetch(student.photoPath);
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        try {
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        } catch {}
-      }, 500);
-      setExportNotice(`Downloaded photo for ${student.fullName}`);
-    } catch {
-      window.open(student.photoPath, "_blank");
-    }
-  }, []);
+  const peak = useMemo(() => {
+    let best: { label: string; full: string; count: number } | null = null;
+    chartData.forEach((p) => {
+      if (!best || p.count > best.count) best = { label: p.label, full: p.full, count: p.count };
+    });
+    return best;
+  }, [chartData]);
 
-  const handleDownloadSingleStudentCSV = useCallback((student: Student) => {
-    const headers = [
-      "StudentID", "Name", "Sex", "Grade", "Section", "Phone", "Emergency Phone", "@photo", "8-Up Print Readiness", "Enrolled Date"
-    ];
-    const row = [
-      `"${(student.studentId || "").replace(/"/g, '""')}"`,
-      `"${(student.fullName || "").replace(/"/g, '""')}"`,
-      `"${(student.sex || "Male").replace(/"/g, '""')}"`,
-      `"${(student.grade || "").replace(/"/g, '""')}"`,
-      `"${(student.department || (student as any).section || "").replace(/"/g, '""')}"`,
-      `"${student.phone || ""}"`,
-      `"${student.emergencyContactPhone || ""}"`,
-      `"${student.photoPath || ""}"`,
-      student.photoPath ? "100% READY (8-UP)" : "PENDING_PHOTO",
-      `"${student.createdAt || new Date().toISOString()}"`,
-    ];
+  const chartTotals = useMemo(() => {
+    let count = 0;
+    let verified = 0;
+    chartData.forEach((p) => {
+      count += p.count;
+      verified += p.verified;
+    });
+    return { count, verified, rate: count > 0 ? Math.round((verified / count) * 100) : null };
+  }, [chartData]);
 
-    const csvContent = "\uFEFF" + [headers.join(","), row.join(",")].join("\r\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    const cleanId = (student.studentId || "STU").replace(/[/\\]/g, "_");
-    link.download = `student_${cleanId}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(() => {
-      try {
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      } catch {}
-    }, 500);
-    setExportNotice(`Exported 1 student CSV for ${student.fullName}`);
-  }, []);
+  const branchRows = useMemo(() => {
+    if (!flow || !fleet) return [];
+    const startKey =
+      range === "today" ? flow.todayKey : flow.days.slice(-RANGE_DAYS[range])[0]?.day || flow.oldestKey;
 
-  const handleExportManifest = useCallback(() => {
-    const list = allStudentsList;
+    const totals = new Map<string, { today: number; period: number; verified: number }>();
+    const ensure = (branch: string) => {
+      if (!totals.has(branch)) totals.set(branch, { today: 0, period: 0, verified: 0 });
+      return totals.get(branch)!;
+    };
 
-    if (list.length === 0) {
-      alert("No students selected or found to export.");
-      return;
+    for (const row of flow.branchDays) {
+      if (!row.branch) continue;
+      const entry = ensure(row.branch);
+      if (row.day >= startKey) {
+        entry.period += row.count;
+        entry.verified += row.verified;
+      }
+      if (row.day === flow.todayKey) entry.today += row.count;
     }
 
-    const headers = [
-      "StudentID", "Name", "Sex", "Grade", "Section", "Phone", "Emergency Phone", "@photo", "8-Up Print Readiness", "Enrolled Date"
-    ];
+    const operators = new Map<string, { online: number; total: number }>();
+    for (const sender of fleet.senders) {
+      const branch = String(sender.branch || "").trim() || "Unassigned";
+      if (!operators.has(branch)) operators.set(branch, { online: 0, total: 0 });
+      const slot = operators.get(branch)!;
+      slot.total += 1;
+      if (sender.terminalStatus === "ACTIVE") slot.online += 1;
+    }
 
-    const rows = list.map((s) => [
-      `"${(s.studentId || "").replace(/"/g, '""')}"`,
-      `"${(s.fullName || "").replace(/"/g, '""')}"`,
-      `"${(s.sex || "Male").replace(/"/g, '""')}"`,
-      `"${(s.grade || "").replace(/"/g, '""')}"`,
-      `"${(s.department || (s as any).section || "").replace(/"/g, '""')}"`,
-      `"${s.phone || ""}"`,
-      `"${s.emergencyContactPhone || ""}"`,
-      `"${s.photoPath || ""}"`,
-      s.photoPath ? "100% READY (8-UP)" : "PENDING_PHOTO",
-      `"${s.createdAt || new Date().toISOString()}"`,
-    ]);
+    const names = new Set<string>([...totals.keys(), ...operators.keys()]);
+    return [...names]
+      .map((branch) => {
+        const t = totals.get(branch) || { today: 0, period: 0, verified: 0 };
+        const o = operators.get(branch) || { online: 0, total: 0 };
+        return {
+          branch,
+          schools: BRANCH_SCHOOL_MAP[branch]?.length ?? 0,
+          operatorsOnline: o.online,
+          operatorsTotal: o.total,
+          today: t.today,
+          period: t.period,
+          verifiedRate: t.period > 0 ? Math.round((t.verified / t.period) * 100) : null,
+        };
+      })
+      .sort((a, b) => b.period - a.period || a.branch.localeCompare(b.branch));
+  }, [flow, fleet, range]);
 
-    const csvContent = "\uFEFF" + [headers.join(","), ...rows.map((r) => r.join(","))].join("\r\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    const filename = `student_manifest_${list.length}_${new Date().toISOString().split("T")[0]}.csv`;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(() => {
-      try {
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      } catch {}
-    }, 500);
+  const maxBranchPeriod = useMemo(
+    () => branchRows.reduce((max, r) => Math.max(max, r.period), 0),
+    [branchRows]
+  );
 
-    setExportNotice(`Exported ${list.length} student records to ${filename}`);
-    setTimeout(() => setExportNotice(null), 4000);
-  }, [allStudentsList]);
+  const photoCoverage = useMemo(() => {
+    if (!stats || stats.totalStudents === null || stats.totalPhotos === null) return null;
+    if (stats.totalStudents === 0) return null;
+    return Math.round((stats.totalPhotos / stats.totalStudents) * 100);
+  }, [stats]);
+
+  const duplicates = snapshot?.duplicates ?? null;
+
+  const toggleDupe = (key: string) => {
+    setExpandedDupes((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const freshness = snapshot ? formatAgo(snapshot.fetchedAt, now) : "";
+  const isStale = snapshot ? now - snapshot.fetchedAt > 90000 : false;
+
+  // "Online" is a live claim, so it can only mean a station transmitted inside the fleet's 15-minute
+  // window. Counting everyone who touched the registry in the last day made the card read 22 online
+  // while the network was quiet, which is exactly the number an administrator cannot trust.
+  const activeNow = fleet?.totals.activeSenders ?? 0;
+  const idleRecently = Math.max(0, (fleet?.totals.recentlyActiveSenders ?? 0) - activeNow);
+
+  const kpis = [
+    {
+      label: "Total Students",
+      value: fmtInt(stats?.totalStudents),
+      hint: snapshot?.health?.database
+        ? snapshot.health.database.d1InSync
+          ? "D1 mirror in sync"
+          : "D1 mirror catching up"
+        : "Registry of record",
+      icon: Users,
+    },
+    {
+      label: "Photos Uploaded",
+      value: fmtInt(stats?.totalPhotos),
+      hint: photoCoverage === null ? "Coverage —" : `${photoCoverage}% photo coverage`,
+      icon: Camera,
+    },
+    {
+      label: "Registered Today",
+      value: fmtInt(periods?.today.count),
+      hint: "Since 00:00 (EAT)",
+      icon: Activity,
+    },
+    {
+      label: "Operators Active Now",
+      value: fmtInt(activeNow),
+      hint: `${fmtInt(idleRecently)} idle in the last 24 h`,
+      icon: Radio,
+    },
+    {
+      label: "Missing Photos",
+      value: fmtInt(stats?.missingPhotos),
+      hint: "Records awaiting a portrait",
+      icon: ShieldCheck,
+    },
+  ];
+
+  const systemRows = [
+    {
+      label: "Pages",
+      value: "Serving",
+      ok: true,
+      detail: "Cloudflare edge",
+      icon: Server,
+    },
+    {
+      label: "Worker API",
+      value: snapshot ? "Healthy" : "—",
+      ok: Boolean(snapshot?.health?.status === "healthy"),
+      detail: snapshot?.health ? `${snapshot.latency.health} ms /api/health` : "Awaiting snapshot",
+      icon: Wifi,
+    },
+    {
+      label: "Supabase",
+      value: snapshot?.health?.database.connected ? "Connected" : snapshot ? "Degraded" : "—",
+      ok: Boolean(snapshot?.health?.database.connected),
+      detail: snapshot?.health ? `${fmtInt(snapshot.health.database.liveRecordCount)} rows` : "Awaiting snapshot",
+      icon: Database,
+    },
+    {
+      label: "D1 Mirror",
+      value: snapshot?.health?.database.d1InSync ? "In sync" : snapshot ? "Catching up" : "—",
+      ok: Boolean(snapshot?.health?.database.d1InSync),
+      detail: snapshot?.health ? `${fmtInt(snapshot.health.database.d1RecordCount)} rows` : "Awaiting snapshot",
+      icon: Workflow,
+    },
+    {
+      label: "R2 Storage",
+      value: stats?.storageFormatted || "—",
+      ok: Boolean(stats?.storageFormatted),
+      detail: stats ? `${fmtInt(stats.r2TotalObjects)} objects` : "Awaiting snapshot",
+      icon: HardDrive,
+    },
+  ];
 
   return (
-    <div
-      className="space-y-6 max-w-7xl mx-auto pb-20 text-[#080808] dark:text-[#f2f7f4] font-sans select-none"
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      {/* Notice Alert */}
-      {noticeVisible && (
-        <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-4 text-xs text-[#3f4743] dark:text-[#8a9e93] flex items-center justify-between gap-3 shadow-sm animate-in fade-in duration-200">
-          <div className="flex items-center gap-3">
-            <Shield className="h-5 w-5 text-[#8fe617] shrink-0" />
-            <div>
-              <strong className="text-[#080808] dark:text-[#f2f7f4]">Receiver Workstation Active:</strong> Central ID card production and live manufacturing telemetry active.
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setNoticeVisible(false)}
-            className="p-1.5 rounded-xl border-0 outline-none text-[#6b7771] dark:text-[#8a9e93] hover:text-[#8fe617] hover:bg-[#8fe617]/15 transition-all duration-300 group cursor-pointer"
-            aria-label="Dismiss notice"
-          >
-            <X className="h-4 w-4 transition-transform group-hover:rotate-90" />
-          </button>
-        </div>
-      )}
-
-      {/* Export Confirmation Toast */}
-      {exportNotice && (
-        <div className="rounded-2xl border border-[#8fe617]/50 bg-[#8fe617]/15 p-3.5 text-xs text-[#080808] dark:text-[#8fe617] flex items-center justify-between gap-3 shadow-md animate-in fade-in duration-200 font-mono">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4 text-[#8fe617]" />
-            <span>{exportNotice}</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setExportNotice(null)}
-            className="p-1 rounded-lg border-0 outline-none text-[#080808] dark:text-[#8fe617] hover:bg-[#8fe617]/20 transition-transform active:scale-90"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
-
-      {/* Live Stream Telemetry Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] px-4 py-2.5 rounded-2xl text-xs shadow-xs">
-        <div className="flex items-center gap-2.5">
-          <span className="relative flex h-2.5 w-2.5">
-            {autoRefresh && (
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#8fe617] opacity-75" />
-            )}
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#8fe617]" />
-          </span>
-          <span className="font-mono uppercase tracking-wider font-extrabold text-[#080808] dark:text-[#f2f7f4] text-[11px]">
-            {autoRefresh ? "Live Cloud Sync Active" : "Sync Paused"}
-          </span>
-          <span className="text-[#dce7e1] dark:text-[#223126]">•</span>
-          <span className="text-[#6b7771] dark:text-[#8a9e93] font-mono text-[11px]">
-            Updated: {lastUpdated || "Just now"}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setAutoRefresh(!autoRefresh)}
-            className={`px-3 py-1 text-[11px] font-mono font-bold rounded-xl border transition-all cursor-pointer ${
-              autoRefresh
-                ? "border-[#8fe617] bg-[#8fe617] text-[#062404] shadow-xs font-black"
-                : "border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#161d19] text-[#6b7771] dark:text-[#8a9e93]"
-            }`}
-          >
-            Auto-Sync: {autoRefresh ? "ON (4s)" : "OFF"}
-          </button>
-          <button
-            type="button"
-            onClick={loadData}
-            disabled={isRefreshing}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono font-semibold rounded-xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] text-[#080808] dark:text-[#f2f7f4] hover:bg-[#eef5f1] dark:hover:bg-[#1c261e] disabled:opacity-50 transition-colors cursor-pointer"
-          >
-            <RefreshCw className={`h-3 w-3 ${isRefreshing ? "animate-spin text-[#8fe617]" : ""}`} />
-            <span>Poll</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Row 1: Primary KPI Cards Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
-        <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-4 shadow-sm">
-          <div className="flex items-center justify-between text-xs text-[#6b7771] dark:text-[#8a9e93] font-bold font-mono">
-            <span>TOTAL STUDENTS</span>
-            <Users className="h-4 w-4 text-[#8fe617]" />
-          </div>
-          <div className="text-2xl font-black font-mono text-[#080808] dark:text-[#f2f7f4] mt-1.5">
-            {totalStudents.toLocaleString()}
-          </div>
-          <div className="text-[10px] text-[#062404] bg-[#8fe617] px-2 py-0.5 rounded-full inline-block font-mono font-bold mt-1 shadow-xs">
-            LIVE REGISTRY
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-4 shadow-sm">
-          <div className="flex items-center justify-between text-xs text-[#6b7771] dark:text-[#8a9e93] font-bold font-mono">
-            <span>PHOTO COVERAGE</span>
-            <Camera className="h-4 w-4 text-[#8fe617]" />
-          </div>
-          <div className="text-2xl font-black font-mono text-[#080808] dark:text-[#f2f7f4] mt-1.5">
-            {photosCount.toLocaleString()}
-          </div>
-          <div className="text-[10px] text-[#6b7771] dark:text-[#8a9e93] font-mono font-semibold mt-1">
-            {totalStudents > 0 ? Math.round((photosCount / totalStudents) * 100) : 0}% VERIFIED
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-4 shadow-sm">
-          <div className="flex items-center justify-between text-xs text-[#6b7771] dark:text-[#8a9e93] font-bold font-mono">
-            <span>READY TO PRINT</span>
-            <CheckCircle2 className="h-4 w-4 text-[#8fe617]" />
-          </div>
-          <div className="text-2xl font-black font-mono text-[#080808] dark:text-[#f2f7f4] mt-1.5">
-            {readyForPrintCount.toLocaleString()}
-          </div>
-          <div className="text-[10px] text-[#062404] bg-[#8fe617] px-2 py-0.5 rounded-full inline-block font-mono font-bold mt-1 shadow-xs">
-            100% VERIFIED READY
-          </div>
-        </div>
-
-        <div
-          className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-4 shadow-sm cursor-pointer hover:border-amber-400 transition-colors"
-          onClick={runPreflightAudit}
-          title="Run Production Readiness Verification"
-        >
-          <div className="flex items-center justify-between text-xs text-[#6b7771] dark:text-[#8a9e93] font-bold font-mono">
-            <span>UNRESOLVED ISSUES</span>
-            <Sparkles className="h-4 w-4 text-amber-500" />
-          </div>
-          <div className="text-2xl font-black font-mono text-amber-600 dark:text-amber-400 mt-1.5">
-            {pendingVerification}
-          </div>
-          <div className="text-[10px] text-amber-700 dark:text-amber-400 font-mono font-semibold mt-1">
-            {pendingVerification === 0 ? "100% READY" : "ACTION REQUIRED"}
-          </div>
-        </div>
-      </div>
-
-      {/* Detailed Cohort & Production Matrix Analysis */}
-
-      <div className="rounded-3xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-5 sm:p-6 shadow-sm space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-[#eef5f1] dark:border-[#1c261e] pb-4">
-          <div className="flex items-center gap-2.5">
-            <GraduationCap className="h-5 w-5 text-[#8fe617]" />
-            <div>
-              <h2 className="text-sm sm:text-base font-bold font-mono uppercase tracking-wider text-[#080808] dark:text-[#f2f7f4]">
-                Detailed Cohort & Demographic Analysis
-              </h2>
-              <p className="text-xs text-[#6b7771] dark:text-[#8a9e93] font-mono mt-0.5">
-                School-bound and demographic breakdown with data ingestion telemetry
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* 2 Metric Cards: Demographics, Pipeline Data Quality */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Demographics & Gender Ratios */}
-          <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#070908] p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-mono font-bold uppercase text-[#6b7771] dark:text-[#8a9e93]">
-                Demographics & Gender
-              </span>
-              <Users className="h-4 w-4 text-[#8fe617]" />
-            </div>
-
-            <div className="space-y-2">
-              <div className="h-2.5 rounded-full bg-purple-500 overflow-hidden flex">
-                <div
-                  className="bg-emerald-500 h-full transition-all duration-500"
-                  style={{ width: `${demographics.malePercent}%` }}
-                />
-              </div>
-
-              <div className="flex items-center justify-between text-xs font-mono pt-1">
-                <div className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                  <span className="text-[#6b7771] dark:text-[#8a9e93]">Male:</span>
-                  <span className="font-bold text-[#080808] dark:text-[#f2f7f4]">
-                    {demographics.maleCount} ({demographics.malePercent}%)
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-purple-500" />
-                  <span className="text-[#6b7771] dark:text-[#8a9e93]">Female:</span>
-                  <span className="font-bold text-[#080808] dark:text-[#f2f7f4]">
-                    {demographics.femaleCount} ({demographics.femalePercent}%)
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <p className="text-[11px] text-[#6b7771] dark:text-[#8a9e93] leading-relaxed pt-1">
-              Balanced demographic distribution across all registered school divisions and departments.
-            </p>
-          </div>
-
-          {/* Data Integrity & Photo Pipeline Health */}
-          <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#070908] p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-mono font-bold uppercase text-[#6b7771] dark:text-[#8a9e93]">
-                Pipeline Data Quality
-              </span>
-              <CheckCircle2 className="h-4 w-4 text-[#8fe617]" />
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex justify-between text-xs font-mono">
-                <span className="text-[#6b7771] dark:text-[#8a9e93]">Photo Completion</span>
-                <span className="font-bold text-[#8fe617]">
-                  {totalStudents > 0 ? Math.round((photosCount / totalStudents) * 100) : 100}%
-                </span>
-              </div>
-              <div className="h-2 rounded-full bg-neutral-200 dark:bg-[#1c261e] overflow-hidden">
-                <div
-                  className="h-full bg-[#8fe617] transition-all duration-500"
-                  style={{ width: `${totalStudents > 0 ? (photosCount / totalStudents) * 100 : 100}%` }}
-                />
-              </div>
-
-              <div className="flex items-center justify-between text-[11px] font-mono text-[#6b7771] dark:text-[#8a9e93] pt-1">
-                <span>Missing Photos:</span>
-                <span className={`font-bold ${missingPhotos.length > 0 ? "text-amber-500" : "text-emerald-500"}`}>
-                  {missingPhotos.length} records
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Operational Analytics — replaces the raw ingested-record stream */}
-      <DashboardAnalytics
-        actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={runPreflightAudit}
-              disabled={isAuditing}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-[#8fe617] text-[#062404] px-3 py-1.5 text-xs font-mono font-bold hover:bg-[#7ed112] transition-all shadow-xs cursor-pointer active:scale-95 disabled:opacity-50"
-            >
-              <Sparkles className="h-3.5 w-3.5 text-[#062404]" />
-              <span>Verify Readiness</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleExportManifest}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] px-3 py-1.5 text-xs font-mono font-bold text-[#080808] dark:text-[#f2f7f4] hover:bg-[#eef5f1] dark:hover:bg-[#1c261e] transition-colors cursor-pointer"
-            >
-              <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
-              <span>Export CSV Manifest ({totalStudents})</span>
-            </button>
-
-            <Link
-              to="/receiver/students"
-              className="inline-flex items-center gap-1.5 rounded-xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] px-3 py-1.5 text-xs font-mono font-bold text-[#080808] dark:text-[#f2f7f4] hover:text-[#8fe617] hover:border-[#8fe617] transition-colors"
-            >
-              <span>Student Directory</span>
-              <ArrowUpRight className="h-3.5 w-3.5" />
-            </Link>
-          </div>
+    <PageShell className="mx-auto max-w-[1400px]">
+      <PageHero
+        icon={BarChart3}
+        title={title}
+        count={stats ? `${fmtInt(stats.totalStudents)} students` : "Reading snapshot"}
+        live={autoRefresh ? "Live · 20s" : false}
+        subtitle={
+          snapshot
+            ? `${subtitle} Snapshot ${freshness}, taken ${new Date(snapshot.fetchedAt).toLocaleTimeString()}.`
+            : subtitle
         }
-      />
+        actions={
+          <>
+            <ToolbarButton
+              icon={autoRefresh ? Pause : Play}
+              onClick={() => setAutoRefresh((v) => !v)}
+              title={autoRefresh ? "Pause auto refresh" : "Resume auto refresh"}
+            >
+              {autoRefresh ? "Pause" : "Resume"}
+            </ToolbarButton>
+            <PrimaryButton
+              icon={RefreshCw}
+              onClick={() => loadSnapshot("manual")}
+              disabled={isRefreshing}
+            >
+              {isRefreshing ? "Refreshing…" : "Refresh"}
+            </PrimaryButton>
+          </>
+        }
+      >
+        <FactGrid cols={5}>
+          {kpis.map((kpi) => (
+            <FactCard key={kpi.label} label={kpi.label} value={kpi.value} hint={kpi.hint} icon={kpi.icon} />
+          ))}
+        </FactGrid>
+      </PageHero>
 
-      {/* Pre-Flight Verification Audit Modal */}
-      {auditModalOpen && auditResults && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="relative w-full max-w-2xl rounded-3xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-6 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-[#eef5f1] dark:border-[#1c261e] pb-3">
-              <div className="flex items-center gap-2.5">
-                <Sparkles className="h-5 w-5 text-[#8fe617]" />
-                <h3 className="text-base font-mono font-bold text-[#080808] dark:text-[#f2f7f4]">
-                  Production Readiness & Asset Verification Report
-                </h3>
+      {loadError && (
+        <div className="flex items-start gap-3 rounded-2xl border border-[#F0D9A8] bg-[#FDF6E7] px-4 py-3 text-sm text-[#7a5a10]">
+          <Clock size={16} className="mt-0.5 shrink-0" />
+          <div>
+            <div className="font-medium">{loadError}</div>
+            {snapshot && (
+              <div className="mt-0.5 text-xs text-[#8a6c2a]">
+                Last complete snapshot: {new Date(snapshot.fetchedAt).toLocaleTimeString()} ({freshness})
               </div>
-              <button
-                type="button"
-                onClick={() => setAuditModalOpen(false)}
-                className="p-1.5 rounded-xl text-[#6b7771] dark:text-[#8a9e93] hover:text-[#8fe617] hover:bg-[#8fe617]/10 transition-colors cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
-              <div className="p-3 rounded-2xl bg-[#f7faf9] dark:bg-[#070908] border border-[#dce7e1] dark:border-[#223126]">
-                <div className="text-[10px] text-[#6b7771] dark:text-[#8a9e93]">Total Audited</div>
-                <div className="text-xl font-black text-[#080808] dark:text-[#f2f7f4] mt-1">
-                  {auditResults.totalAudited.toLocaleString()}
-                </div>
-              </div>
-              <div className="p-3 rounded-2xl bg-[#f7faf9] dark:bg-[#070908] border border-[#dce7e1] dark:border-[#223126]">
-                <div className="text-[10px] text-[#6b7771] dark:text-[#8a9e93]">Ready For Print</div>
-                <div className="text-xl font-black text-[#8fe617] mt-1">
-                  {auditResults.verifiedCount.toLocaleString()}
-                </div>
-              </div>
-              <div className="p-3 rounded-2xl bg-[#f7faf9] dark:bg-[#070908] border border-[#dce7e1] dark:border-[#223126]">
-                <div className="text-[10px] text-[#6b7771] dark:text-[#8a9e93]">Readiness Rate</div>
-                <div className="text-xl font-black text-[#8fe617] mt-1">
-                  {auditResults.readinessRate}%
-                </div>
-              </div>
-              <div className="p-3 rounded-2xl bg-[#f7faf9] dark:bg-[#070908] border border-[#dce7e1] dark:border-[#223126]">
-                <div className="text-[10px] text-[#6b7771] dark:text-[#8a9e93]">Missing Photos</div>
-                <div className={`text-xl font-black mt-1 ${auditResults.missingPhotosCount > 0 ? "text-amber-500" : "text-emerald-500"}`}>
-                  {auditResults.missingPhotosCount}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#eef5f1] dark:border-[#1c261e]">
-              <button
-                type="button"
-                onClick={() => setAuditModalOpen(false)}
-                className="px-4 py-2 text-xs font-mono font-bold rounded-xl border border-[#dce7e1] dark:border-[#223126] text-[#6b7771] dark:text-[#8a9e93] hover:text-[#080808] dark:hover:text-[#f2f7f4] transition-colors cursor-pointer"
-              >
-                Close Audit
-              </button>
-            </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Lightbox Modal */}
-      {inspectingPhotoStudent && inspectingPhotoStudent.photoPath && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="relative w-full max-w-lg rounded-3xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-[#eef5f1] dark:border-[#1c261e] pb-3">
+      {!snapshot ? (
+        <div className="space-y-6">
+          <div className={`${card} p-6`}>
+            <div className="h-4 w-40 rounded bg-[#EDF4E5] animate-pulse" />
+            <div className="mt-6 h-64 rounded-xl bg-[#F4F8EE] animate-pulse" />
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Live flow + period totals */}
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            <div className={`${card} xl:col-span-2 p-6`}>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-semibold">
+                    <BarChart3 size={16} className="text-[#6FBF0A]" />
+                    Live Registration Flow
+                  </div>
+                  <div className="mt-1 text-xs text-[#7C8B70]">
+                    {RANGE_LABEL[range]} · {fmtInt(chartTotals.count)} records ·{" "}
+                    {chartTotals.rate === null ? "—" : `${chartTotals.rate}% verified`}
+                  </div>
+                </div>
+                <div className="inline-flex rounded-xl border border-[#E3EFD7] p-1">
+                  {(Object.keys(RANGE_DAYS) as RangeKey[]).map((key) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setRange(key)}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+                        range === key
+                          ? "bg-[#85E510] text-[#062404]"
+                          : "text-[#7C8B70] hover:bg-[#F3F8EC]"
+                      }`}
+                    >
+                      {RANGE_LABEL[key]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-5 h-[290px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={chartData} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="flowFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#85E510" stopOpacity={0.42} />
+                        <stop offset="100%" stopColor="#85E510" stopOpacity={0.02} />
+                      </linearGradient>
+                      <linearGradient id="verifiedFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#3F7A06" stopOpacity={0.18} />
+                        <stop offset="100%" stopColor="#3F7A06" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#E9F2DE" vertical={false} />
+                    <XAxis
+                      dataKey="label"
+                      tick={{ fontSize: 11, fill: "#7C8B70" }}
+                      axisLine={false}
+                      tickLine={false}
+                      minTickGap={28}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 11, fill: "#7C8B70" }}
+                      axisLine={false}
+                      tickLine={false}
+                      allowDecimals={false}
+                      width={52}
+                    />
+                    <Tooltip
+                      cursor={{ stroke: "#85E510", strokeWidth: 1, strokeDasharray: "4 4" }}
+                      content={({ active, payload }: any) => {
+                        if (!active || !payload || payload.length === 0) return null;
+                        const point = payload[0].payload;
+                        return (
+                          <div className="rounded-xl border border-[#E3EFD7] bg-white px-3 py-2 shadow-lg">
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-[#7C8B70]">
+                              {point.full}
+                            </div>
+                            <div className="mt-1 text-sm font-semibold text-[#0B1118]">
+                              {fmtInt(point.count)} records
+                            </div>
+                            <div className="text-xs text-[#3F7A06]">{fmtInt(point.verified)} verified</div>
+                          </div>
+                        );
+                      }}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="count"
+                      stroke="#6FBF0A"
+                      strokeWidth={2.2}
+                      fill="url(#flowFill)"
+                      activeDot={{ r: 4, fill: "#3F7A06", stroke: "#fff", strokeWidth: 2 }}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="verified"
+                      stroke="#3F7A06"
+                      strokeWidth={1.4}
+                      strokeDasharray="4 3"
+                      fill="url(#verifiedFill)"
+                      dot={false}
+                      activeDot={false}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-[#7C8B70]">
+                <span className="inline-flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-[#6FBF0A]" /> Registrations
+                </span>
+                <span className="inline-flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-[#3F7A06]" /> Verified
+                </span>
+                {peak && (
+                  <span>
+                    Busiest {range === "today" ? "hour" : "day"}:{" "}
+                    <span className="font-medium text-[#3F7A06]">
+                      {peak.full} · {fmtInt(peak.count)}
+                    </span>
+                  </span>
+                )}
+                <span className="ml-auto">
+                  Source: {flow.source === "d1" ? "D1 aggregate" : "Supabase"} · {flow.queryLatencyMs} ms
+                </span>
+              </div>
+            </div>
+
+            <div className={`${card} p-6`}>
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <ArrowUpRight size={16} className="text-[#6FBF0A]" />
+                Period Totals
+              </div>
+              <div className="mt-4 divide-y divide-[#EDF4E5]">
+                {[
+                  { label: "Today", value: periods?.today.count, verified: periods?.today.verified },
+                  { label: "Yesterday", value: periods?.yesterday.count, verified: periods?.yesterday.verified },
+                  { label: "This Week", value: periods?.week.count, verified: periods?.week.verified },
+                  { label: "This Month", value: periods?.month.count, verified: periods?.month.verified },
+                ].map((row) => (
+                  <div key={row.label} className="flex items-center justify-between py-3 first:pt-0 last:pb-0">
+                    <div>
+                      <div className="text-sm font-medium">{row.label}</div>
+                      <div className="text-[11px] text-[#7C8B70]">
+                        {fmtInt(row.verified)} verified
+                      </div>
+                    </div>
+                    <div className="text-xl font-semibold tabular-nums">{fmtInt(row.value)}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 rounded-xl bg-[#FBFDF7] px-3 py-2.5 text-[11px] leading-relaxed text-[#4B5B42]">
+                Calendar days in Addis Ababa time (UTC+3), Monday weeks. The same windows the Fleet and
+                Velocity screens use.
+              </div>
+            </div>
+          </div>
+
+          {/* System status + Branch performance */}
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            <div className={`${card} p-6`}>
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <ShieldCheck size={16} className="text-[#6FBF0A]" />
+                System Status
+              </div>
+              <div className="mt-4 space-y-3">
+                {systemRows.map((row) => (
+                  <div key={row.label} className="flex items-center gap-3">
+                    <span className="grid h-8 w-8 place-items-center rounded-lg bg-[#F3F8EC] text-[#3F7A06]">
+                      <row.icon size={14} />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium">{row.label}</div>
+                      <div className="truncate text-[11px] text-[#7C8B70]">{row.detail}</div>
+                    </div>
+                    <span
+                      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        row.ok ? "bg-[#EAF7DA] text-[#3F7A06]" : "bg-[#FDF6E7] text-[#7A5A10]"
+                      }`}
+                    >
+                      <span className={`h-1.5 w-1.5 rounded-full ${row.ok ? "bg-[#6FBF0A]" : "bg-[#D8A72A]"}`} />
+                      {row.value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className={`${card} xl:col-span-2 p-6`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <MapPin size={16} className="text-[#6FBF0A]" />
+                  Branch Performance
+                </div>
+                <span className="text-[11px] text-[#7C8B70]">
+                  {RANGE_LABEL[range]} · registrations
+                </span>
+              </div>
+
+              <div className="mt-4 overflow-x-auto">
+                <table className="w-full min-w-[640px] text-sm">
+                  <thead>
+                    <tr className="text-[11px] uppercase tracking-[0.1em] text-[#7C8B70]">
+                      <th className="pb-2 text-left font-semibold">Branch</th>
+                      <th className="pb-2 text-right font-semibold">Schools</th>
+                      <th className="pb-2 text-right font-semibold">Active / Total</th>
+                      <th className="pb-2 text-right font-semibold">Today</th>
+                      <th className="pb-2 pl-6 text-left font-semibold">{RANGE_LABEL[range]}</th>
+                      <th className="pb-2 text-right font-semibold">Verified</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#EDF4E5]">
+                    {branchRows.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="py-6 text-center text-sm text-[#7C8B70]">
+                          No registrations recorded in this window.
+                        </td>
+                      </tr>
+                    )}
+                    {branchRows.map((row) => (
+                      <tr key={row.branch}>
+                        <td className="py-3">
+                          <div className="flex items-center gap-2 font-medium">
+                            <Building2 size={13} className="text-[#6FBF0A]" />
+                            {row.branch}
+                          </div>
+                        </td>
+                        <td className="py-3 text-right tabular-nums text-[#5C6B51]">
+                          {row.schools || "—"}
+                        </td>
+                        <td className="py-3 text-right tabular-nums text-[#5C6B51]">
+                          {row.operatorsOnline}/{row.operatorsTotal}
+                        </td>
+                        <td className="py-3 text-right tabular-nums font-medium">{fmtInt(row.today)}</td>
+                        <td className="py-3 pl-6">
+                          <div className="flex items-center gap-3">
+                            <div className="h-1.5 w-full max-w-[160px] overflow-hidden rounded-full bg-[#EDF4E5]">
+                              <div
+                                className="h-full rounded-full bg-[#85E510]"
+                                style={{
+                                  width: `${
+                                    maxBranchPeriod > 0
+                                      ? Math.max(2, Math.round((row.period / maxBranchPeriod) * 100))
+                                      : 0
+                                  }%`,
+                                }}
+                              />
+                            </div>
+                            <span className="w-12 text-right tabular-nums font-medium">{fmtInt(row.period)}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 text-right tabular-nums">
+                          {row.verifiedRate === null ? "—" : `${row.verifiedRate}%`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          {/* Duplicate records — same name + father + grade + section + phone */}
+          <div className={`${card} p-6`}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h3 className="text-sm font-mono font-bold text-[#080808] dark:text-[#f2f7f4]">
-                  {inspectingPhotoStudent.fullName}
-                </h3>
-                <p className="text-xs font-mono text-[#6b7771] dark:text-[#8a9e93]">
-                  ID: {inspectingPhotoStudent.studentId} • Grade: {inspectingPhotoStudent.grade || "N/A"} • Section: {inspectingPhotoStudent.department || (inspectingPhotoStudent as any).section || "A"}
-                </p>
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <Copy size={16} className="text-[#6FBF0A]" />
+                  Duplicate Records
+                </div>
+                <div className="mt-1 text-xs text-[#7C8B70]">
+                  Same name, father, grade, section and phone — keep one, review the rest
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setInspectingPhotoStudent(null)}
-                className="p-1.5 rounded-xl text-[#6b7771] dark:text-[#8a9e93] hover:text-[#8fe617] hover:bg-[#8fe617]/10 transition-colors cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              {duplicates && (
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                    duplicates.totalGroups > 0
+                      ? "bg-[#FDF6E7] text-[#7A5A10]"
+                      : "bg-[#EAF7DA] text-[#3F7A06]"
+                  }`}
+                >
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${duplicates.totalGroups > 0 ? "bg-[#D8A72A]" : "bg-[#6FBF0A]"}`}
+                  />
+                  {duplicates.totalGroups === 0
+                    ? "No duplicates found"
+                    : `${fmtInt(duplicates.totalGroups)} groups · ${fmtInt(duplicates.extraRows)} extra rows`}
+                </span>
+              )}
             </div>
 
-            <div className="rounded-2xl overflow-hidden bg-neutral-900 border border-neutral-800 flex items-center justify-center max-h-[60vh] p-2">
-              <img
-                src={getPhotoUrl(inspectingPhotoStudent.photoPath) || inspectingPhotoStudent.photoPath}
-                alt={inspectingPhotoStudent.fullName}
-                className="max-h-[55vh] w-auto object-contain rounded-xl"
-              />
+            {snapshot && !duplicates && (
+              <div className="mt-4 rounded-xl bg-[#FBFDF7] px-3 py-2.5 text-[11px] text-[#7C8B70]">
+                Duplicate classification did not answer this refresh; it retries on the next one.
+              </div>
+            )}
+
+            {duplicates && duplicates.totalGroups > 0 && (
+              <div className="mt-4 max-h-[380px] divide-y divide-[#EDF4E5] overflow-y-auto pr-1">
+                {duplicates.groups.map((g) => {
+                  const open = expandedDupes.has(g.key);
+                  return (
+                    <div key={g.key} className="py-2.5 first:pt-0">
+                      <button
+                        type="button"
+                        onClick={() => toggleDupe(g.key)}
+                        className="flex w-full items-center gap-3 text-left"
+                      >
+                        <span
+                          className={`grid h-7 w-7 shrink-0 place-items-center rounded-full text-[11px] font-bold ${
+                            g.count > 2 ? "bg-[#FBE3E3] text-[#B42318]" : "bg-[#FDF6E7] text-[#7A5A10]"
+                          }`}
+                        >
+                          ×{g.count}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium">{g.fullName}</div>
+                          <div className="truncate text-[11px] text-[#7C8B70]">
+                            {g.guardianFullName ? `Father: ${g.guardianFullName} · ` : ""}
+                            {g.grade}
+                            {g.section ? ` ${g.section}` : ""}
+                            {g.phone ? ` · ${g.phone}` : ""}
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-[11px] font-medium text-[#3F7A06]">
+                          {open ? "Hide" : "Review"}
+                        </span>
+                      </button>
+                      {open && (
+                        <div className="mt-2 overflow-x-auto rounded-xl border border-[#EDF4E5]">
+                          <table className="w-full min-w-[560px] text-xs">
+                            <thead>
+                              <tr className="text-left text-[10px] uppercase tracking-wide text-[#7C8B70]">
+                                <th className="px-3 py-2 font-semibold">Student ID</th>
+                                <th className="px-3 py-2 font-semibold">School</th>
+                                <th className="px-3 py-2 font-semibold">Registered</th>
+                                <th className="px-3 py-2 font-semibold">Photo</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[#EDF4E5]">
+                              {g.members.map((m) => (
+                                <tr key={m.studentId}>
+                                  <td className="px-3 py-2 font-mono">{m.studentId}</td>
+                                  <td className="px-3 py-2">{m.school || "—"}</td>
+                                  <td className="px-3 py-2">
+                                    {m.createdAt ? m.createdAt.slice(0, 10) : "—"}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {m.photoVerified ? (
+                                      <span className="text-[#3F7A06]">Verified</span>
+                                    ) : (
+                                      <span className="text-[#7A5A10]">Pending</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {duplicates.truncated && (
+                  <div className="py-3 text-center text-[11px] text-[#7C8B70]">
+                    Showing the first {duplicates.groups.length} of {fmtInt(duplicates.totalGroups)} groups —
+                    clearing the oldest copies reveals the rest.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {duplicates && (
+              <div className="mt-3 text-[11px] text-[#7C8B70]">
+                Source: {duplicates.source === "d1" ? "D1 mirror" : "Supabase"} ·{" "}
+                {fmtInt(duplicates.totalStudents)} rows scanned · {duplicates.queryLatencyMs} ms
+              </div>
+            )}
+          </div>
+
+          {/* Recent activity + live branches */}
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            <div className={`${card} xl:col-span-2 p-6`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <Clock size={16} className="text-[#6FBF0A]" />
+                  Recent Activity
+                </div>
+                <span className="text-[11px] text-[#7C8B70]">
+                  latest {snapshot.logs.length}
+                </span>
+              </div>
+              <div className="mt-4 divide-y divide-[#EDF4E5]">
+                {snapshot.logs.length === 0 && (
+                  <div className="py-6 text-center text-sm text-[#7C8B70]">No audit entries recorded yet.</div>
+                )}
+                {snapshot.logs.map((log) => (
+                  <div key={log.id} className="flex items-center gap-3 py-2.5 first:pt-0">
+                    <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#F3F8EC] text-[#3F7A06]">
+                      <CheckCircle2 size={13} />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium">{actionLabel(log.action)}</div>
+                      <div className="truncate text-[11px] text-[#7C8B70]">
+                        {log.user?.username || "SYSTEM"} · {log.entityType || "Record"}
+                      </div>
+                    </div>
+                    <span className="shrink-0 text-[11px] text-[#7C8B70]">
+                      {log.createdAt ? formatAgo(new Date(log.createdAt).getTime(), snapshot.fetchedAt) : "—"}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
 
-            <div className="flex items-center justify-between pt-2">
-              <span className="text-xs font-mono text-[#6b7771] dark:text-[#8a9e93]">
-                Supabase & Cloudflare R2 Synchronized
+            <div className={`${card} p-6`}>
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <Radio size={16} className="text-[#6FBF0A]" />
+                Live Branch Velocity
+              </div>
+              <div className="mt-4 space-y-3">
+                {branchRows.length === 0 && (
+                  <div className="text-sm text-[#7C8B70]">No branch activity in this window.</div>
+                )}
+                {branchRows.slice(0, 6).map((row) => {
+                  const share = chartTotals.count > 0 ? (row.period / chartTotals.count) * 100 : 0;
+                  return (
+                    <div key={row.branch}>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium">{row.branch}</span>
+                        <span className="text-[#7C8B70]">
+                          {fmtInt(row.period)} · {share.toFixed(1)}%
+                        </span>
+                      </div>
+                      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[#EDF4E5]">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-[#85E510] to-[#3F7A06]"
+                          style={{ width: `${Math.max(1, Math.min(100, share))}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-5">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <Building2 size={16} className="text-[#6FBF0A]" />
+                  Branch Locations
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {DEFAULT_BRANCHES.map((branch) => (
+                    <span
+                      key={branch}
+                      className="rounded-full border border-[#E3EFD7] px-2.5 py-1 text-[11px] font-medium text-[#4B5B42]"
+                    >
+                      {branch} · {BRANCH_SCHOOL_MAP[branch]?.length ?? 0}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-1 text-[11px] text-[#7C8B70]">
+            <span className="inline-flex items-center gap-1.5">
+              <Activity size={12} />
+              {isStale ? "Snapshot is older than 90s — refresh running" : "Snapshot is current"}
+            </span>
+            <span>stats {snapshot.latency.stats} ms</span>
+            <span>flow {snapshot.latency.flow} ms</span>
+            <span>dupes {snapshot.latency.dupes} ms</span>
+            <span>health {snapshot.latency.health} ms</span>
+            <span>total {snapshot.latency.total} ms</span>
+            <span>worker {snapshot.health?.version || "—"}</span>
+            {stats && stats.statsComplete === false && (
+              <span className="text-[#7A5A10]">
+                Stats served from last complete snapshot
+                {stats.statsMissing?.length ? ` (${stats.statsMissing.join(", ")})` : ""}
               </span>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleDownloadSingleStudentPhoto(inspectingPhotoStudent)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#8fe617] text-[#062404] text-xs font-mono font-bold hover:bg-[#7ed112] transition-colors cursor-pointer shadow-xs"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  <span>Download Photo</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setInspectingPhotoStudent(null)}
-                  className="px-3 py-1.5 rounded-xl border border-[#dce7e1] dark:border-[#223126] text-xs font-mono text-[#6b7771] dark:text-[#8a9e93] hover:text-[#080808] dark:hover:text-[#f2f7f4] transition-colors cursor-pointer"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
+            )}
           </div>
-        </div>
+        </>
       )}
 
-      {/* Temporary vs Permanent Delete Modal */}
-      {deleteModalStudent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="w-full max-w-md rounded-3xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#111613] p-6 shadow-2xl space-y-4 font-mono">
-            <div className="flex items-center justify-between border-b border-[#eef5f1] dark:border-[#1c261e] pb-3">
-              <div className="flex items-center gap-2 text-rose-500 font-bold text-sm">
-                <Trash2 className="h-4 w-4" />
-                <span>Delete Student Record</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setDeleteModalStudent(null)}
-                className="text-[#6b7771] dark:text-[#8a9e93] hover:text-[#080808] dark:hover:text-[#f2f7f4] cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="space-y-2 text-xs">
-              <p className="text-[#080808] dark:text-[#f2f7f4] font-bold">
-                {deleteModalStudent.fullName || "Student"} ({deleteModalStudent.studentId})
-              </p>
-              <p className="text-[#6b7771] dark:text-[#8a9e93]">
-                Please choose whether to remove this record temporarily from the Receiver workstation or expunge it permanently everywhere.
-              </p>
-            </div>
-
-            <div className="space-y-3 pt-2">
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={() => handleExecuteDelete("TEMPORARY")}
-                className="w-full text-left p-3.5 rounded-2xl border border-amber-300 dark:border-amber-700/60 bg-amber-50/50 dark:bg-amber-950/20 hover:border-amber-400 dark:hover:border-amber-600 transition-all cursor-pointer group"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-amber-700 dark:text-amber-300 text-xs">
-                    Temporary Delete (Hide from Receiver)
-                  </span>
-                  <span className="text-[10px] bg-amber-200 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded-md font-black">
-                    RECOMMENDED
-                  </span>
-                </div>
-                <p className="text-[11px] text-[#6b7771] dark:text-[#8a9e93] mt-1">
-                  Removes the student from the Receiver queue and printing view. All demographic data and photos remain intact in Supabase database.
-                </p>
-              </button>
-
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={() => handleExecuteDelete("PERMANENT")}
-                className="w-full text-left p-3.5 rounded-2xl border border-red-300 dark:border-red-900/60 bg-red-50/40 dark:bg-red-950/20 hover:border-red-500 transition-all cursor-pointer group"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-red-600 dark:text-red-400 text-xs">
-                    Permanent Delete (Expunge Everywhere)
-                  </span>
-                  <span className="text-[10px] bg-red-200 dark:bg-red-900/60 text-red-800 dark:text-red-200 px-2 py-0.5 rounded-md font-black">
-                    IRREVERSIBLE
-                  </span>
-                </div>
-                <p className="text-[11px] text-[#6b7771] dark:text-[#8a9e93] mt-1">
-                  Irreversibly erases this student record, photos, and files across Supabase database, cloud storage, and all connected workstations.
-                </p>
-              </button>
-            </div>
-
-            <div className="flex justify-end pt-2 border-t border-[#eef5f1] dark:border-[#1c261e]">
-              <button
-                type="button"
-                onClick={() => setDeleteModalStudent(null)}
-                className="px-4 py-2 text-xs font-bold text-[#6b7771] dark:text-[#8a9e93] hover:text-[#080808] dark:hover:text-[#f2f7f4] rounded-xl cursor-pointer"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+      <span className="sr-only">
+        {autoRefresh ? `Auto refresh every ${REFRESH_INTERVAL_MS / 1000} seconds` : "Auto refresh paused"}
+      </span>
+    </PageShell>
   );
 };
+
+export default AdminDashboardPage;

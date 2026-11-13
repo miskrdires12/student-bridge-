@@ -155,9 +155,7 @@ export const LoginPage: React.FC = () => {
     setCurrentUser(user, token);
 
     // Direct role-specific workspace landing (Senders always go to /sender/register)
-    if (user.role === 'SUPER_ADMIN') {
-      navigate('/super-admin/dashboard', { replace: true });
-    } else if (user.role === 'ADMIN') {
+    if (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN') {
       navigate('/admin/dashboard', { replace: true });
     } else if (user.role === 'RECEIVER') {
       navigate('/receiver/students', { replace: true });
@@ -175,7 +173,7 @@ export const LoginPage: React.FC = () => {
   return (
     <div className="flex flex-col items-center justify-center py-8 px-4 font-sans select-none min-h-[90vh]">
       {/* Silicon Labs Logo Card */}
-      <div className="w-16 h-16 rounded-2xl bg-white border border-slate-200 shadow-[0_4px_16px_rgba(0,0,0,0.04)] flex items-center justify-center p-2.5 mb-3 transition-transform hover:scale-105">
+      <div className="w-16 h-16 rounded-2xl bg-white border border-[#E3EFD7] shadow-[0_4px_16px_rgba(0,0,0,0.04)] flex items-center justify-center p-2.5 mb-3 transition-transform hover:scale-105">
         <img
           src="/logo.png"
           alt="Silicon Labs"
@@ -189,7 +187,7 @@ export const LoginPage: React.FC = () => {
       {/* Brand Title with Light Lemon Green Accent */}
       <div className="flex items-center gap-1.5 text-2xl font-black text-black tracking-tight font-heading">
         <span>SILICON</span>
-        <span className="bg-[#9EE617] text-black text-xs font-black px-2 py-0.5 rounded-md leading-none shadow-xs">
+        <span className="bg-[#9EE617] text-black text-xs font-black px-2 py-0.5 rounded-md leading-none shadow-sm">
           LABS
         </span>
       </div>
@@ -200,13 +198,13 @@ export const LoginPage: React.FC = () => {
       </p>
 
       {/* Hardware Station Badge */}
-      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 border border-slate-200 text-[10px] text-slate-600 font-mono">
+      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#FBFDF7] border border-[#E3EFD7] text-[10px] text-[#5C6B51] font-mono">
         <ShieldCheck className="w-3.5 h-3.5 text-[#85E510]" />
         <span>Hardware Station: {deviceId}</span>
       </div>
 
       {/* Secure Sign-In Card (60% White, 30% Lemon Green Accents, 10% Black Typography) */}
-      <div className="w-full max-w-[400px] bg-white rounded-3xl border border-slate-200 shadow-[0_12px_36px_rgba(0,0,0,0.05)] p-6 sm:p-7 mt-5 relative">
+      <div className="w-full max-w-[400px] bg-white rounded-3xl border border-[#DBEDC9] shadow-[0_12px_36px_rgba(0,0,0,0.05)] p-6 sm:p-7 mt-5 relative">
         <div className="mb-5">
           <h2 className="text-lg font-black text-black tracking-tight leading-snug">
             Sign In to Terminal
@@ -238,7 +236,7 @@ export const LoginPage: React.FC = () => {
                     ? 'bg-amber-100 text-amber-800 border-amber-300'
                     : identifiedUser.role === 'RECEIVER'
                     ? 'bg-blue-100 text-blue-800 border-blue-300'
-                    : 'bg-[#9EE617]/20 text-[#256002] border-[#9EE617]/40'
+                    : 'bg-[#EAF7DA] text-[#2F5E04] border-[#CDEBB4]'
                 }`}>
                   {identifiedUser.role === 'SUPER_ADMIN' ? 'SUPER ADMIN' : identifiedUser.role}
                 </span>
@@ -254,8 +252,8 @@ export const LoginPage: React.FC = () => {
                   setEmail(e.target.value);
                   setError(null);
                 }}
-                placeholder="e.g. miskrdires11@gmail.com"
-                className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-10 pr-3.5 py-2.5 text-xs sm:text-sm text-black placeholder:text-slate-400 font-medium focus:outline-none focus:border-[#9EE617] focus:ring-2 focus:ring-[#9EE617]/20 transition-all"
+                placeholder="e.g. operator@school.edu"
+                className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-10 pr-3.5 py-2.5 text-xs sm:text-sm text-black placeholder:text-slate-400 font-medium focus:outline-none focus:border-[#85E510] focus:ring-2 focus:ring-[#85E510]/20 transition-all"
               />
             </div>
           </div>
@@ -276,7 +274,7 @@ export const LoginPage: React.FC = () => {
                   setError(null);
                 }}
                 placeholder="••••••••"
-                className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-10 pr-11 py-2.5 text-xs sm:text-sm text-black placeholder:text-slate-400 font-medium focus:outline-none focus:border-[#9EE617] focus:ring-2 focus:ring-[#9EE617]/20 transition-all"
+                className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-10 pr-11 py-2.5 text-xs sm:text-sm text-black placeholder:text-slate-400 font-medium focus:outline-none focus:border-[#85E510] focus:ring-2 focus:ring-[#85E510]/20 transition-all"
               />
               <button
                 type="button"
@@ -294,14 +292,14 @@ export const LoginPage: React.FC = () => {
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full mt-2 py-3 px-4 rounded-xl bg-[#9EE617] hover:bg-[#8FE617] active:bg-[#80D60E] text-black font-black text-xs uppercase tracking-wider shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+            className="w-full mt-2 py-3 px-4 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] active:bg-[#6DB80A] text-black font-black text-xs uppercase tracking-wider shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
           >
             <span>AUTHENTICATE SESSION</span>
             <ArrowRight className="w-4 h-4 stroke-[2.5]" />
           </button>
         </form>
 
-        <div className="mt-5 pt-4 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+        <div className="mt-5 pt-4 border-t border-[#EDF4E5] flex items-center justify-between text-[11px] text-slate-500">
           <a
             href="/forgot-password"
             className="text-slate-600 hover:text-black font-semibold hover:underline"

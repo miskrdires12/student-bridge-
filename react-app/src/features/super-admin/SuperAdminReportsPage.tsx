@@ -1,20 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { BarChart3, TrendingUp, Award, Layers, Download, Calendar } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { BarChart3, TrendingUp, Award, Layers, Download, Calendar, School, Camera } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts';
 import { getStudents } from '@/lib/store';
+import { PageShell, PageHero, FactGrid, FactCard, SectionCard, Chip } from '@/components/ui/PageKit';
+import { useRegistryVersion } from '@/lib/useRegistryVersion';
 
 export const SuperAdminReportsPage: React.FC = () => {
-  const [dataVersion, setDataVersion] = useState(0);
-
-  useEffect(() => {
-    const bump = () => setDataVersion(v => v + 1);
-    window.addEventListener('studentbridge_datachange', bump);
-    window.addEventListener('studentbridge_userchange', bump);
-    return () => {
-      window.removeEventListener('studentbridge_datachange', bump);
-      window.removeEventListener('studentbridge_userchange', bump);
-    };
-  }, []);
+  const dataVersion = useRegistryVersion();
 
   const schoolPerformance = useMemo(() => {
     const map = new Map<string, { captured: number; accepted: number }>();
@@ -22,7 +14,7 @@ export const SuperAdminReportsPage: React.FC = () => {
       const key = (s.school || '').trim() || 'Unassigned';
       const cur = map.get(key) || { captured: 0, accepted: 0 };
       cur.captured += 1;
-      if (s.photoPath || (s.status || '').toLowerCase() === 'accepted') cur.accepted += 1;
+      if (s.photoIntegrityStatus === 'PHOTO_VERIFIED') cur.accepted += 1;
       map.set(key, cur);
     });
     return Array.from(map.entries())
@@ -53,80 +45,89 @@ export const SuperAdminReportsPage: React.FC = () => {
       const day = byKey.get(k);
       if (day) {
         day.submissions += 1;
-        if (s.photoPath || (s.status || '').toLowerCase() === 'accepted') day.verified += 1;
+        if (s.photoIntegrityStatus === 'PHOTO_VERIFIED') day.verified += 1;
       }
     });
     return days.map(({ key, ...rest }) => rest);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataVersion]);
 
+  const weekSubmissions = submissionTrends.reduce((acc, d) => acc + d.submissions, 0);
+  const weekVerified = submissionTrends.reduce((acc, d) => acc + d.verified, 0);
+  const campuses = new Set(getStudents().map(s => (s.school || '').trim()).filter(Boolean)).size;
+
   return (
-    <div className="space-y-6 max-w-6xl mx-auto pb-12">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E2E8F0]">
-        <div>
-          <h1 className="text-2xl font-heading font-extrabold text-[#202833] tracking-tight">Global Reports & Analytics</h1>
-          <p className="text-xs text-[#64748B] mt-0.5">
-            Campus throughput, operator quality ratios, and multi-school biometric validation reports
-          </p>
-        </div>
+    <PageShell className="mx-auto max-w-6xl">
+      <PageHero
+        icon={BarChart3}
+        title="Global Reports"
+        count={`${campuses} campuses`}
+        live="Live data"
+        subtitle="Campus throughput and biometric validation ratios, computed from the records this station holds."
+        actions={<Chip tone="neutral">{`Academic year 2026/27`}</Chip>}
+      >
+        <FactGrid cols={4}>
+          <FactCard label="Submissions (7d)" value={weekSubmissions.toLocaleString()} hint="records registered" icon={TrendingUp} />
+          <FactCard label="Verified (7d)" value={weekVerified.toLocaleString()} hint="photo integrity verified" icon={Award} />
+          <FactCard label="Campuses" value={campuses.toLocaleString()} hint="with at least one record" icon={School} />
+          <FactCard label="Top Campus" value={schoolPerformance[0]?.school || '—'} hint={schoolPerformance[0] ? `${schoolPerformance[0].captured.toLocaleString()} captured` : 'no records yet'} icon={Layers} />
+        </FactGrid>
+      </PageHero>
 
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white border border-[#CBD5E1] text-xs font-semibold text-[#202833] shadow-sm">
-          <Calendar className="w-3.5 h-3.5 text-[#85E510]" />
-          <span>Academic Year 2026/27</span>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-8 bg-white border border-[#E2E8F0] rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center justify-between pb-3 border-b border-[#E2E8F0]">
-            <div>
-              <h2 className="text-sm font-heading font-bold text-[#202833] uppercase tracking-wider">Submissions vs Verified</h2>
-              <p className="text-xs text-[#64748B] mt-0.5">Daily ingestion performance across all stations (last 7 days)</p>
-            </div>
-            <div className="flex items-center gap-3 text-xs font-semibold">
-              <span className="text-[#366804] flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-[#85E510]" /> Submissions</span>
-              <span className="text-[#0369A1] flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-[#0284C7]" /> Verified</span>
-            </div>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <SectionCard
+          className="lg:col-span-8"
+          title="Submissions vs Verified"
+          subtitle="Daily ingestion across all stations, last 7 days"
+          icon={TrendingUp}
+        >
+          <div className="mt-1 flex items-center gap-3 text-xs font-semibold">
+            <span className="flex items-center gap-1.5 text-[#2F5E04]"><span className="h-2.5 w-2.5 rounded bg-[#85E510]" /> Submissions</span>
+            <span className="flex items-center gap-1.5 text-[#366804]"><span className="h-2.5 w-2.5 rounded bg-[#3F7A06]" /> Verified</span>
           </div>
 
-          <div className="h-64 mt-4 w-full">
+          <div className="mt-3 h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={submissionTrends}>
-                <XAxis dataKey="label" stroke="#64748B" fontSize={11} tickLine={false} />
-                <YAxis stroke="#64748B" fontSize={11} tickLine={false} />
-                <Tooltip contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#CBD5E1', borderRadius: '12px', fontSize: '12px', color: '#202833', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }} />
+                <XAxis dataKey="label" stroke="#7C8B70" fontSize={11} tickLine={false} />
+                <YAxis stroke="#7C8B70" fontSize={11} tickLine={false} />
+                <Tooltip contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E3EFD7', borderRadius: '12px', fontSize: '12px', color: '#0B1118', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }} />
                 <Bar dataKey="submissions" fill="#85E510" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="verified" fill="#0284C7" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="verified" fill="#3F7A06" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
-        </div>
+        </SectionCard>
 
-        <div className="lg:col-span-4 bg-white border border-[#E2E8F0] rounded-2xl p-5 flex flex-col justify-between shadow-sm">
-          <div>
-            <h2 className="text-sm font-heading font-bold text-[#202833] uppercase tracking-wider pb-3 border-b border-[#E2E8F0]">
-              Campus Performance Summary
-            </h2>
-            <div className="space-y-3 mt-4">
-              {schoolPerformance.map(s => (
-                <div key={s.school} className="p-3 rounded-xl bg-[#F8FAF9] border border-[#CBD5E1] flex items-center justify-between text-xs">
-                  <div>
-                    <div className="font-bold text-[#202833]">{s.school}</div>
-                    <div className="text-[10px] text-[#64748B]">{s.captured} Captured</div>
-                  </div>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#85E510]/15 text-[#366804] border border-[#85E510]/30">
-                    {s.efficiency}
-                  </span>
+        <SectionCard
+          className="lg:col-span-4"
+          title="Campus Performance"
+          subtitle="Top eight by records captured"
+          icon={School}
+        >
+          <div className="space-y-2.5">
+            {schoolPerformance.map(s => (
+              <div key={s.school} className="flex items-center justify-between rounded-xl border border-[#E9F2DE] bg-[#FBFDF7] px-3 py-2 text-xs">
+                <div className="min-w-0">
+                  <div className="truncate font-bold text-[#0B1118]">{s.school}</div>
+                  <div className="text-[10px] text-[#7C8B70]">{s.captured.toLocaleString()} captured</div>
                 </div>
-              ))}
-            </div>
+                <span className="shrink-0 rounded-full border border-[#CDEBB4] bg-[#EAF7DA] px-2 py-0.5 text-[10px] font-bold text-[#2F5E04]">
+                  {s.efficiency}
+                </span>
+              </div>
+            ))}
+            {schoolPerformance.length === 0 && (
+              <p className="py-6 text-center text-xs font-medium text-[#8A9680]">No campus record yet.</p>
+            )}
           </div>
 
-          <div className="pt-3 border-t border-[#E2E8F0] text-[11px] text-[#64748B]">
-            Authoritative Dataset &bull; Verified against Cloudflare R2
+          <div className="mt-3 flex items-center gap-1.5 border-t border-[#EDF4E5] pt-3 text-[11px] text-[#8A9680]">
+            <Camera className="h-3.5 w-3.5 text-[#6FBF0A]" />
+            Verified = photo integrity cleared the automated checks.
           </div>
-        </div>
+        </SectionCard>
       </div>
-    </div>
+    </PageShell>
   );
 };

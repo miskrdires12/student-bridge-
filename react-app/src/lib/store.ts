@@ -1,31 +1,14 @@
 import { Student, User, Task, School, AuditLog, StudentCoreRequest, MistakeItem, UserRole, CardTemplate, PrintJob } from '@/types';
 import { publishStudentSync, subscribeToStudentSync, getPhotoUrl, getPhotoCandidates, getPhotoEncodeClass, fetchDeliveryReceipts, syncStationId } from './syncEngine';
-import { parseGradeAndSection, getBranchForSchool, getStudentBranch } from './gradeUtils';
+import { parseGradeAndSection, getBranchForSchool, getStudentBranch, branchForSchoolName, BRANCH_SCHOOL_MAP, DEFAULT_BRANCHES } from './gradeUtils';
 
 export { getPhotoUrl, getPhotoCandidates, getPhotoEncodeClass, publishStudentSync, subscribeToStudentSync, getBranchForSchool, getStudentBranch, fetchDeliveryReceipts, syncStationId };
+export { BRANCH_SCHOOL_MAP, DEFAULT_BRANCHES };
 export type { DeliveryReceipt } from './syncEngine';
 
 // The day a send belongs to is the day it happened at the school, not the day the browser's clock
 // calls it, and the row store buckets on this zone.
 const FLEET_TZ = 'Africa/Addis_Ababa';
-
-// Branch to School Mapping
-export const BRANCH_SCHOOL_MAP: Record<string, string[]> = {
-  'Addis Ababa': [
-    'YMS 1', 'YMS 2', 'YMS 3', 'YMS 4',
-    'School of America 1', 'School of America 2', 'School of America 3', 'School of America 4',
-    'Adika Youth', 'Warka', 'Ferway',
-    'YMS', 'School of America'
-  ],
-  'Adama': ['Sena Yerosen', '1234', 'Yacine', 'Debebech'],
-  'Mojo': ['Mojo'],
-  'Harar': [
-    'High Tech 1', 'High Tech 2', 'High Tech 3', 'High Tech 4',
-    'High Tech'
-  ]
-};
-
-export const DEFAULT_BRANCHES = Object.keys(BRANCH_SCHOOL_MAP);
 
 // Initial fallback schools strictly mapped to authorized branches
 export const DEFAULT_SCHOOLS: School[] = [
@@ -38,12 +21,12 @@ export const DEFAULT_SCHOOLS: School[] = [
   { id: "sch_soa2", name: "School of America 2", location: "Addis Ababa", status: "Active", studentsCount: 240 },
   { id: "sch_soa3", name: "School of America 3", location: "Addis Ababa", status: "Active", studentsCount: 220 },
   { id: "sch_soa4", name: "School of America 4", location: "Addis Ababa", status: "Active", studentsCount: 190 },
-  { id: "sch_soa", name: "School of America", location: "Addis Ababa", status: "Active", studentsCount: 756 },
+  { id: "sch_soa5", name: "School of America 5", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_soa6", name: "School of America 6", location: "Addis Ababa", status: "Active", studentsCount: 756 },
   { id: "sch_adika", name: "Adika Youth", location: "Addis Ababa", status: "Active", studentsCount: 982 },
   { id: "sch_warka", name: "Warka", location: "Addis Ababa", status: "Active", studentsCount: 398 },
   { id: "sch_ferway", name: "Ferway", location: "Addis Ababa", status: "Active", studentsCount: 542 },
   { id: "sch_senayerosen", name: "Sena Yerosen", location: "Adama", status: "Active", studentsCount: 414 },
-  { id: "sch_1234", name: "1234", location: "Adama", status: "Active", studentsCount: 0 },
   { id: "sch_yacine", name: "Yacine", location: "Adama", status: "Active", studentsCount: 185 },
   { id: "sch_debebech", name: "Debebech", location: "Adama", status: "Active", studentsCount: 671 },
   { id: "sch_mojo", name: "Mojo", location: "Mojo", status: "Active", studentsCount: 360 },
@@ -385,6 +368,12 @@ export function safeSetItem(key: string, value: string): void {
 // to say out loud that the registry on screen came from the bundled snapshot, not the live
 // table — otherwise a short snapshot reads as "the database shrank".
 let serverApiOnline = false;
+// False until the first hydration pass has merged a registry, so a cold page can say "reading"
+// instead of printing a zero it has not actually measured yet.
+let registryHydrated = false;
+export function isRegistryReady(): boolean {
+  return registryHydrated || memoryStudents.length > 0;
+}
 export function isServerApiOnline(): boolean {
   return serverApiOnline;
 }
@@ -829,9 +818,12 @@ async function runInitStore(): Promise<void> {
   }
 
   // 2. Degraded/offline path only: stale baseline + latest-500 overlay.
-  // Also used when the API answered with a provably incomplete list.
+  // The bundled snapshot is months old, and every row in it that the database no longer holds is a
+  // student the desk can search but not open — the count then sits above the registry total until a
+  // complete pass prunes it. So it is used only when the API itself is unreachable; an incomplete
+  // page set from a live API keeps the rows already on the station and schedules a full retry below.
   const datasetHealthy = liveServerStudents.length > 0 && feedComplete;
-  if (!datasetHealthy) {
+  if (!datasetHealthy && !serverApiOnline) {
     try {
       const res = await fetch('/data/students.json');
       if (res.ok) {
@@ -885,21 +877,39 @@ async function runInitStore(): Promise<void> {
     }
   });
 
-  localCustomStudents.forEach(s => {
-    if (s && s.studentId) {
-      studentMap.set(s.studentId, { ...(studentMap.get(s.studentId) || {}), ...s });
-    }
-  });
-
   // Clean custom students of deleted IDs
   const cleanedCustom = localCustomStudents.filter(cs =>
     !deletedIds.has(cs.studentId) &&
     !deletedIds.has((cs.studentId || '').toLowerCase()) &&
     !deletedIds.has(cs.id)
   );
+
+  // A complete feed is the registry. A cached row the server no longer holds was purged from
+  // another station, and keeping it makes this desk report one more record than the server, so it
+  // is dropped. Rows created here in the last few minutes keep a grace window in case the upload
+  // that created them is still in flight.
+  if (feedComplete && liveServerStudents.length > 0) {
+    const liveIds = new Set(liveServerStudents.map(s => s.studentId));
+    const graceMs = 30 * 60 * 1000;
+    const now = Date.now();
+    const keptCustom = cleanedCustom.filter(cs => {
+      if (!cs || !cs.studentId || liveIds.has(cs.studentId)) return true;
+      const created = Date.parse(cs.createdAt || '');
+      return Number.isFinite(created) && now - created < graceMs;
+    });
+    if (keptCustom.length !== cleanedCustom.length) {
+      cleanedCustom.splice(0, cleanedCustom.length, ...keptCustom);
+    }
+  }
   if (cleanedCustom.length !== localCustomStudents.length) {
     safeSetItem('sb_custom_students', JSON.stringify(cleanedCustom));
   }
+
+  cleanedCustom.forEach(s => {
+    if (s && s.studentId) {
+      studentMap.set(s.studentId, { ...(studentMap.get(s.studentId) || {}), ...s });
+    }
+  });
 
   // 5. Clean, normalize dates, filter deleted, and sort
   const allMerged: Student[] = [];
@@ -927,6 +937,7 @@ async function runInitStore(): Promise<void> {
   });
 
   memoryStudents = allMerged;
+  registryHydrated = true;
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('studentbridge_datachange'));
   }
@@ -1040,15 +1051,10 @@ async function runInitStore(): Promise<void> {
 export function normalizeStudentData(s: Student): Student {
   if (!s) return s;
   const d = (s.createdAt || (s as any).registrationDate || (s as any).date || '').substring(0, 10);
-  let school = s.school || 'YMS';
+  const school = (s.school || '').trim();
   let bloodType = s.bloodType || 'Unknown';
-  if (d >= '2026-10-14') {
-    if ((school || '').toLowerCase() === 'yms') {
-      school = 'YMS 1';
-    }
-    if (bloodType === 'O+') {
-      bloodType = 'Unknown';
-    }
+  if (d >= '2026-10-14' && bloodType === 'O+') {
+    bloodType = 'Unknown';
   }
 
   const parsedG = parseGradeAndSection(s.grade, s.department, (s as any).section);
@@ -1186,7 +1192,7 @@ export function addStudent(newStudent: Student): void {
     station: 'Sender',
     action: 'Student Registration',
     entity: newStudent.studentId,
-    details: `Registered ${newStudent.fullName} for ${newStudent.school || 'YMS'}`
+    details: `Registered ${newStudent.fullName} for ${newStudent.school || 'Unassigned'}`
   });
 
   // Broadcast across all open tabs, windows, and cloud remote receivers
@@ -2416,6 +2422,16 @@ export function resetSenderLiveCaptures(senderIdentifier?: string): void {
   }
 }
 
+export interface FleetSenderPeriod {
+  records: number;
+  verified: number;
+  ratio: number | null;
+  // Mean seconds between two consecutive captures inside the period (idle gaps excluded).
+  avgSec: number | null;
+  // Records per minute derived from avgSec.
+  perMin: number | null;
+}
+
 export interface FleetSenderRow {
   key: string;
   username: string;
@@ -2431,6 +2447,14 @@ export interface FleetSenderRow {
   week: number;
   month: number;
   daily: Record<string, number>;
+  verified: number;
+  ratio: number | null;
+  periods?: {
+    today: FleetSenderPeriod;
+    week: FleetSenderPeriod;
+    month: FleetSenderPeriod;
+    total: FleetSenderPeriod;
+  };
   sessionCount: number;
   sessionStart: number | null;
   lastActivity: number | null;
@@ -2552,8 +2576,8 @@ export const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
   syncSchool: 'Warka',
   exportPhotoTemplate: '{name}.jpg',
   exportQrTemplate: '{id}_qr.png',
-  exportBaseFolderPhoto: 'C:\\Users\\Administrator\\Desktop\\yekaelementry',
-  exportBaseFolderQr: 'C:\\Users\\Administrator\\Desktop\\yekaelementry',
+  exportBaseFolderPhoto: 'C:\\Users\\Administrator\\Desktop\\ymshighschool',
+  exportBaseFolderQr: 'C:\\Users\\Administrator\\Desktop\\ymshighschool',
   senderDailyTarget: 50
 };
 
@@ -2600,6 +2624,15 @@ function joinExportPath(baseFolder: string, relPath: string): string {
   if (!folder) return relPath;
   const sep = /[\\/]+$/.test(folder) ? '' : '\\';
   return `${folder}${sep}${relPath}`;
+}
+
+// Export labels carry the same rule the edge applies on write: a number that ends in a run of
+// zeroes is a formatter placeholder, so an exported sheet never opens with a "0000" phone.
+export function exportPhoneValue(phone: string | undefined | null): string {
+  const raw = String(phone || '').trim();
+  const digits = raw.replace(/\D/g, '');
+  if (!digits || digits.length < 9 || /0{6,}$/.test(digits)) return 'N/A';
+  return raw;
 }
 
 export function buildExportPhotoPath(s: Student): string {
@@ -2746,8 +2779,8 @@ function totalsForSender(
   nameKeys: Set<string>,
   idKeys: Set<string>,
   anonymousEligible: boolean
-): { total: number; today: number; week: number; month: number; daily: Record<string, number> } {
-  const out = { total: 0, today: 0, week: 0, month: 0, daily: {} as Record<string, number> };
+): { total: number; today: number; week: number; month: number; daily: Record<string, number>; verified: number } {
+  const out = { total: 0, today: 0, week: 0, month: 0, daily: {} as Record<string, number>, verified: 0 };
   const counted = new Set<Student>();
   const visit = (rows: Student[] | undefined) => {
     if (!rows) return;
@@ -2755,6 +2788,7 @@ function totalsForSender(
       if (counted.has(s)) continue;
       counted.add(s);
       out.total++;
+      if (s.photoIntegrityStatus === 'PHOTO_VERIFIED') out.verified++;
       const dayKey = recordDayKey(s);
       if (!dayKey) continue;
       out.daily[dayKey] = (out.daily[dayKey] || 0) + 1;
@@ -2775,10 +2809,12 @@ export function getSenderMetrics(senderIdentifier: string): SenderMetrics {
 
 function senderMetricsFor(senderIdentifier: string, index: SenderRowIndex): SenderMetrics {
   const norm = (senderIdentifier || '').toLowerCase().trim();
-  const curUser = getCurrentUser();
+  // Resolve the sender by their own handle or address only. Matching the signed-in viewer here (or
+  // falling back to them) made every row on the fleet table report the administrator's account,
+  // name and totals - one person's numbers printed once per operator.
   const user = memoryUsers.find(
-    u => u.username.toLowerCase() === norm || u.email.toLowerCase() === norm || (curUser && curUser.id === u.id)
-  ) || curUser;
+    u => u.username.toLowerCase() === norm || u.email.toLowerCase() === norm
+  );
 
   // Day buckets use the same calendar boundaries as the server: the Addis Ababa day the record was
   // created in, a Monday-first week, and the month itself. A rolling 7/30-day window prints a
@@ -2855,13 +2891,15 @@ function senderMetricsFor(senderIdentifier: string, index: SenderRowIndex): Send
   }
 
   const mistakesCount = 0;
-  const efficiency = 100;
+  // Success is the share of this sender's rows whose photo is verified in storage. It used to be
+  // the literal 100, so every operator looked flawless regardless of what they actually sent.
+  const efficiency = derived.total > 0 ? Number(((derived.verified / derived.total) * 100).toFixed(1)) : 0;
 
   const status: 'Active' | 'Idle' | 'Locked' = fleetRow
     ? (fleetRow.terminalStatus === 'ACTIVE' ? 'Active' : fleetRow.terminalStatus === 'LOCKED' ? 'Locked' : 'Idle')
     : user?.boundDeviceId
       ? (today > 0 ? 'Active' : 'Idle')
-      : 'Active';
+      : 'Idle';
 
   // Compute timing and per-minute velocity:
   const recentIntervals = live.recentIntervalsSecs;
@@ -2884,7 +2922,9 @@ function senderMetricsFor(senderIdentifier: string, index: SenderRowIndex): Send
 
   // Determine branch based on school or direct user branch
   const assignedSchool = user?.school || (norm === 'dagim' ? 'Mojo' : norm === 'biruk' || norm === 'henok' ? 'Yacine' : norm === 'zemichael' || norm === 'yonas' ? 'Debebech' : norm === 'abeni1' || norm === 'sol' ? 'High Tech 1' : 'YMS 1');
-  let assignedBranch = user?.branch || getBranchForSchool(assignedSchool);
+  // The campus wins over the account field: a Sena Yerosen sender whose account was created with
+  // the capital branch still belongs to Adama, and the fleet table must not report Addis Ababa.
+  let assignedBranch = branchForSchoolName(assignedSchool) || getBranchForSchool(assignedSchool) || user?.branch;
 
   return {
     id: user?.id || `usr-${norm}`,
@@ -2902,9 +2942,11 @@ function senderMetricsFor(senderIdentifier: string, index: SenderRowIndex): Send
     month,
     total,
     daily,
+    // Empty when nothing was ever transmitted: stamping "now" on an account that has never sent a
+    // record printed "last sent just now" under every brand-new operator.
     lastActive: fleetRow?.lastActivity
       ? new Date(fleetRow.lastActivity).toISOString()
-      : (live.lastCapture ? new Date(live.lastCapture).toISOString() : ((user as any)?.lastActiveAt || (user as any)?.lastLoginAt || new Date().toISOString())),
+      : (live.lastCapture ? new Date(live.lastCapture).toISOString() : ((user as any)?.lastActiveAt || (user as any)?.lastLoginAt || '')),
     serverSessionCount: fleetRow?.sessionCount,
     serverSessionStart: fleetRow?.sessionStart ?? null,
     serverLastActivity: fleetRow?.lastActivity ?? null,

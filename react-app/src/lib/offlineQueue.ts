@@ -230,6 +230,25 @@ async function runQueueFlush(): Promise<{ synced: number; failed: number }> {
       const duplicate = res.status === 409 || body?.error === 'DUPLICATE_ID';
 
       if (duplicate || (res.ok && body)) {
+        // A replayed HD upload lands under the key the edge signed, which may differ from the
+        // one stage 1 wrote locally. Carry the server's answer onto the station's own copy so
+        // the directory does not keep showing a path that was never stored.
+        if (op.type === 'UPLOAD_PHOTO' && res.ok && body && (body.url || body.r2Url)) {
+          const sid = String(op.payload?.studentId || '').trim().toUpperCase();
+          if (sid) {
+            const store = await import('./store');
+            const local = store.getStudents().find(s => (s.studentId || '').trim().toUpperCase() === sid);
+            if (local && body.url) {
+              store.updateStudent(local.id, {
+                photoPath: body.url,
+                previewPath: body.url,
+                thumbnailPath: body.url,
+                originalPhotoPath: body.r2Url || body.url,
+                photoIntegrityStatus: 'PHOTO_VERIFIED'
+              });
+            }
+          }
+        }
         await removePendingOperation(op.id);
         synced++;
       } else {

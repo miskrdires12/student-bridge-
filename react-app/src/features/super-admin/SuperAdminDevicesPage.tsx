@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Smartphone, Shield, ShieldAlert, CheckCircle2, RefreshCw, X, Plus, Search, Trash2, Key } from 'lucide-react';
+import { Smartphone, Shield, ShieldAlert, CheckCircle2, X, Plus, Search } from 'lucide-react';
 import { getUsers, resetUserHardwareLock, setUserHardwareLock, addAuditLog, getCurrentUser } from '@/lib/store';
 import { User } from '@/types';
+import { PageShell, PageHero, FactGrid, FactCard, SectionCard, PrimaryButton, ToolbarButton, Chip } from '@/components/ui/PageKit';
 
 export const SuperAdminDevicesPage: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
@@ -60,177 +61,153 @@ export const SuperAdminDevicesPage: React.FC = () => {
     (u.boundDeviceId && u.boundDeviceId.toLowerCase().includes(search.toLowerCase()))
   );
 
-  return (
-    <div className="space-y-6 max-w-6xl mx-auto pb-12">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E2E8F0]">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-heading font-extrabold text-[#202833] tracking-tight">1-Device Hardware Management</h1>
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-purple-100 text-purple-800 border border-purple-200 uppercase">
-              Root Authority
-            </span>
-          </div>
-          <p className="text-xs text-[#64748B] mt-0.5">
-            Authorize field terminals, bind operator accounts, revoke stolen or changed hardware, and invalidate sessions
-          </p>
-        </div>
+  const bound = users.filter(u => Boolean(u.boundDeviceId)).length;
 
-        <button
-          onClick={() => setModalOpen(true)}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] text-[#062404] text-xs font-black shadow-sm transition-all"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Authorize Device</span>
-        </button>
-      </div>
+  return (
+    <PageShell className="mx-auto max-w-6xl">
+      <PageHero
+        icon={Smartphone}
+        title="Device Management"
+        count={`${bound} bound`}
+        live="Root authority"
+        subtitle="Authorize field terminals, bind operator accounts, revoke changed hardware and invalidate sessions. The lock is enforced on every login."
+        actions={<PrimaryButton icon={Plus} onClick={() => setModalOpen(true)}>Authorize Device</PrimaryButton>}
+      >
+        <FactGrid cols={4}>
+          <FactCard label="Operator Accounts" value={users.length.toLocaleString()} hint="with a role assignment" icon={Shield} />
+          <FactCard label="Bound Terminals" value={bound.toLocaleString()} hint="locked to one device" icon={Smartphone} />
+          <FactCard label="Pending Binding" value={(users.length - bound).toLocaleString()} hint="binds on first login" icon={ShieldAlert} />
+          <FactCard label="Enforcement" value="Strict" hint="checked in the app shell" icon={Shield} />
+        </FactGrid>
+      </PageHero>
 
       {toastMessage && (
-        <div className="p-3.5 rounded-xl bg-[#85E510]/15 border border-[#85E510]/40 text-[#366804] text-xs flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 shrink-0" />
-          <span className="font-semibold">{toastMessage}</span>
+        <div className="flex items-center gap-2 rounded-2xl border border-[#CDEBB4] bg-[#EAF7DA] p-3.5 text-xs font-semibold text-[#2F5E04]">
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-[#6FBF0A]" />
+          <span>{toastMessage}</span>
         </div>
       )}
 
-      {/* Summary KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-white border border-[#E2E8F0] rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center justify-between text-xs text-[#64748B]">
-            <span className="uppercase font-bold tracking-wider">Total Operator Accounts</span>
-            <Shield className="w-4 h-4 text-[#85E510]" />
-          </div>
-          <div className="mt-2 text-3xl font-heading font-black text-[#202833]">{users.length}</div>
-          <div className="mt-1 text-[11px] text-[#366804] font-semibold">Configurable RBAC fleet</div>
-        </div>
-
-        <div className="bg-white border border-[#E2E8F0] rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center justify-between text-xs text-[#64748B]">
-            <span className="uppercase font-bold tracking-wider">Bound Terminals</span>
-            <Smartphone className="w-4 h-4 text-[#0284C7]" />
-          </div>
-          <div className="mt-2 text-3xl font-heading font-black text-[#0284C7]">
-            {users.filter(u => u.boundDeviceId).length}
-          </div>
-          <div className="mt-1 text-[11px] text-[#64748B]">Actively bound to hardware</div>
-        </div>
-
-        <div className="bg-white border border-[#E2E8F0] rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center justify-between text-xs text-[#64748B]">
-            <span className="uppercase font-bold tracking-wider">Policy Enforcement</span>
-            <ShieldAlert className="w-4 h-4 text-[#85E510]" />
-          </div>
-          <div className="mt-2 text-3xl font-heading font-black text-[#2E7D32]">STRICT</div>
-          <div className="mt-1 text-[11px] text-[#366804] font-semibold">Server-Side Verification Active</div>
-        </div>
-      </div>
-
-      {/* Search and Table */}
-      <div className="bg-white border border-[#E2E8F0] rounded-2xl overflow-hidden shadow-sm">
-        <div className="p-4 border-b border-[#E2E8F0] flex flex-col sm:flex-row items-center justify-between gap-3">
+      <SectionCard
+        title="Operator Devices"
+        subtitle="Search by user, email or device id"
+        icon={Smartphone}
+        padded={false}
+        actions={<Chip tone="neutral">{filtered.length} shown</Chip>}
+      >
+        <div className="border-b border-[#EDF4E5] p-3.5">
           <div className="relative w-full sm:w-80">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#94A3B8]" />
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#A6B29B]" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search user, email, or device ID..."
-              className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-9 pr-4 py-2 text-xs text-[#202833] placeholder-[#94A3B8] focus:outline-none focus:border-[#85E510]"
+              className="w-full rounded-xl border border-[#E3E9DD] bg-[#FBFDF7] py-2 pl-9 pr-4 text-xs text-[#0B1118] placeholder-[#A6B29B] focus:border-[#85E510] focus:outline-none"
             />
           </div>
-          <span className="text-xs text-[#64748B] font-mono font-medium">{filtered.length} Accounts Displayed</span>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-[#F8FAF9] border-b border-[#E2E8F0] text-[#64748B] uppercase text-[10px] tracking-wider font-bold">
+            <thead className="border-b border-[#EDF4E5] bg-[#FBFDF7] text-[10px] font-black uppercase tracking-wider text-[#7C8B70]">
               <tr>
                 <th className="py-3.5 pl-6">Account / Email</th>
                 <th className="py-3.5">Station Role</th>
                 <th className="py-3.5">Bound Device ID</th>
-                <th className="py-3.5">Device Binding Status</th>
-                <th className="py-3.5 text-right pr-6">Action</th>
+                <th className="py-3.5">Binding Status</th>
+                <th className="py-3.5 pr-6 text-right">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#E2E8F0]">
+            <tbody className="divide-y divide-[#EDF4E5]">
               {filtered.map(u => (
-                <tr key={u.id} className="hover:bg-[#F8FAF9] transition-colors">
+                <tr key={u.id} className="transition-colors hover:bg-[#F8FBF4]">
                   <td className="py-3.5 pl-6">
-                    <div className="font-bold text-[#202833] text-xs">{u.username}</div>
-                    <div className="text-[10px] text-[#64748B] font-mono">{u.email}</div>
+                    <div className="text-xs font-bold text-[#0B1118]">{u.username}</div>
+                    <div className="font-mono text-[10px] text-[#7C8B70]">{u.email}</div>
                   </td>
                   <td className="py-3.5">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
-                      u.role === 'SUPER_ADMIN' ? 'bg-purple-100 text-purple-800 border-purple-200' :
-                      u.role === 'ADMIN' ? 'bg-amber-100 text-amber-800 border-amber-200' :
-                      u.role === 'RECEIVER' ? 'bg-sky-100 text-sky-800 border-sky-200' :
-                      'bg-emerald-100 text-emerald-800 border-emerald-200'
+                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${
+                      u.role === 'SUPER_ADMIN'
+                        ? 'border-purple-200 bg-purple-50 text-purple-800'
+                        : u.role === 'ADMIN'
+                        ? 'border-amber-200 bg-amber-50 text-amber-800'
+                        : u.role === 'RECEIVER'
+                        ? 'border-sky-200 bg-sky-50 text-sky-700'
+                        : 'border-[#CDEBB4] bg-[#EAF7DA] text-[#2F5E04]'
                     }`}>
                       {u.role}
                     </span>
                   </td>
                   <td className="py-3.5 font-mono text-[11px]">
                     {u.boundDeviceId ? (
-                      <span className="text-[#202833] font-bold flex items-center gap-1.5">
-                        <Smartphone className="w-3.5 h-3.5 text-[#85E510]" />
+                      <span className="flex items-center gap-1.5 font-bold text-[#0B1118]">
+                        <Smartphone className="h-3.5 w-3.5 text-[#6FBF0A]" />
                         <span>{u.boundDeviceId}</span>
                       </span>
                     ) : (
-                      <span className="text-[#94A3B8] italic">Unbound (Binds on 1st login)</span>
+                      <span className="italic text-[#A6B29B]">Unbound (binds on 1st login)</span>
                     )}
                   </td>
                   <td className="py-3.5">
                     {u.boundDeviceId ? (
-                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#85E510]/15 text-[#366804] border border-[#85E510]/30">
+                      <span className="rounded-full border border-[#CDEBB4] bg-[#EAF7DA] px-2.5 py-0.5 text-[10px] font-bold text-[#2F5E04]">
                         Authorized
                       </span>
                     ) : (
-                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                        Pending Binding
+                      <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[10px] font-bold text-amber-800">
+                        Pending binding
                       </span>
                     )}
                   </td>
-                  <td className="py-3.5 text-right pr-6">
+                  <td className="py-3.5 pr-6 text-right">
                     {u.boundDeviceId ? (
                       <button
                         onClick={() => handleRevoke(u)}
-                        className="px-2.5 py-1 rounded-lg bg-red-50 hover:bg-red-100 text-[11px] font-bold text-red-700 border border-red-200 transition-colors"
+                        className="cursor-pointer rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-700 transition-colors hover:bg-rose-100"
                       >
                         Revoke Device
                       </button>
                     ) : (
-                      <span className="text-[11px] text-[#94A3B8]">&mdash;</span>
+                      <span className="text-[11px] text-[#A6B29B]">&mdash;</span>
                     )}
                   </td>
                 </tr>
               ))}
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-6 py-8 text-center text-xs font-medium text-[#8A9680]">
+                    No account matches this search.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
-      </div>
+      </SectionCard>
 
-      {/* Authorize Modal */}
       {modalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white border border-[#E2E8F0] rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-md rounded-3xl border border-[#E3EFD7] bg-white p-6 shadow-2xl">
             <button
               onClick={() => setModalOpen(false)}
-              className="absolute top-4 right-4 text-[#64748B] hover:text-[#202833]"
+              className="absolute right-4 top-4 cursor-pointer text-[#A6B29B] hover:text-[#0B1118]"
             >
-              <X className="w-5 h-5" />
+              <X className="h-5 w-5" />
             </button>
 
-            <h3 className="text-lg font-heading font-bold text-[#202833] mb-1">Authorize Device Terminal</h3>
-            <p className="text-xs text-[#64748B] mb-4">Assign a specific hardware ID to an operator account</p>
+            <h3 className="mb-1 text-lg font-black tracking-tight text-[#0B1118]">Authorize Terminal</h3>
+            <p className="mb-4 text-xs text-[#7C8B70]">Assign a specific hardware ID to an operator account.</p>
 
             <form onSubmit={handleAuthorizeNew} className="space-y-4">
               <div>
-                <label className="text-xs font-bold text-[#64748B] block mb-1">Target Account</label>
+                <label className="mb-1 block text-xs font-bold text-[#7C8B70]">Target account</label>
                 <select
                   value={selectedUserEmail}
                   onChange={(e) => setSelectedUserEmail(e.target.value)}
-                  className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs text-[#202833] focus:outline-none focus:border-[#85E510]"
+                  className="w-full rounded-xl border border-[#E3E9DD] bg-[#FBFDF7] px-3 py-2 text-xs text-[#0B1118] focus:border-[#85E510] focus:outline-none"
                 >
-                  <option value="">Select Account...</option>
+                  <option value="">Select account...</option>
                   {users.map(u => (
                     <option key={u.id} value={u.email}>
                       {u.username} ({u.email}) - {u.role}
@@ -240,36 +217,27 @@ export const SuperAdminDevicesPage: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-xs font-bold text-[#64748B] block mb-1">Terminal Hardware ID</label>
+                <label className="mb-1 block text-xs font-bold text-[#7C8B70]">Terminal hardware ID</label>
                 <input
                   type="text"
                   required
                   value={newDeviceId}
                   onChange={(e) => setNewDeviceId(e.target.value)}
                   placeholder="e.g. DEV-SILICON-A94F81"
-                  className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 text-xs text-[#202833] font-mono focus:outline-none focus:border-[#85E510]"
+                  className="w-full rounded-xl border border-[#E3E9DD] bg-[#FBFDF7] px-3 py-2 font-mono text-xs text-[#0B1118] focus:border-[#85E510] focus:outline-none"
                 />
               </div>
 
-              <div className="pt-2 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setModalOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-gray-100 text-xs font-bold text-[#64748B] hover:text-[#202833]"
-                >
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <ToolbarButton onClick={() => setModalOpen(false)} className="border-transparent bg-transparent">
                   Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] text-[#062404] text-xs font-black shadow-sm"
-                >
-                  Authorize Terminal
-                </button>
+                </ToolbarButton>
+                <PrimaryButton type="submit">Authorize Terminal</PrimaryButton>
               </div>
             </form>
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 };

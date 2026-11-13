@@ -11,6 +11,7 @@ import {
   DEFAULT_BRANCHES, BRANCH_SCHOOL_MAP
 } from '@/lib/store';
 import { R2_PUBLIC_BASE_URL } from '@/lib/syncEngine';
+import { PageShell, PageHero, FactGrid, FactCard, ToolbarButton } from '@/components/ui/PageKit';
 
 interface ReceiverStationConfig {
   photoFolder: string;
@@ -150,42 +151,34 @@ export const AdminSettingsPage: React.FC = () => {
     navigate('/login');
   };
 
+  const totalSchools = Object.values(BRANCH_SCHOOL_MAP).flat().length;
+
   return (
-    <div className="space-y-6 max-w-6xl mx-auto pb-16 font-sans">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#E2E8F0]">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded font-black bg-[#85E510]/20 text-[#256002] border border-[#85E510]/40">
-              {isSuperAdmin ? 'SUPER ADMIN MASTER CONTROL' : 'ADMINISTRATIVE WORKSTATION'}
-            </span>
-            <span className="text-slate-300">•</span>
-            <span className="text-xs text-slate-500 font-mono">Platform v2.4 Enterprise</span>
-          </div>
-
-          <h1 className="text-2xl sm:text-3xl font-heading font-black text-[#0B1118] tracking-tight">
-            Station &amp; Production Settings
-          </h1>
-          <p className="text-xs text-slate-500 mt-1">
-            Manage workstation allocation, storage directories, intake parameters, regional branch directories, and cloud infrastructure
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleSignOut}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-bold transition-all shadow-2xs cursor-pointer"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>Sign Out</span>
-          </button>
-        </div>
-      </div>
+    <PageShell className="mx-auto max-w-6xl">
+      <PageHero
+        icon={Settings}
+        title="Station & Production Settings"
+        count={isSuperAdmin ? 'Super admin' : 'Administrator'}
+        live="This workstation"
+        subtitle="Manage workstation allocation, storage directories, intake parameters, branch directories and cloud infrastructure."
+        actions={
+          <ToolbarButton icon={LogOut} onClick={handleSignOut} className="border-rose-200 text-rose-700 hover:border-rose-300 hover:bg-rose-50">
+            Sign Out
+          </ToolbarButton>
+        }
+      >
+        <FactGrid cols={4}>
+          <FactCard label="Role" value={isSuperAdmin ? 'SUPER_ADMIN' : 'ADMIN'} hint="station privilege" icon={Shield} />
+          <FactCard label="Branches" value={DEFAULT_BRANCHES.length.toLocaleString()} hint="regional directories" icon={MapPin} />
+          <FactCard label="Schools" value={totalSchools.toLocaleString()} hint="across all branches" icon={Building2} />
+          <FactCard label="Device" value={deviceId.slice(0, 14)} hint="this terminal id" icon={Smartphone} />
+        </FactGrid>
+      </PageHero>
 
       {toastMessage && (
-        <div className="p-3.5 rounded-xl bg-[#85E510]/15 border border-[#85E510]/40 text-[#256002] text-xs flex items-center gap-2 animate-in fade-in duration-200">
-          <CheckCircle2 className="w-4 h-4 shrink-0 text-[#85E510]" />
-          <span className="font-bold">{toastMessage}</span>
+        <div className="flex items-center gap-2 rounded-2xl border border-[#CDEBB4] bg-[#EAF7DA] p-3.5 text-xs font-bold text-[#2F5E04]">
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-[#6FBF0A]" />
+          <span>{toastMessage}</span>
         </div>
       )}
 
@@ -196,7 +189,7 @@ export const AdminSettingsPage: React.FC = () => {
           onClick={() => setActiveTab('station')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
             activeTab === 'station'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
+              ? 'bg-[#85E510] text-[#062404] shadow-sm'
               : 'bg-white border border-[#E2E8F0] text-slate-600 hover:text-black hover:bg-slate-50'
           }`}
         >
@@ -209,7 +202,7 @@ export const AdminSettingsPage: React.FC = () => {
           onClick={() => setActiveTab('receiver')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
             activeTab === 'receiver'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
+              ? 'bg-[#85E510] text-[#062404] shadow-sm'
               : 'bg-white border border-[#E2E8F0] text-slate-600 hover:text-black hover:bg-slate-50'
           }`}
         >
@@ -222,7 +215,7 @@ export const AdminSettingsPage: React.FC = () => {
           onClick={() => setActiveTab('sender')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
             activeTab === 'sender'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
+              ? 'bg-[#85E510] text-[#062404] shadow-sm'
               : 'bg-white border border-[#E2E8F0] text-slate-600 hover:text-black hover:bg-slate-50'
           }`}
         >
@@ -235,7 +228,7 @@ export const AdminSettingsPage: React.FC = () => {
           onClick={() => setActiveTab('branches')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
             activeTab === 'branches'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
+              ? 'bg-[#85E510] text-[#062404] shadow-sm'
               : 'bg-white border border-[#E2E8F0] text-slate-600 hover:text-black hover:bg-slate-50'
           }`}
         >
@@ -248,7 +241,7 @@ export const AdminSettingsPage: React.FC = () => {
           onClick={() => setActiveTab('cloud')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
             activeTab === 'cloud'
-              ? 'bg-[#85E510] text-[#062404] shadow-xs'
+              ? 'bg-[#85E510] text-[#062404] shadow-sm'
               : 'bg-white border border-[#E2E8F0] text-slate-600 hover:text-black hover:bg-slate-50'
           }`}
         >
@@ -523,11 +516,12 @@ export const AdminSettingsPage: React.FC = () => {
                   className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 font-semibold text-[#0B1118]"
                 >
                   <option value="YMS">YMS (Addis Ababa)</option>
-                  <option value="School of America">School of America (Addis Ababa)</option>
+                  <option value="School of America 5">School of America 5 (Addis Ababa)</option>
+                  <option value="School of America 6">School of America 6 (Addis Ababa)</option>
                   <option value="Adika Youth">Adika Youth (Addis Ababa)</option>
                   <option value="Warka">Warka (Addis Ababa)</option>
                   <option value="Ferway">Ferway (Addis Ababa)</option>
-                  <option value="Sena Yerosen">Sena Yerosen (Addis Ababa)</option>
+                  <option value="Sena Yerosen">Sena Yerosen (Adama)</option>
                   <option value="Yacine">Yacine (Adama)</option>
                   <option value="Debebech">Debebech (Adama)</option>
                   <option value="Mojo">Mojo (Mojo)</option>
@@ -738,6 +732,6 @@ export const AdminSettingsPage: React.FC = () => {
           </div>
         </form>
       )}
-    </div>
+    </PageShell>
   );
 };

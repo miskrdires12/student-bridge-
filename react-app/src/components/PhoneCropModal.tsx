@@ -666,7 +666,7 @@ export const PhoneCropModal: React.FC<PhoneCropModalProps> = ({
         {/* Header Bar */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800 bg-[#0F1722]">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-[#85E510]/15 text-[#85E510] flex items-center justify-center border border-[#85E510]/30 shadow-xs">
+            <div className="w-8 h-8 rounded-xl bg-[#85E510]/15 text-[#85E510] flex items-center justify-center border border-[#85E510]/30 shadow-sm">
               <Crop className="w-4 h-4" />
             </div>
             <div>
@@ -687,7 +687,7 @@ export const PhoneCropModal: React.FC<PhoneCropModalProps> = ({
             <button
               type="button"
               onClick={handleAutoEnhance}
-              className={`px-3 py-1.5 rounded-xl border text-xs font-black flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
+              className={`px-3 py-1.5 rounded-xl border text-xs font-black flex items-center gap-1.5 transition-all cursor-pointer shadow-sm ${
                 isAutoEnhanced
                   ? 'bg-[#85E510] text-[#062404] border-[#85E510] shadow-[0_0_12px_rgba(133,229,16,0.4)]'
                   : 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/40 text-amber-300'
@@ -719,7 +719,7 @@ export const PhoneCropModal: React.FC<PhoneCropModalProps> = ({
                 onClick={() => handleSelectAspectRatio(mode)}
                 className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
                   aspectRatio === mode
-                    ? 'bg-[#85E510] text-[#062404] border-[#85E510] shadow-xs'
+                    ? 'bg-[#85E510] text-[#062404] border-[#85E510] shadow-sm'
                     : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
                 }`}
               >

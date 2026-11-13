@@ -15,8 +15,12 @@ import {
   Boxes,
   ChevronDown,
   ChevronUp,
-  ArrowUpDown
+  ArrowUpDown,
+  FileText,
+  Layers,
+  Cloud
 } from 'lucide-react';
+import { PageShell, PageHero, FactGrid, FactCard, PrimaryButton } from '@/components/ui/PageKit';
 
 /* ------------------------------------------------------------------ */
 /* Payload shape served by /api/admin/supabase-status                  */
@@ -103,20 +107,20 @@ const SectionCard: React.FC<{
   aside?: React.ReactNode;
   children: React.ReactNode;
 }> = ({ icon, title, subtitle, aside, children }) => (
-  <section className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#161d19] shadow-xs">
-    <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-3 border-b border-[#dce7e1] dark:border-[#223126]">
-      <div className="flex items-center gap-2.5">
-        <span className="text-[#366804] dark:text-[#8fe617]">{icon}</span>
+  <section className="overflow-hidden rounded-2xl border border-[#E3EFD7] bg-white shadow-sm">
+    <header className="flex flex-col justify-between gap-2 border-b border-[#EDF4E5] px-3.5 py-2.5 sm:flex-row sm:items-center">
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-[#6FBF0A]">{icon}</span>
         <div>
-          <h2 className="text-sm font-bold tracking-tight text-[#0B1118] dark:text-white">{title}</h2>
+          <h2 className="text-sm font-black tracking-tight text-[#0B1118]">{title}</h2>
           {subtitle && (
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{subtitle}</p>
+            <p className="mt-0.5 text-[11px] font-medium text-[#7C8B70]">{subtitle}</p>
           )}
         </div>
       </div>
       {aside}
     </header>
-    <div className="p-4">{children}</div>
+    <div className="p-3.5">{children}</div>
   </section>
 );
 
@@ -126,18 +130,18 @@ const StatCell: React.FC<{ label: string; value: string; sub?: string; accent?: 
   sub,
   accent = false
 }) => (
-  <div className="bg-[#f7faf9] dark:bg-[#161d19] border border-[#dce7e1] dark:border-[#223126] p-3.5">
-    <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+  <div className="rounded-xl border border-[#E3EFD7] bg-[#FBFDF7] p-3.5">
+    <span className="block text-[10px] font-bold uppercase tracking-wider text-[#7C8B70]">
       {label}
     </span>
     <span
       className={`block text-xl font-black mt-1 tabular-nums ${
-        accent ? 'text-[#366804] dark:text-[#9EE617]' : 'text-[#0B1118] dark:text-white'
-      }`}
+ accent ? 'text-[#366804]' : 'text-[#0B1118]'
+ }`}
     >
       {value}
     </span>
-    {sub && <span className="block text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{sub}</span>}
+    {sub && <span className="block text-[10px] text-[#8A9680] mt-0.5">{sub}</span>}
   </div>
 );
 
@@ -264,9 +268,9 @@ export const SuperAdminStoragePage: React.FC = () => {
       <button
         type="button"
         onClick={() => toggleSort(sortFor)}
-        className={`inline-flex items-center gap-1 uppercase tracking-wider hover:text-[#0B1118] dark:hover:text-white cursor-pointer transition-colors ${
-          sortKey === sortFor ? 'text-[#366804] dark:text-[#8fe617]' : ''
-        }`}
+        className={`inline-flex items-center gap-1 uppercase tracking-wider hover:text-[#0B1118] cursor-pointer transition-colors ${
+ sortKey === sortFor ? 'text-[#366804]' : ''
+ }`}
       >
         <span>{label}</span>
         {sortKey === sortFor ? (
@@ -279,91 +283,36 @@ export const SuperAdminStoragePage: React.FC = () => {
   );
 
   return (
-    <div className="space-y-5 max-w-6xl mx-auto pb-14 font-mono animate-in fade-in duration-200">
-      {/* ── Bucket identity header ───────────────────────────────── */}
-      <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-white dark:bg-[#161d19] p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div className="flex items-start gap-3">
-          <div className="w-10 h-10 rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#1b241f] flex items-center justify-center text-[#366804] dark:text-[#8fe617] shrink-0">
-            <HardDrive className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-lg font-black tracking-tight text-[#0B1118] dark:text-white">
-                Storage Bucket Console
-              </h1>
-              {loading && !data ? (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#1b241f] text-slate-500 dark:text-slate-400">
-                  SCANNING…
-                </span>
-              ) : error ? (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-400 inline-flex items-center gap-1">
-                  <XCircle className="w-3 h-3" /> OFFLINE
-                </span>
-              ) : connected ? (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 inline-flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" /> LIVE · CONNECTED
-                </span>
-              ) : (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400 inline-flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3" /> DISCONNECTED
-                </span>
-              )}
-            </div>
-            <dl className="grid grid-cols-2 sm:flex sm:flex-wrap gap-x-6 gap-y-1 mt-2 text-[11px]">
-              <div className="flex items-center gap-1.5">
-                <dt className="text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider">Provider</dt>
-                <dd className="text-[#0B1118] dark:text-white font-bold">{data?.storageProvider ?? '—'}</dd>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <dt className="text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider">Bucket</dt>
-                <dd className="text-[#0B1118] dark:text-white font-bold">{data?.storageBucket ?? '—'}</dd>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <dt className="text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider">DB latency</dt>
-                <dd className="text-[#0B1118] dark:text-white font-bold tabular-nums">
-                  {typeof data?.databaseLatencyMs === 'number' ? `${data?.databaseLatencyMs} ms` : '—'}
-                </dd>
-              </div>
-              {data?.storagePublicBaseUrl && (
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <dt className="text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider shrink-0">Public URL</dt>
-                  <dd className="text-[#366804] dark:text-[#8fe617] font-bold truncate max-w-[260px]">
-                    {data.storagePublicBaseUrl}
-                  </dd>
-                </div>
-              )}
-            </dl>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between lg:justify-end gap-4 shrink-0">
-          <div className="text-right">
-            <div className="flex items-center gap-1.5 text-[10px] uppercase font-bold tracking-wider text-slate-500 dark:text-slate-400 justify-end">
-              <Clock className="w-3 h-3" /> Last scan
-            </div>
-            <div className="text-[11px] font-bold text-[#0B1118] dark:text-white mt-0.5">{fmtTime(lastScan)}</div>
-          </div>
-          <button
-            type="button"
-            onClick={() => load(true)}
-            disabled={loading || refreshing}
-            className="px-3.5 py-2 rounded-2xl bg-[#9EE617] hover:bg-[#8fe617] disabled:opacity-50 text-[#062404] font-black text-xs shadow-xs transition-all flex items-center gap-2 cursor-pointer border border-[#366804]/20"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-            <span>{refreshing ? 'Scanning…' : 'Force live scan'}</span>
-          </button>
-        </div>
-      </div>
+    <PageShell className="mx-auto max-w-6xl">
+      <PageHero
+        icon={HardDrive}
+        title="Storage Console"
+        count={data?.storageBucket ? `R2 · ${data.storageBucket}` : 'R2 bucket'}
+        live={connected ? 'Connected' : false}
+        subtitle={`Object store behind the portraits. Provider ${data?.storageProvider ?? '—'} · database latency ${typeof data?.databaseLatencyMs === 'number' ? `${data.databaseLatencyMs} ms` : '—'} · last scan ${fmtTime(lastScan)}.`}
+        actions={
+          <PrimaryButton icon={RefreshCw} onClick={() => load(true)} disabled={loading || refreshing}>
+            {refreshing ? 'Scanning…' : 'Force live scan'}
+          </PrimaryButton>
+        }
+      >
+        <FactGrid cols={4}>
+          <FactCard label="Objects" value={data ? fmtInt(data.storageFileCount) : '—'} hint="files in the bucket" icon={FileText} />
+          <FactCard label="Folders" value={data ? fmtInt(data.storageFolders?.length ?? 0) : '—'} hint="school partitions" icon={Layers} />
+          <FactCard label="Used" value={data ? fmtBytes(sizeBytes) : '—'} hint="stored bytes" icon={HardDrive} />
+          <FactCard label="Provider" value={data?.storageProvider ?? '—'} hint={error ? 'live scan failed' : 'live object store'} icon={Cloud} />
+        </FactGrid>
+      </PageHero>
 
       {/* ── Honest error state ───────────────────────────────────── */}
       {error && (
-        <div className="rounded-2xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20 p-4 flex items-start justify-between gap-4">
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 flex items-start justify-between gap-4">
           <div className="flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+            <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
             <div>
-              <h2 className="text-sm font-black text-red-800 dark:text-red-300">Live scan failed</h2>
-              <p className="text-xs text-red-700 dark:text-red-400 mt-0.5">{error}</p>
-              <p className="text-[11px] text-red-600/80 dark:text-red-400/70 mt-1">
+              <h2 className="text-sm font-black text-red-800">Live scan failed</h2>
+              <p className="text-xs text-red-700 mt-0.5">{error}</p>
+              <p className="text-[11px] text-red-600/80 mt-1">
                 No capacity figures are shown because the storage API is unreachable. Placeholder data is never displayed.
               </p>
             </div>
@@ -372,7 +321,7 @@ export const SuperAdminStoragePage: React.FC = () => {
             type="button"
             onClick={() => load(true)}
             disabled={loading || refreshing}
-            className="px-3 py-1.5 rounded-2xl border border-red-300 dark:border-red-800 bg-white dark:bg-[#161d19] text-red-700 dark:text-red-400 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-950/40 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+            className="px-3 py-1.5 rounded-2xl border border-red-300 bg-white text-red-700 text-xs font-bold hover:bg-red-100 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
           >
             Retry
           </button>
@@ -381,9 +330,9 @@ export const SuperAdminStoragePage: React.FC = () => {
 
       {/* ── Loading placeholder (no numbers) ─────────────────────── */}
       {loading && !data && !error && (
-        <div className="rounded-2xl border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#161d19] p-8 text-center">
-          <RefreshCw className="w-5 h-5 mx-auto text-[#366804] dark:text-[#8fe617] animate-spin" />
-          <p className="text-xs font-bold text-slate-500 dark:text-slate-400 mt-3">
+        <div className="rounded-2xl border border-[#E3EFD7] bg-[#FBFDF7] p-8 text-center">
+          <RefreshCw className="w-5 h-5 mx-auto text-[#366804] animate-spin" />
+          <p className="text-xs font-bold text-[#7C8B70] mt-3">
             Querying live bucket inventory…
           </p>
         </div>
@@ -419,30 +368,30 @@ export const SuperAdminStoragePage: React.FC = () => {
             </div>
 
             {/* Edge cross-check line — real numbers or explicit unavailability */}
-            <div className="mt-3 pt-3 border-t border-[#dce7e1] dark:border-[#223126] flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
-              <span className="uppercase font-bold tracking-wider text-slate-500 dark:text-slate-400">
+            <div className="mt-3 pt-3 border-t border-[#E3EFD7] flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+              <span className="uppercase font-bold tracking-wider text-[#7C8B70]">
                 Edge listing cross-check
               </span>
               {edgeStats && typeof edgeStats.totalObjects === 'number' ? (
                 <>
-                  <span className="text-[#0B1118] dark:text-white font-bold tabular-nums">
+                  <span className="text-[#0B1118] font-bold tabular-nums">
                     {edgeStats.totalObjects.toLocaleString()} objects · {edgeStats.formatted || fmtBytes(edgeStats.totalBytes)}
                   </span>
                   <span
                     className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                      edgeAligned
-                        ? 'border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400'
-                        : 'border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400'
-                    }`}
+ edgeAligned
+ ? 'border-[#CDEBB4] bg-[#EAF7DA] text-[#2F5E04]'
+ : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
+ }`}
                   >
                     {edgeAligned ? 'ALIGNED WITH STATUS API' : 'DIVERGED — RE-SCAN ADVISED'}
                   </span>
                   {edgeStats.lastScanned && (
-                    <span className="text-slate-400 dark:text-slate-500">edge scan {fmtTime(edgeStats.lastScanned)}</span>
+                    <span className="text-[#8A9680]">edge scan {fmtTime(edgeStats.lastScanned)}</span>
                   )}
                 </>
               ) : (
-                <span className="text-slate-500 dark:text-slate-400 font-bold">
+                <span className="text-[#7C8B70] font-bold">
                   Unavailable — /api/storage/real-size did not respond
                 </span>
               )}
@@ -455,14 +404,14 @@ export const SuperAdminStoragePage: React.FC = () => {
             title="Prefix Breakdown"
             subtitle="Objects grouped by top-level R2 prefix, from the live bucket listing"
             aside={
-              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">
+              <span className="text-[11px] font-bold text-[#7C8B70] tabular-nums">
                 {folders.length} prefix{folders.length === 1 ? '' : 'es'}
               </span>
             }
           >
-            <div className="overflow-x-auto rounded-2xl border border-[#dce7e1] dark:border-[#223126]">
-              <table className="w-full text-[11px] font-mono text-left">
-                <thead className="bg-[#f7faf9] dark:bg-[#1b241f] text-slate-500 dark:text-slate-400 text-[10px] border-b border-[#dce7e1] dark:border-[#223126]">
+            <div className="overflow-x-auto rounded-2xl border border-[#E3EFD7]">
+              <table className="w-full text-[11px] text-left">
+                <thead className="bg-[#FBFDF7] text-[#7C8B70] text-[10px] border-b border-[#E3EFD7]">
                   <tr>
                     <SortHeader label="Prefix" sortFor="name" align="left" />
                     <SortHeader label="Files" sortFor="files" />
@@ -472,11 +421,11 @@ export const SuperAdminStoragePage: React.FC = () => {
                     </th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#dce7e1] dark:divide-[#223126]">
+                <tbody className="divide-y divide-[#E3EFD7]">
                   {folders.length === 0 ? (
                     <tr>
-                      <td colSpan={4} className="py-6 px-3 text-center text-slate-500 dark:text-slate-400">
-                        <AlertCircle className="w-4 h-4 mx-auto mb-1.5 text-slate-400" />
+                      <td colSpan={4} className="py-6 px-3 text-center text-[#7C8B70]">
+                        <AlertCircle className="w-4 h-4 mx-auto mb-1.5 text-[#8A9680]" />
                         No prefixes returned by the live scan. Run “Force live scan” to refresh the bucket listing.
                       </td>
                     </tr>
@@ -484,28 +433,28 @@ export const SuperAdminStoragePage: React.FC = () => {
                     folders.map(f => {
                       const pct = pctOf(f.sizeBytes, breakdownDenom);
                       return (
-                        <tr key={f.name} className="hover:bg-[#f7faf9] dark:hover:bg-[#1b241f] transition-colors">
+                        <tr key={f.name} className="hover:bg-[#FBFDF7] transition-colors">
                           <td className="py-2.5 px-3">
-                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-[#dce7e1] dark:border-[#223126] bg-[#f7faf9] dark:bg-[#1b241f] text-[#0B1118] dark:text-white font-bold">
-                              <FolderTree className="w-3 h-3 text-slate-400" />
+                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-[#E3EFD7] bg-[#FBFDF7] text-[#0B1118] font-bold">
+                              <FolderTree className="w-3 h-3 text-[#8A9680]" />
                               {f.name}
                             </span>
                           </td>
-                          <td className="py-2.5 px-3 text-right tabular-nums font-bold text-[#0B1118] dark:text-white">
+                          <td className="py-2.5 px-3 text-right tabular-nums font-bold text-[#0B1118]">
                             {fmtInt(f.fileCount)}
                           </td>
-                          <td className="py-2.5 px-3 text-right tabular-nums font-bold text-[#0B1118] dark:text-white">
+                          <td className="py-2.5 px-3 text-right tabular-nums font-bold text-[#0B1118]">
                             {f.sizeFormatted || fmtBytes(f.sizeBytes)}
                           </td>
                           <td className="py-2.5 px-3">
                             <div className="flex items-center gap-2">
-                              <div className="flex-1 h-1 rounded-full bg-[#dce7e1] dark:bg-[#223126] overflow-hidden">
+                              <div className="flex-1 h-1 rounded-full bg-[#E3EFD7] overflow-hidden">
                                 <div
-                                  className="h-full rounded-full bg-[#8fe617] dark:bg-[#9EE617]"
+                                  className="h-full rounded-full bg-[#85E510]"
                                   style={{ width: `${pct}%` }}
                                 />
                               </div>
-                              <span className="w-12 text-right tabular-nums text-slate-500 dark:text-slate-400 font-bold">
+                              <span className="w-12 text-right tabular-nums text-[#7C8B70] font-bold">
                                 {pct.toFixed(1)}%
                               </span>
                             </div>
@@ -516,18 +465,18 @@ export const SuperAdminStoragePage: React.FC = () => {
                   )}
                 </tbody>
                 {folders.length > 0 && (
-                  <tfoot className="bg-[#f7faf9] dark:bg-[#1b241f] border-t border-[#dce7e1] dark:border-[#223126]">
+                  <tfoot className="bg-[#FBFDF7] border-t border-[#E3EFD7]">
                     <tr>
-                      <td className="py-2.5 px-3 font-black uppercase text-[10px] tracking-wider text-slate-500 dark:text-slate-400">
+                      <td className="py-2.5 px-3 font-black uppercase text-[10px] tracking-wider text-[#7C8B70]">
                         Prefix sum
                       </td>
-                      <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                      <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118]">
                         {folderFilesSum.toLocaleString()}
                       </td>
-                      <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                      <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118]">
                         {fmtBytes(folderBytesSum)}
                       </td>
-                      <td className="py-2.5 px-3 text-right tabular-nums font-bold text-slate-500 dark:text-slate-400">
+                      <td className="py-2.5 px-3 text-right tabular-nums font-bold text-[#7C8B70]">
                         {breakdownDenom > 0 ? `${pctOf(folderBytesSum, breakdownDenom).toFixed(1)}%` : '—'}
                       </td>
                     </tr>
@@ -543,95 +492,95 @@ export const SuperAdminStoragePage: React.FC = () => {
             title="Integrity"
             subtitle="Photo coverage across the student roster and catalog-row consistency"
           >
-            <div className="overflow-x-auto rounded-2xl border border-[#dce7e1] dark:border-[#223126]">
-              <table className="w-full text-[11px] font-mono text-left">
-                <thead className="bg-[#f7faf9] dark:bg-[#1b241f] text-slate-500 dark:text-slate-400 text-[10px] uppercase tracking-wider border-b border-[#dce7e1] dark:border-[#223126]">
+            <div className="overflow-x-auto rounded-2xl border border-[#E3EFD7]">
+              <table className="w-full text-[11px] text-left">
+                <thead className="bg-[#FBFDF7] text-[#7C8B70] text-[10px] uppercase tracking-wider border-b border-[#E3EFD7]">
                   <tr>
                     <th className="py-2 px-3 font-bold">Check</th>
                     <th className="py-2 px-3 font-bold text-right">Value</th>
                     <th className="py-2 px-3 font-bold">Status</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#dce7e1] dark:divide-[#223126]">
+                <tbody className="divide-y divide-[#E3EFD7]">
                   <tr>
-                    <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
+                    <td className="py-2.5 px-3 text-[#4B5B42]">
                       <span className="inline-flex items-center gap-1.5">
-                        <ImageIcon className="w-3.5 h-3.5 text-slate-400" />
+                        <ImageIcon className="w-3.5 h-3.5 text-[#8A9680]" />
                         Students with linked photos
                       </span>
                     </td>
-                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118]">
                       {fmtInt(withPhotos)}
                     </td>
                     <td className="py-2.5 px-3">
-                      <span className="text-slate-500 dark:text-slate-400 font-bold tabular-nums">
+                      <span className="text-[#7C8B70] font-bold tabular-nums">
                         {pctOf(withPhotos ?? 0, studentsCount ?? 0).toFixed(1)}% of roster
                       </span>
                     </td>
                   </tr>
                   <tr>
-                    <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
+                    <td className="py-2.5 px-3 text-[#4B5B42]">
                       <span className="inline-flex items-center gap-1.5">
-                        <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                        <AlertTriangle className="w-3.5 h-3.5 text-[#B45309]" />
                         Students without photo links
                       </span>
                     </td>
-                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118]">
                       {fmtInt(withoutPhotos)}
                     </td>
                     <td className="py-2.5 px-3">
                       {typeof withoutPhotos === 'number' && withoutPhotos > 0 ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]">
                           Coverage gap
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-[#CDEBB4] bg-[#EAF7DA] text-[#2F5E04]">
                           <CheckCircle2 className="w-3 h-3" /> Full coverage
                         </span>
                       )}
                     </td>
                   </tr>
                   <tr>
-                    <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
+                    <td className="py-2.5 px-3 text-[#4B5B42]">
                       <span className="inline-flex items-center gap-1.5">
-                        <Database className="w-3.5 h-3.5 text-slate-400" />
+                        <Database className="w-3.5 h-3.5 text-[#8A9680]" />
                         Photo catalog rows vs student rows
                       </span>
                     </td>
-                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118]">
                       {fmtInt(catalogCount)} / {fmtInt(studentsCount)}
                     </td>
                     <td className="py-2.5 px-3">
                       {orphanDelta === null ? (
-                        <span className="text-slate-400 font-bold">—</span>
+                        <span className="text-[#8A9680] font-bold">—</span>
                       ) : orphanDelta > 0 ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]">
                           <AlertTriangle className="w-3 h-3" />
                           {orphanDelta.toLocaleString()} orphan catalog row{orphanDelta === 1 ? '' : 's'}
                         </span>
                       ) : orphanDelta < 0 ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]">
                           <AlertTriangle className="w-3 h-3" />
                           {Math.abs(orphanDelta).toLocaleString()} student{Math.abs(orphanDelta) === 1 ? '' : 's'} without catalog row
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border border-[#CDEBB4] bg-[#EAF7DA] text-[#2F5E04]">
                           <CheckCircle2 className="w-3 h-3" /> Aligned
                         </span>
                       )}
                     </td>
                   </tr>
                   <tr>
-                    <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
+                    <td className="py-2.5 px-3 text-[#4B5B42]">
                       <span className="inline-flex items-center gap-1.5">
-                        <HardDrive className="w-3.5 h-3.5 text-slate-400" />
+                        <HardDrive className="w-3.5 h-3.5 text-[#8A9680]" />
                         Bucket objects vs student-linked photos
                       </span>
                     </td>
-                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118] dark:text-white">
+                    <td className="py-2.5 px-3 text-right tabular-nums font-black text-[#0B1118]">
                       {fmtInt(fileCount)} / {fmtInt(withPhotos)}
                     </td>
-                    <td className="py-2.5 px-3 text-slate-500 dark:text-slate-400 font-bold tabular-nums">
+                    <td className="py-2.5 px-3 text-[#7C8B70] font-bold tabular-nums">
                       {typeof fileCount === 'number' && typeof withPhotos === 'number'
                         ? `${(fileCount - withPhotos).toLocaleString()} non-roster objects (diagnostics, exports, misc prefixes)`
                         : '—'}
@@ -643,7 +592,7 @@ export const SuperAdminStoragePage: React.FC = () => {
           </SectionCard>
         </>
       )}
-    </div>
+    </PageShell>
   );
 };
 

@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import {
-  Upload, FileSpreadsheet, CheckCircle2, AlertTriangle,
-  Download, ArrowRight, Table, RefreshCw, FileText, Check
+  Upload, FileSpreadsheet, CheckCircle2, Table, Check, FileText, ArrowRight
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { addStudent } from '@/lib/store';
+import { PageShell, PageHero, FactGrid, FactCard, SectionCard, PrimaryButton, Chip } from '@/components/ui/PageKit';
 
 export const ReceiverImportPage: React.FC = () => {
   const [parsedRows, setParsedRows] = useState<any[]>([]);
@@ -43,8 +43,8 @@ export const ReceiverImportPage: React.FC = () => {
     parsedRows.forEach((row, idx) => {
       const fullName = row['Full Name'] || row['Name'] || row['fullName'] || '';
       const studentId = row['Student ID'] || row['ID'] || row['studentId'] || `SB-${Date.now().toString().slice(-4)}-${idx}`;
-      const grade = String(row['Grade'] || row['grade'] || '10');
-      const school = row['School'] || row['Campus'] || row['school'] || 'YMS';
+      const grade = String(row['Grade'] || row['grade'] || '');
+      const school = row['School'] || row['Campus'] || row['school'] || '';
 
       if (fullName && studentId) {
         addStudent({
@@ -53,8 +53,8 @@ export const ReceiverImportPage: React.FC = () => {
           fullName,
           grade,
           school,
-          bloodType: row['Blood Type'] || 'O+',
-          phone: row['Phone'] || '0911000000',
+          bloodType: row['Blood Type'] || '',
+          phone: row['Phone'] || '',
           status: 'PENDING'
         });
         importedCount++;
@@ -70,51 +70,49 @@ export const ReceiverImportPage: React.FC = () => {
     }, 1200);
   };
 
+  const readyRows = parsedRows.filter(r => (r['Full Name'] || r['Name'] || r['fullName']) && (r['Student ID'] || r['ID'] || r['studentId'])).length;
+
   return (
-    <div className="space-y-6 max-w-5xl mx-auto pb-12 select-none animate-in fade-in duration-150">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E2E8F0]">
-        <div>
-          <h1 className="text-2xl font-heading font-black text-[#202833] tracking-tight flex items-center gap-2">
-            <Upload className="w-6 h-6 text-[#85E510]" />
-            <span>Excel / CSV Batch Ingestion &amp; Mapping Center</span>
-          </h1>
-          <p className="text-xs text-[#64748B] mt-0.5">
-            Bulk ingest institutional student rosters, preview column mappings, and validate data integrity before committing to database
-          </p>
-        </div>
-      </div>
+    <PageShell className="mx-auto max-w-5xl">
+      <PageHero
+        icon={Upload}
+        title="Batch Import"
+        count={fileName || 'no file'}
+        live="Mapping centre"
+        subtitle="Bulk ingest a student roster from Excel or CSV, preview how each column maps, then commit the rows. Blank phone or blood type stays blank — nothing is invented."
+      >
+        <FactGrid cols={4}>
+          <FactCard label="Rows Parsed" value={parsedRows.length.toLocaleString()} hint="in the selected sheet" icon={Table} />
+          <FactCard label="Ready to Commit" value={readyRows.toLocaleString()} hint="name and ID present" icon={CheckCircle2} />
+          <FactCard label="Will Skip" value={(parsedRows.length - readyRows).toLocaleString()} hint="missing name or ID" icon={FileText} />
+          <FactCard label="Last Import" value={importSummary ? importSummary.imported.toLocaleString() : '—'} hint={importSummary ? `${importSummary.skipped} skipped` : 'nothing imported yet'} icon={ArrowRight} />
+        </FactGrid>
+      </PageHero>
 
       {importSummary && (
-        <div className="p-4 rounded-2xl bg-[#85E510]/15 border border-[#85E510]/30 text-xs text-[#366804] font-bold flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-[#CDEBB4] bg-[#EAF7DA] p-4 text-xs font-bold text-[#2F5E04]">
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-5 h-5 text-[#85E510]" />
-            <span>Successfully imported {importSummary.imported} student records ({importSummary.skipped} rows skipped).</span>
+            <CheckCircle2 className="h-5 w-5 text-[#6FBF0A]" />
+            <span>Imported {importSummary.imported} records ({importSummary.skipped} rows skipped).</span>
           </div>
-          <button
-            type="button"
-            onClick={() => setImportSummary(null)}
-            className="text-xs underline cursor-pointer"
-          >
+          <button type="button" onClick={() => setImportSummary(null)} className="cursor-pointer text-xs underline">
             Dismiss
           </button>
         </div>
       )}
 
-      {/* Upload Box */}
-      <div className="bg-white border-2 border-dashed border-[#CBD5E1] rounded-2xl p-8 text-center space-y-4 hover:border-[#85E510] transition-colors">
-        <div className="w-12 h-12 rounded-2xl bg-[#85E510]/15 text-[#366804] flex items-center justify-center mx-auto">
-          <FileSpreadsheet className="w-6 h-6 text-[#4D8A07]" />
+      <div className="rounded-2xl border-2 border-dashed border-[#D8E3CC] bg-white p-8 text-center transition-colors hover:border-[#85E510]">
+        <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-[#EAF7DA] text-[#3F7A06]">
+          <FileSpreadsheet className="h-6 w-6" />
         </div>
-        <div>
-          <h3 className="text-sm font-black text-[#202833]">Drop Excel (.xlsx) or CSV Roster Here</h3>
-          <p className="text-xs text-[#64748B] mt-0.5">
-            Accepts official Ministry of Education and campus student spreadsheets
-          </p>
+        <div className="mt-3">
+          <h3 className="text-sm font-black text-[#0B1118]">Drop an Excel (.xlsx) or CSV roster here</h3>
+          <p className="mt-0.5 text-xs text-[#7C8B70]">Accepts the official campus and ministry student spreadsheets.</p>
         </div>
 
-        <label className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] text-[#062404] text-xs font-black cursor-pointer shadow-xs transition-all">
-          <Upload className="w-4 h-4" />
-          <span>Browse Spreadsheet File</span>
+        <label className="mt-4 inline-flex cursor-pointer items-center gap-2 rounded-xl bg-[#85E510] px-5 py-2.5 text-xs font-black text-[#062404] shadow-sm transition-colors hover:bg-[#76CF0C]">
+          <Upload className="h-4 w-4" />
+          <span>Browse spreadsheet file</span>
           <input
             type="file"
             accept=".xlsx,.xls,.csv"
@@ -124,31 +122,24 @@ export const ReceiverImportPage: React.FC = () => {
         </label>
       </div>
 
-      {/* Preview Table */}
       {parsedRows.length > 0 && (
-        <div className="bg-white border border-[#E2E8F0] rounded-2xl p-5 shadow-xs space-y-4">
-          <div className="flex items-center justify-between pb-2 border-b border-[#E2E8F0]">
-            <div>
-              <h3 className="text-sm font-heading font-black text-[#202833] uppercase tracking-wider">
-                Roster Preview ({parsedRows.length} Records Detected)
-              </h3>
-              <p className="text-xs text-[#64748B]">Showing preview of mapped student rows</p>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleCommitImport}
-              disabled={importing}
-              className="px-4 py-2 rounded-xl bg-[#85E510] hover:bg-[#76CF0C] text-[#062404] font-black text-xs flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50 transition-all"
-            >
-              <Check className="w-4 h-4" />
-              <span>{importing ? "Committing to Database..." : `Commit ${parsedRows.length} Records`}</span>
-            </button>
-          </div>
-
-          <div className="overflow-x-auto max-h-80 custom-scrollbar">
+        <SectionCard
+          title={`Roster Preview · ${parsedRows.length} rows`}
+          subtitle="First 50 rows, exactly as they were parsed"
+          icon={Table}
+          padded={false}
+          actions={
+            <>
+              <Chip tone="neutral">{readyRows} ready</Chip>
+              <PrimaryButton icon={Check} onClick={handleCommitImport} disabled={importing} className="h-8">
+                {importing ? 'Committing...' : `Commit ${parsedRows.length}`}
+              </PrimaryButton>
+            </>
+          }
+        >
+          <div className="custom-scrollbar max-h-80 overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-[#F8FAF9] border-b border-[#E2E8F0] text-[#64748B] uppercase text-[10px] tracking-wider font-bold sticky top-0">
+              <thead className="sticky top-0 border-b border-[#EDF4E5] bg-[#FBFDF7] text-[10px] font-black uppercase tracking-wider text-[#7C8B70]">
                 <tr>
                   <th className="py-2.5 pl-4">Full Name</th>
                   <th className="py-2.5">Student ID</th>
@@ -158,22 +149,22 @@ export const ReceiverImportPage: React.FC = () => {
                   <th className="py-2.5 pr-4">Contact Phone</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#E2E8F0]">
+              <tbody className="divide-y divide-[#EDF4E5]">
                 {parsedRows.slice(0, 50).map((row, idx) => (
-                  <tr key={idx} className="hover:bg-[#F8FAF9]">
-                    <td className="py-2.5 pl-4 font-bold text-[#202833]">{row['Full Name'] || row['Name'] || row['fullName'] || '—'}</td>
-                    <td className="py-2.5 font-mono text-[#0284C7] font-semibold">{row['Student ID'] || row['ID'] || row['studentId'] || 'Auto'}</td>
-                    <td className="py-2.5 text-slate-700">{row['Grade'] || row['grade'] || '10'}</td>
-                    <td className="py-2.5 text-slate-700">{row['Section'] || 'A'}</td>
-                    <td className="py-2.5 text-slate-700">{row['School'] || row['Campus'] || 'YMS'}</td>
-                    <td className="py-2.5 pr-4 font-mono text-[#64748B]">{row['Phone'] || '0911000000'}</td>
+                  <tr key={idx} className="hover:bg-[#F8FBF4]">
+                    <td className="py-2.5 pl-4 font-bold text-[#0B1118]">{row['Full Name'] || row['Name'] || row['fullName'] || '—'}</td>
+                    <td className="py-2.5 font-mono font-semibold text-[#3F7A06]">{row['Student ID'] || row['ID'] || row['studentId'] || 'auto'}</td>
+                    <td className="py-2.5 text-[#5C6B51]">{row['Grade'] || row['grade'] || '—'}</td>
+                    <td className="py-2.5 text-[#5C6B51]">{row['Section'] || '—'}</td>
+                    <td className="py-2.5 text-[#5C6B51]">{row['School'] || row['Campus'] || '—'}</td>
+                    <td className="py-2.5 pr-4 font-mono text-[#7C8B70]">{row['Phone'] || '—'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </div>
+        </SectionCard>
       )}
-    </div>
+    </PageShell>
   );
 };

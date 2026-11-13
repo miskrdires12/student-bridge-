@@ -31,43 +31,45 @@ export const CANONICAL_GRADE_ORDER = [
 
 export const BRANCH_SCHOOL_MAP: Record<string, string[]> = {
   'Addis Ababa': [
-    'YMS 1', 'YMS 2', 'YMS 3', 'YMS 4',
-    'School of America 1', 'School of America 2', 'School of America 3', 'School of America 4',
-    'Adika Youth', 'Warka', 'Ferway',
-    'YMS', 'School of America'
+    'YMS', 'YMS 1', 'YMS 2', 'YMS 3', 'YMS 4',
+    'School of America 5', 'School of America 6', 'School of America 1', 'School of America 2', 'School of America 3', 'School of America 4',
+    'Adika Youth', 'Warka', 'Ferway'
   ],
-  'Adama': ['Sena Yerosen', '1234', 'Yacine', 'Debebech'],
+  'Adama': ['Sena Yerosen', 'Yacine', 'Debebech'],
   'Mojo': ['Mojo'],
-  'Harar': [
-    'High Tech 1', 'High Tech 2', 'High Tech 3', 'High Tech 4',
-    'High Tech'
-  ]
+  'Harar': ['High Tech', 'High Tech 1', 'High Tech 2', 'High Tech 3', 'High Tech 4']
 };
 
 export const DEFAULT_BRANCHES = Object.keys(BRANCH_SCHOOL_MAP);
 
-export function getBranchForSchool(schoolName?: string | null): string {
-  if (!schoolName) return 'Addis Ababa';
-  const sn = schoolName.toLowerCase().trim();
+export function branchForSchoolName(schoolName?: string | null): string | null {
+  if (!schoolName) return null;
+  const sn = schoolName.trim().toLowerCase();
   for (const [branch, schools] of Object.entries(BRANCH_SCHOOL_MAP)) {
     if (schools.some(s => s.toLowerCase() === sn)) {
       return branch;
     }
   }
-  return 'Addis Ababa';
+  return null;
+}
+
+export function getBranchForSchool(schoolName?: string | null): string {
+  return branchForSchoolName(schoolName) || 'Addis Ababa';
 }
 
 export function getStudentBranch(student?: Partial<Student> | null): string {
   if (!student) return 'Addis Ababa';
+  // The campus the record belongs to decides its branch. The address field is a postal detail that
+  // the form fills with the capital by default, and reading it before the school put every Sena
+  // Yerosen record (Adama) under Addis Ababa on the branch counters.
+  const bySchool = branchForSchoolName(student.school);
+  if (bySchool) return bySchool;
   if (student.location && DEFAULT_BRANCHES.includes(student.location)) return student.location;
   if ((student as any).branch && DEFAULT_BRANCHES.includes((student as any).branch)) return (student as any).branch;
   if (student.address) {
     for (const b of DEFAULT_BRANCHES) {
       if (student.address.toLowerCase().includes(b.toLowerCase())) return b;
     }
-  }
-  if (student.school) {
-    return getBranchForSchool(student.school);
   }
   return student.location || (student as any).branch || 'Addis Ababa';
 }
