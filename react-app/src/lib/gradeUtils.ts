@@ -37,7 +37,7 @@ export const BRANCH_SCHOOL_MAP: Record<string, string[]> = {
   ],
   'Adama': ['Sena Yerosen', 'Yacine', 'Debebech'],
   'Mojo': ['Mojo'],
-  'Harar': ['High Tech', 'High Tech 1', 'High Tech 2', 'High Tech 3', 'High Tech 4']
+  'Harar': ['High Tech', 'High Tech 2', 'High Tech 3', 'High Tech 4']
 };
 
 export const DEFAULT_BRANCHES = Object.keys(BRANCH_SCHOOL_MAP);

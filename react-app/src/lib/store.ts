@@ -30,7 +30,6 @@ export const DEFAULT_SCHOOLS: School[] = [
   { id: "sch_yacine", name: "Yacine", location: "Adama", status: "Active", studentsCount: 185 },
   { id: "sch_debebech", name: "Debebech", location: "Adama", status: "Active", studentsCount: 671 },
   { id: "sch_mojo", name: "Mojo", location: "Mojo", status: "Active", studentsCount: 360 },
-  { id: "sch_hightech1", name: "High Tech 1", location: "Harar", status: "Active", studentsCount: 120 },
   { id: "sch_hightech2", name: "High Tech 2", location: "Harar", status: "Active", studentsCount: 110 },
   { id: "sch_hightech3", name: "High Tech 3", location: "Harar", status: "Active", studentsCount: 95 },
   { id: "sch_hightech4", name: "High Tech 4", location: "Harar", status: "Active", studentsCount: 85 },
@@ -2921,7 +2920,7 @@ function senderMetricsFor(senderIdentifier: string, index: SenderRowIndex): Send
     : 0;
 
   // Determine branch based on school or direct user branch
-  const assignedSchool = user?.school || (norm === 'dagim' ? 'Mojo' : norm === 'biruk' || norm === 'henok' ? 'Yacine' : norm === 'zemichael' || norm === 'yonas' ? 'Debebech' : norm === 'abeni1' || norm === 'sol' ? 'High Tech 1' : 'YMS 1');
+  const assignedSchool = user?.school || (norm === 'dagim' ? 'Mojo' : norm === 'biruk' || norm === 'henok' ? 'Yacine' : norm === 'zemichael' || norm === 'yonas' ? 'Debebech' : norm === 'abeni1' || norm === 'sol' ? 'School of America 6' : 'YMS 1');
   // The campus wins over the account field: a Sena Yerosen sender whose account was created with
   // the capital branch still belongs to Adama, and the fleet table must not report Addis Ababa.
   let assignedBranch = branchForSchoolName(assignedSchool) || getBranchForSchool(assignedSchool) || user?.branch;

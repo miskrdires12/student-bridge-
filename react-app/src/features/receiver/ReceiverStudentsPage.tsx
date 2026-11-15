@@ -3144,7 +3144,7 @@ export const ReceiverStudentsPage: React.FC = () => {
                       type="text"
                       value={folderSearchQuery}
                       onChange={(e) => setFolderSearchQuery(e.target.value)}
-                      placeholder="Search school folders (e.g. Sena Yerosen, 1234, YMS, Debebech)..."
+                      placeholder="Search school folders (e.g. Sena Yerosen, School of America 5, YMS, Debebech)..."
                       className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl pl-9 pr-3 py-2 text-xs font-bold text-[#0B1118] focus:border-[#9EE617] focus:ring-1 focus:ring-[#9EE617]"
                     />
                     {folderSearchQuery && (

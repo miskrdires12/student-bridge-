@@ -93,7 +93,7 @@ const BRANCH_SCHOOL_MAP = {
   "Bahir Dar": ["Bahir Dar Academy"],
   "Mekelle": ["Mekelle Center"],
   "Mojo": ["Mojo"],
-  "Harar": ["High Tech 1", "High Tech 2", "High Tech 3", "High Tech 4", "High Tech"]
+  "Harar": ["High Tech 2", "High Tech 3", "High Tech 4", "High Tech"]
 };
 
 const SCHOOL_TO_BRANCH_MAP = new Map();
@@ -116,6 +116,70 @@ function getBranchForSchoolWorker(school) {
   if (s.includes("mojo")) return "Mojo";
   if (s.includes("harar") || s.includes("high tech")) return "Harar";
   return "Addis Ababa";
+}
+
+// A campus that was renamed must not come back through an old station build, a replayed outbox or
+// the APK. Every row that reaches the row store passes through d1RowValues, so the rename belongs
+// there once, rather than in each call site that could spell the retired name.
+const RETIRED_CAMPUS_NAMES = {
+  "1234": "School of America 5",
+  "school of america": "School of America 6",
+  "high tech 1": "School of America 6"
+};
+
+function healRetiredCampus(row) {
+  const retiredAs = RETIRED_CAMPUS_NAMES[String(row.school || "").trim().toLowerCase()];
+  if (!retiredAs) return row;
+  const movedTo = getBranchForSchoolWorker(retiredAs);
+  row.school = retiredAs;
+  // The campus moved branch with its students, so a record still stamped with the old branch would
+  // be counted under a place it no longer belongs to.
+  for (const field of ["branch", "location", "cityRegion", "address"]) {
+    if (row[field] && row[field] !== movedTo) row[field] = movedTo;
+  }
+  return row;
+}
+
+function applyRetiredCampusRename(row) {
+  if (!row || typeof row !== "object") return row;
+  return healRetiredCampus(Object.assign({}, row));
+}
+
+// A new record gets its healed campus at the point the name is read, not only where the row store
+// writes it. The backup table, the R2 copies and the bus all take the same spelling; if only D1
+// knew the new name, the next hydration from the backup would bring the retired one back.
+function resolveCampusForWrite(rawSchool, fallbackBranch) {
+  const claimed = String(rawSchool || "").trim();
+  const healed = applyRetiredCampusRename({ school: claimed }).school;
+  if (healed !== claimed) return { school: healed, branch: getBranchForSchoolWorker(healed) };
+  return { school: healed || claimed, branch: fallbackBranch || getBranchForSchoolWorker(healed) };
+}
+
+// The mirror table's real column list. The backup write is filtered to this: one unknown key makes
+// PostgREST reject the whole request, and a rejected mirror write leaves the backup holding the
+// old values for the next hydration to bring back.
+const SUPABASE_STUDENT_COLS = new Set([
+  "id", "studentId", "fullName", "phone", "sex", "grade",
+  "dateOfBirth", "emailAddress", "address", "school", "department",
+  "academicYear", "guardianFullName", "emergencyContactName",
+  "emergencyContactPhone", "contactName", "cityRegion", "bloodType",
+  "rollNumber", "nationality", "nationalId", "photoPath",
+  "thumbnailPath", "previewPath", "originalPhotoPath", "qrCodeData",
+  "senderId", "senderName", "photoIntegrityStatus", "storageKey",
+  "storageSyncAt", "status", "receiverHidden", "hiddenAt",
+  "batchId", "organizationId", "createdAt", "updatedAt",
+  "receiverNote", "hasMistake"
+]);
+
+function pickSupabaseStudentFields(source, { skipNull = false } = {}) {
+  const out = {};
+  for (const [k, v] of Object.entries(source || {})) {
+    if (!SUPABASE_STUDENT_COLS.has(k)) continue;
+    if (v === undefined) continue;
+    if (skipNull && v === null) continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 // -----------------------------------------------------------------------------
@@ -152,6 +216,10 @@ function extractValidPhone(...candidates) {
 
 function normalizeStudentWireFields(s) {
   if (!s || typeof s !== "object") return s;
+  // Held to the same rule as the write: a row the backup store still spells with a retired campus
+  // name must never reach a station in that spelling, because the station would send it back and
+  // the rename would quietly undo itself.
+  healRetiredCampus(s);
   const validPhone = extractValidPhone(
     s.emergencyContactPhone,
     s.phone,
@@ -248,7 +316,8 @@ function d1Value(col, raw, fallbackId) {
 const D1_UPSERT_SQL = `INSERT OR REPLACE INTO students (${D1_COLUMNS.join(", ")}) ` +
   `VALUES (${D1_COLUMNS.map(() => "?").join(", ")})`;
 
-function d1RowValues(row) {
+function d1RowValues(inputRow) {
+  const row = applyRetiredCampusRename(inputRow);
   const id = String((row && (row.studentId || row.id)) || "").trim();
   if (!id) return null;
   return D1_COLUMNS.map(col => {
@@ -354,6 +423,15 @@ async function patchStudentInD1(env, studentId, patch) {
   if (!d1Ready(env)) return false;
   const existing = await readStudentFromD1(env, studentId);
   const merged = Object.assign({}, existing || {}, patch || {});
+  // A record that reached the edge without a parseable number is stored as the literal "N/A", and
+  // several field paths re-send that placeholder for a child whose number the row store already
+  // holds. A payload carrying no usable phone may therefore never erase an existing number.
+  const incomingPhone = extractValidPhone(merged.phone, merged.emergencyContactPhone, merged.parentPhone);
+  if (!incomingPhone && existing && extractValidPhone(existing.phone)) {
+    merged.phone = existing.phone;
+    merged.parentPhone = existing.phone;
+    merged.emergencyContactPhone = existing.phone;
+  }
   merged.studentId = (existing && existing.studentId) || merged.studentId || studentId;
   return writeStudentToD1(env, merged);
 }
@@ -4302,8 +4380,9 @@ export default {
         const cleanGradeRaw = (grade || "").trim();
         const cleanDept = (body.department || body.section || "").trim();
         const cleanSection = (body.section || body.department || "").trim();
-        const schoolName = (school || "YMS 1").trim();
-        const resolvedBranch = body.branch || body.location || getBranchForSchoolWorker(schoolName);
+        const campus = resolveCampusForWrite((school || "YMS 1").trim(), body.branch || body.location);
+        const schoolName = campus.school;
+        const resolvedBranch = campus.branch;
 
         const newStudent = {
           id: body.id || ("cmu-" + Date.now().toString(36)),
@@ -4728,8 +4807,9 @@ export default {
         }
         finalPhone = finalPhone || "+251900000000";
 
-        const schoolName = school || "Warka";
-        const resolvedBranch = body.branch || getBranchForSchoolWorker(schoolName);
+        const campus = resolveCampusForWrite(school || "Warka", body.branch);
+        const schoolName = campus.school;
+        const resolvedBranch = campus.branch;
         const cleanGradeRaw = grade || "General";
         const cleanGradeParsed = parseGradeAndSection(cleanGradeRaw);
 
@@ -4932,8 +5012,9 @@ export default {
           const studentId = (item.studentId || item.student_id || item.id || "").toString().trim();
           if (!studentId) continue;
           const fullName = (item.fullName || item.full_name || item.name || studentId).toString().trim();
-          const school = (item.school || body.school || "Warka").toString().trim();
-          const branch = item.branch || getBranchForSchoolWorker(school);
+          const campus = resolveCampusForWrite((item.school || body.school || "Warka").toString(), item.branch);
+          const school = campus.school;
+          const branch = campus.branch;
           const sex = (item.sex || item.gender || "Male").toString().trim();
           const grade = (item.grade || "General").toString().trim();
 
@@ -5339,6 +5420,12 @@ export default {
           }
         }
 
+        // The patch is copied for the backup write before anything normalizes it. The wire
+        // normalizer stamps the literal "N/A" into every phone field of the object it is handed, and
+        // when that object is the patch itself the placeholder crossed the ocean and replaced a
+        // parent's real number in the backup table - which is where the missing phones came from.
+        const patchForMirror = Object.assign({}, updates);
+
         let mergedStudent = updates;
         if (cachedAllStudents) {
           const sIdx = cachedAllStudents.findIndex(s => s.studentId === studentId || s.id === studentId);
@@ -5386,24 +5473,26 @@ export default {
 
         // Authoritative write to Supabase cloudflare.students
         try {
-          const supabasePayload = {};
-          const SUPABASE_ALLOWED_UPDATE_COLS = new Set([
-            "fullName", "sex", "grade", "department", "section", "school", "branch",
-            "location", "address", "cityRegion", "phone", "bloodType", "dateOfBirth",
-            "nationality", "academicYear", "photoPath", "thumbnailPath", "previewPath",
-            "originalPhotoPath", "qrCodeData", "senderName", "senderId", "photoIntegrityStatus",
-            "status", "idProductionStatus", "receiverHidden", "hasMistake", "updatedAt",
-            "emergencyContactPhone", "emergencyContactName", "guardianFullName", "contactName"
-          ]);
-
-          for (const [k, v] of Object.entries(updates)) {
-            if (SUPABASE_ALLOWED_UPDATE_COLS.has(k) && v !== undefined) {
-              supabasePayload[k] = v;
-            }
+          // This list used to name `branch` and `location`, which the mirror table has never had.
+          // PostgREST rejects the entire request for one unknown column, so every edit that touched
+          // a branch field failed here silently and the backup kept the retired values - which is
+          // how a renamed campus came back as the old name days later.
+          const supabasePayload = pickSupabaseStudentFields(patchForMirror, { skipNull: true });
+          // An edit is only durable if the backup records the campus the same way the row store
+          // does, so the retired name is healed in the mirror payload as well.
+          if (supabasePayload.school) {
+            const healedCampus = applyRetiredCampusRename({
+              school: supabasePayload.school,
+              cityRegion: supabasePayload.cityRegion,
+              address: supabasePayload.address
+            });
+            supabasePayload.school = healedCampus.school;
+            if (supabasePayload.cityRegion) supabasePayload.cityRegion = healedCampus.cityRegion;
+            if (supabasePayload.address) supabasePayload.address = healedCampus.address;
           }
 
           if (Object.keys(supabasePayload).length > 0) {
-            await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(studentId)},id.eq.${encodeURIComponent(studentId)})`, {
+            const sbEditRes = await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(studentId)},id.eq.${encodeURIComponent(studentId)})`, {
               method: "PATCH",
               headers: {
                 "apikey": SUPABASE_KEY,
@@ -5414,6 +5503,9 @@ export default {
               },
               body: JSON.stringify(supabasePayload)
             });
+            if (!sbEditRes.ok) {
+              console.warn("Supabase mirror rejected this edit:", sbEditRes.status, (await sbEditRes.text()).slice(0, 200));
+            }
           }
         } catch (sbErr) {
           console.warn("Supabase student PATCH notice:", sbErr);
