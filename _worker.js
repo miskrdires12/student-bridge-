@@ -183,6 +183,69 @@ function pickSupabaseStudentFields(source, { skipNull = false } = {}) {
 }
 
 // -----------------------------------------------------------------------------
+// VERIFIED BACKUP WRITE
+//
+// Postgres is the store a station only sees when the row store cannot answer - which is exactly the
+// situation the system has to survive. A mirror write nobody inspected is the bug that undid a campus
+// rename: the edit landed in D1, PostgREST refused the backup because the payload named a column that
+// does not exist, and the stale row sat there waiting to be served. Every student change to the backup
+// now goes through here, reports whether it was accepted, and retries behind the response so the two
+// stores converge without making a station wait on a database it is not reading.
+// -----------------------------------------------------------------------------
+function mirrorStudentFilter(studentId) {
+  const enc = encodeURIComponent(String(studentId));
+  return `or=(studentId.eq.${enc},id.eq.${enc})`;
+}
+
+async function writeStudentToMirror(studentId, method, payload, opts) {
+  const o = opts || {};
+  const headers = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": `Bearer ${SUPABASE_KEY}`,
+    "Content-Profile": "cloudflare",
+    "Accept-Profile": "cloudflare"
+  };
+  if (payload !== undefined) headers["Content-Type"] = "application/json";
+  if (o.representation) headers["Prefer"] = "return=representation";
+  const target = `${SUPABASE_URL}/rest/v1/students?${mirrorStudentFilter(studentId)}`;
+
+  const attempt = async () => {
+    try {
+      const res = await fetch(target, {
+        method,
+        headers,
+        body: payload === undefined ? undefined : JSON.stringify(payload)
+      });
+      if (res.ok) {
+        if (!o.representation) return { ok: true, rows: [] };
+        const body = await res.json().catch(() => []);
+        return { ok: true, rows: Array.isArray(body) ? body : [] };
+      }
+      const detail = (await res.text().catch(() => "")).slice(0, 180);
+      console.warn(`mirror ${method} for ${studentId} rejected (${res.status}):`, detail);
+      return { ok: false, status: res.status, detail, rows: [] };
+    } catch (e) {
+      console.warn(`mirror ${method} for ${studentId} never reached the backup:`, e);
+      return { ok: false, status: 0, detail: String((e && e.message) || e), rows: [] };
+    }
+  };
+
+  const first = await attempt();
+  if (!first.ok && o.ctx && typeof o.ctx.waitUntil === "function") {
+    o.ctx.waitUntil((async () => {
+      for (const pause of [2500, 12000]) {
+        await new Promise(resolve => setTimeout(resolve, pause));
+        if ((await attempt()).ok) return;
+      }
+      console.warn(`mirror ${method} for ${studentId} still unwritten after retries`);
+    })());
+  }
+  return first;
+}
+
+const MIRROR_PHOTO_FIELDS = ["photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "storageKey"];
+
+// -----------------------------------------------------------------------------
 // PHONE NUMBER EXTRACTION, NORMALIZATION & BI-DIRECTIONAL APK SYNCHRONIZATION
 // -----------------------------------------------------------------------------
 function extractValidPhone(...candidates) {
@@ -5472,6 +5535,7 @@ export default {
         });
 
         // Authoritative write to Supabase cloudflare.students
+        let backupSynced = true;
         try {
           // This list used to name `branch` and `location`, which the mirror table has never had.
           // PostgREST rejects the entire request for one unknown column, so every edit that touched
@@ -5490,24 +5554,19 @@ export default {
             if (supabasePayload.cityRegion) supabasePayload.cityRegion = healedCampus.cityRegion;
             if (supabasePayload.address) supabasePayload.address = healedCampus.address;
           }
+          // The edge stamps updatedAt when a patch omits it, and that stamp is what the row store ends
+          // up holding. Carrying the same instant to the backup is what makes the two copies the same
+          // version: leave the mirror holding an older stamp and every "prefer the newer copy" merge in
+          // the field disagrees about which row is current, which is how a value one station had
+          // already corrected came back later.
+          if (authoritativeEdit && authoritativeEdit.updatedAt) supabasePayload.updatedAt = authoritativeEdit.updatedAt;
 
           if (Object.keys(supabasePayload).length > 0) {
-            const sbEditRes = await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(studentId)},id.eq.${encodeURIComponent(studentId)})`, {
-              method: "PATCH",
-              headers: {
-                "apikey": SUPABASE_KEY,
-                "Authorization": `Bearer ${SUPABASE_KEY}`,
-                "Content-Type": "application/json",
-                "Content-Profile": "cloudflare",
-                "Accept-Profile": "cloudflare"
-              },
-              body: JSON.stringify(supabasePayload)
-            });
-            if (!sbEditRes.ok) {
-              console.warn("Supabase mirror rejected this edit:", sbEditRes.status, (await sbEditRes.text()).slice(0, 200));
-            }
+            const mirrorEdit = await writeStudentToMirror(editedId, "PATCH", supabasePayload, { ctx });
+            if (!mirrorEdit.ok) backupSynced = false;
           }
         } catch (sbErr) {
+          backupSynced = false;
           console.warn("Supabase student PATCH notice:", sbErr);
         }
 
@@ -5550,7 +5609,13 @@ export default {
         }
 
         return new Response(JSON.stringify(authoritativeEdit), {
-          headers: { "Content-Type": "application/json", ...corsHeaders }
+          headers: {
+            "Content-Type": "application/json",
+            // The record is the response body, so how the backup write went is told in a header rather
+            // than as an extra field a station would merge into the student.
+            "X-SB-Backup": backupSynced ? "synced" : "retrying",
+            ...corsHeaders
+          }
         });
       } catch (e) {
         return new Response(JSON.stringify({ error: e.message }), { status: 400, headers: corsHeaders });
@@ -5586,6 +5651,10 @@ export default {
         }
 
         const tLower = targetId.toLowerCase();
+        // One instant for the whole flag change. Stamping D1, the backup and the Cloudflare registry
+        // with three separate clock reads left the two stores disagreeing by milliseconds, which is
+        // enough for a merge to prefer the older copy and show a record that was just hidden.
+        const flagInstant = new Date().toISOString();
 
         if (isRestore) {
           // RESTORE FROM TEMPORARY HIDE
@@ -5594,6 +5663,7 @@ export default {
           lastAllFetchTime = 0;
 
           // 1. Update Cloudflare R2 live_registry.json
+          let registryRestored = false;
           try {
             let currentReg = await getLiveRegistryFromR2();
             if (Array.isArray(currentReg)) {
@@ -5601,8 +5671,9 @@ export default {
               if (rIdx !== -1) {
                 currentReg[rIdx].receiverHidden = false;
                 currentReg[rIdx].hiddenAt = null;
-                currentReg[rIdx].updatedAt = new Date().toISOString();
+                currentReg[rIdx].updatedAt = flagInstant;
                 await saveLiveRegistryToR2(currentReg);
+                registryRestored = true;
               }
             }
           } catch (r2RegErr) {
@@ -5611,24 +5682,13 @@ export default {
 
           // 2. Update D1, then Supabase
           const restorePatchOk = await patchStudentInD1(env, targetId, {
-            receiverHidden: false, hiddenAt: null, updatedAt: new Date().toISOString()
+            receiverHidden: false, hiddenAt: null, updatedAt: flagInstant
           });
           if (restorePatchOk) {
             relayAnnounce(ctx, env, { type: "RESTORE", studentId: targetId, origin: relayOrigin(request) });
           }
-          try {
-            await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
-              method: "PATCH",
-              headers: {
-                "apikey": SUPABASE_KEY,
-                "Authorization": `Bearer ${SUPABASE_KEY}`,
-                "Content-Type": "application/json",
-                "Content-Profile": "cloudflare",
-                "Accept-Profile": "cloudflare"
-              },
-              body: JSON.stringify({ receiverHidden: false, hiddenAt: null, updatedAt: new Date().toISOString() })
-            });
-          } catch (sbErr) {}
+          const restoreMirror = await writeStudentToMirror(targetId, "PATCH",
+            { receiverHidden: false, hiddenAt: null, updatedAt: flagInstant }, { ctx });
 
           if (cachedAllStudents) {
             const match = cachedAllStudents.find(s => (s.studentId || "").toLowerCase() === tLower || (s.id || "").toLowerCase() === tLower);
@@ -5655,7 +5715,7 @@ export default {
             action: "STUDENT_RESTORED",
             entityType: "Student",
             entityId: targetId,
-            details: `Student ${targetId} restored from hidden state`,
+            details: `Student ${targetId} restored from hidden state${restoreMirror.ok ? "" : " (the backup is still flagged hidden; the edge is retrying it)"}${registryRestored ? ", brought back in the Cloudflare live registry" : ""}`,
             user: authUser,
             ipAddress: request.headers.get("cf-connecting-ip") || null
           }, ctx);
@@ -5667,7 +5727,12 @@ export default {
             });
           }
 
-          return new Response(JSON.stringify({ success: true, restored: true, studentId: targetId }), {
+          return new Response(JSON.stringify({
+            success: true,
+            restored: true,
+            studentId: targetId,
+            backupSynced: restoreMirror.ok
+          }), {
             headers: { "Content-Type": "application/json", ...corsHeaders }
           });
         }
@@ -5687,10 +5752,6 @@ export default {
             cachedStudents = cachedStudents.filter(s => (s.studentId || "").toLowerCase() !== tLower && (s.id || "").toLowerCase() !== tLower);
           }
 
-          // Snapshot the target's photo references before wiping the row
-          const localMatch = (cachedAllStudents || []).find(s => (s.studentId || "").toLowerCase() === tLower || (s.id || "").toLowerCase() === tLower)
-            || customStudents.find(s => (s.studentId || "").toLowerCase() === tLower || (s.id || "").toLowerCase() === tLower);
-
           const stripPhotoRef = (p) => {
             if (!p) return null;
             let s = String(p).trim();
@@ -5709,19 +5770,16 @@ export default {
           };
 
           const photoKeys = new Set();
-          for (const f of ["photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "storageKey"]) {
-            const k = stripPhotoRef(localMatch && localMatch[f]);
-            if (k) photoKeys.add(k);
-          }
 
           // Everything that decides what a station sees next is finished before this answers: the row
           // leaves the store the feed reads from, the Cloudflare copy that every assembly merges back
           // in loses it, and the connected stations are told. All three are edge-local, so the cost is
           // milliseconds, while leaving them to the background is exactly what made a completed delete
           // reappear on reload and get reported as "deleting does not work".
+          // The photo references come from the row itself, read back before the wipe.
           const d1PhotoRow = await readStudentFromD1(env, targetId);
           if (d1PhotoRow) {
-            for (const f of ["photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "storageKey"]) {
+            for (const f of MIRROR_PHOTO_FIELDS) {
               const k = stripPhotoRef(d1PhotoRow[f]);
               if (k) photoKeys.add(k);
             }
@@ -5756,60 +5814,28 @@ export default {
             console.warn("live registry purge notice:", targetId, e);
           }
 
-          // Offload remote async network operations to background via ctx.waitUntil
+          // The backup row leaves in the same call that reads its photo references: PostgREST hands back
+          // exactly the rows a DELETE removed, so the mirror is confirmed clean before this answers
+          // instead of being dropped by a background promise nobody reads. While the drop was background
+          // work, a refused delete left the record in Postgres to be served the next time the row store
+          // could not answer - which is a deleted student coming back.
+          const mirrorDrop = await writeStudentToMirror(targetId, "DELETE", undefined, { ctx, representation: true });
+          for (const row of mirrorDrop.rows) {
+            for (const f of MIRROR_PHOTO_FIELDS) {
+              const k = stripPhotoRef(row && row[f]);
+              if (k) photoKeys.add(k);
+            }
+            const alias = ((row && row.fullName) || "").trim().replace(/[\/\\:*?"<>|\s]+/g, "_");
+            if (alias) photoKeys.add(`${alias}.jpg`);
+          }
+          const backupRowsRemoved = mirrorDrop.rows.length;
+
+          // Offload the slow cloud clean-up to the background via ctx.waitUntil
           const bgDeletePromise = (async () => {
-            let cloudPurged = [];
-            let cloudSkipped = [];
-            try {
-              // Authoritative reference snapshot straight from Supabase (row still present)
-              // `or` is a top-level PostgREST operator, so it has to be the filter name itself. Written as
-              // `id=or.(...)` the request is rejected, this snapshot silently returned nothing, and the
-              // photo keys it was supposed to hand over never reached the purge below.
-              const preRes = await fetch(`${SUPABASE_URL}/rest/v1/students?select=photoPath,thumbnailPath,previewPath,originalPhotoPath,storageKey,fullName,grade&or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
-                headers: {
-                  "apikey": SUPABASE_KEY,
-                  "Authorization": `Bearer ${SUPABASE_KEY}`,
-                  "Accept-Profile": "cloudflare"
-                }
-              });
-              if (preRes.ok) {
-                const rows = await preRes.json();
-                (Array.isArray(rows) ? rows : []).forEach(row => {
-                  for (const f of ["photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "storageKey"]) {
-                    const k = stripPhotoRef(row[f]);
-                    if (k) photoKeys.add(k);
-                  }
-                  const cn = (row.fullName || "").trim().replace(/[\/\\:*?"<>|\s]+/g, "_");
-                  if (cn) photoKeys.add(`${cn}.jpg`);
-                });
-              }
-            } catch (e) {}
+            const cloudPurged = [];
+            const cloudSkipped = [];
 
-            const cleanAlias = (localMatch && localMatch.fullName ? String(localMatch.fullName).trim().replace(/[\/\\:*?"<>|\s]+/g, "_") : "");
-            if (cleanAlias) photoKeys.add(`${cleanAlias}.jpg`);
-            photoKeys.add(`${targetId}.jpg`);
-            photoKeys.add(`records/${targetId}.json`);
-
-            // 1. Drop the mirror the edge does not own. D1 already lost the row before this answered.
-            let rowsRemoved = 0;
-            try {
-              const dropRes = await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
-                method: "DELETE",
-                headers: {
-                  "apikey": SUPABASE_KEY,
-                  "Authorization": `Bearer ${SUPABASE_KEY}`,
-                  "Content-Profile": "cloudflare",
-                  "Accept-Profile": "cloudflare",
-                  "Prefer": "return=representation"
-                }
-              });
-              if (dropRes.ok) {
-                const dropped = await dropRes.json().catch(() => []);
-                rowsRemoved = Array.isArray(dropped) ? dropped.length : 0;
-              }
-            } catch (e) {}
-
-            // 2. Purge every cloud photo object, unless another remaining student still references it
+            // 1. Purge every cloud photo object, unless another remaining student still references it
             for (const key of photoKeys) {
               try {
                 if (key.startsWith("records/")) {
@@ -5844,7 +5870,7 @@ export default {
             // but it is not an event: one retrying client wrote 985 "permanent purge completed" rows
             // in seventeen minutes and pushed the day's real history out of the log window. Nothing
             // left the database and no cloud file was removed, so there is nothing to report.
-            if (!registryStripped && rowsRemoved === 0 && d1RowsRemoved === 0 && cloudPurged.length === 0) return;
+            if (!registryStripped && backupRowsRemoved === 0 && d1RowsRemoved === 0 && cloudPurged.length === 0) return;
 
             fetch("https://ntfy.sh/sb_prod_sync_cloudflare_r2_v1", {
               method: "POST",
@@ -5856,7 +5882,7 @@ export default {
               action: "STUDENT_DELETED_PERMANENT",
               entityType: "Student",
               entityId: targetId,
-              details: `Permanent purge completed: ${rowsRemoved ? "database row removed" : "no database row held it"}, ${cloudPurged.length} cloud files deleted from R2 (${cloudPurged.slice(0, 4).join(", ")})${registryStripped ? ", removed from the Cloudflare live registry" : ""}${cloudSkipped.length ? `, ${cloudSkipped.length} shared file(s) kept` : ""}`,
+              details: `Permanent purge completed: ${backupRowsRemoved ? "database row removed" : mirrorDrop.ok ? "no database row held it" : "the backup row could not be confirmed gone and is being retried"}, ${cloudPurged.length} cloud files deleted from R2 (${cloudPurged.slice(0, 4).join(", ")})${registryStripped ? ", removed from the Cloudflare live registry" : ""}${cloudSkipped.length ? `, ${cloudSkipped.length} shared file(s) kept` : ""}`,
               user: authUser,
               ipAddress: request.headers.get("cf-connecting-ip") || null,
               metadataExtra: { purgedFiles: cloudPurged.slice(0, 20) }
@@ -5869,7 +5895,9 @@ export default {
 
           // Say what was verified, not what was started. A station that is told the row is still
           // readable keeps the operation in its outbox and retries instead of showing its operator a
-          // delete that quietly failed.
+          // delete that quietly failed. The backup gets its own field because the two stores are proved
+          // apart: D1 gone is what removes the record from every station, and Postgres gone is what
+          // stops it coming back if the row store ever fails over.
           const purgeVerified = !stillInD1;
           return new Response(JSON.stringify({
             success: purgeVerified,
@@ -5878,30 +5906,37 @@ export default {
             deletedId: targetId,
             d1RowsRemoved,
             registryStripped,
+            backupRemoved: mirrorDrop.ok,
+            backupRowsRemoved,
+            backupRetryScheduled: !mirrorDrop.ok,
             cloudPurgeInitiated: true,
-            message: purgeVerified
-              ? `Student ${targetId} is out of the row store; cloud clean-up continues in the background.`
-              : `Student ${targetId} is still readable in the row store; retry the purge.`
+            message: !purgeVerified
+              ? `Student ${targetId} is still readable in the row store; retry the purge.`
+              : mirrorDrop.ok
+                ? `Student ${targetId} is out of the row store and the backup; cloud clean-up continues in the background.`
+                : `Student ${targetId} is out of the row store, but the backup row is still there; the edge is retrying it.`
           }), {
             status: purgeVerified ? 200 : 500,
             headers: { "Content-Type": "application/json", ...corsHeaders }
           });
         } else {
-          // 2. TEMPORARY DELETE (Soft Delete: Hide only from station system view, preserve data in Cloudflare)
-          edgeHiddenStudents.set(tLower, new Date().toISOString());
+          // 2. TEMPORARY DELETE (Soft Delete: Hide only from station view, data preserved in Cloudflare)
+          edgeHiddenStudents.set(tLower, flagInstant);
           edgeDeletedStudents.delete(tLower);
           lastAllFetchTime = 0;
 
           // 1. Update Cloudflare R2 live_registry.json with receiverHidden: true
+          let registryHidden = false;
           try {
             let currentReg = await getLiveRegistryFromR2();
             if (Array.isArray(currentReg)) {
               const rIdx = currentReg.findIndex(r => (r.studentId || "").toLowerCase() === tLower || (r.id || "").toLowerCase() === tLower);
               if (rIdx !== -1) {
                 currentReg[rIdx].receiverHidden = true;
-                currentReg[rIdx].hiddenAt = new Date().toISOString();
-                currentReg[rIdx].updatedAt = new Date().toISOString();
+                currentReg[rIdx].hiddenAt = flagInstant;
+                currentReg[rIdx].updatedAt = flagInstant;
                 await saveLiveRegistryToR2(currentReg);
+                registryHidden = true;
               }
             }
           } catch (r2RegErr) {
@@ -5911,43 +5946,28 @@ export default {
           // 2. Update D1 and Supabase PostgreSQL
           const hiddenPatchOk = await patchStudentInD1(env, targetId, {
             receiverHidden: true,
-            hiddenAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
+            hiddenAt: flagInstant,
+            updatedAt: flagInstant
           });
           if (hiddenPatchOk) {
             relayAnnounce(ctx, env, { type: "HIDE", studentId: targetId, origin: relayOrigin(request) });
           }
-          try {
-            await fetch(`${SUPABASE_URL}/rest/v1/students?or=(studentId.eq.${encodeURIComponent(targetId)},id.eq.${encodeURIComponent(targetId)})`, {
-              method: "PATCH",
-              headers: {
-                "apikey": SUPABASE_KEY,
-                "Authorization": `Bearer ${SUPABASE_KEY}`,
-                "Content-Type": "application/json",
-                "Content-Profile": "cloudflare",
-                "Accept-Profile": "cloudflare"
-              },
-              body: JSON.stringify({
-                receiverHidden: true,
-                hiddenAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-              })
-            });
-          } catch (sbErr) {}
+          const hideMirror = await writeStudentToMirror(targetId, "PATCH",
+            { receiverHidden: true, hiddenAt: flagInstant, updatedAt: flagInstant }, { ctx });
 
           // 3. Update memory caches
           if (cachedAllStudents) {
             const match = cachedAllStudents.find(s => (s.studentId || "").toLowerCase() === tLower || (s.id || "").toLowerCase() === tLower);
             if (match) {
               match.receiverHidden = true;
-              match.hiddenAt = new Date().toISOString();
+              match.hiddenAt = flagInstant;
             }
           }
           if (customStudents) {
             const match = customStudents.find(s => (s.studentId || "").toLowerCase() === tLower || (s.id || "").toLowerCase() === tLower);
             if (match) {
               match.receiverHidden = true;
-              match.hiddenAt = new Date().toISOString();
+              match.hiddenAt = flagInstant;
             }
           }
 
@@ -5962,7 +5982,7 @@ export default {
             action: "STUDENT_HIDDEN",
             entityType: "Student",
             entityId: targetId,
-            details: `Student ${targetId} temporarily hidden (data preserved in cloud)`,
+            details: `Student ${targetId} temporarily hidden (data preserved in cloud)${hideMirror.ok ? "" : "; the backup is still flagged visible and the edge is retrying"}${registryHidden ? ", marked hidden in the Cloudflare live registry" : ""}`,
             user: authUser,
             ipAddress: request.headers.get("cf-connecting-ip") || null
           }, ctx);
@@ -5977,7 +5997,12 @@ export default {
             });
           }
 
-          return new Response(JSON.stringify({ success: true, temporary: true, studentId: targetId }), {
+          return new Response(JSON.stringify({
+            success: true,
+            temporary: true,
+            studentId: targetId,
+            backupSynced: hideMirror.ok
+          }), {
             headers: { "Content-Type": "application/json", ...corsHeaders }
           });
         }
