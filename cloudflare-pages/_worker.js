@@ -1436,8 +1436,14 @@ const R2_SCAN_SNAPSHOT_KEY = "stats/r2_scan_snapshot.json";
 // bucket (16 S3 list calls, ~15 s). The last finished scan is mirrored to D1 and R2, so a fresh
 // isolate can serve the numbers it would have served minutes earlier instead of paying for a listing.
 const SCAN_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
+const R2_SCAN_TTL_MS = 5 * 60 * 1000;
+// How long a request will watch a listing started by somebody else before serving the numbers it
+// already has. A caller that explicitly asked for a refresh waits longer than a dashboard panel that
+// only wants the counters.
+const R2_SCAN_WAIT_MS = 4000;
+const R2_SCAN_FORCE_WAIT_MS = 45000;
 let scanSnapshotReadAttempted = false;
-let scanInFlight = null;
+let scanRunning = false;
 // Which copy a fresh isolate actually read. Surfaced in the capacity responses because a cold
 // dashboard that answers in 400ms and one that answers in 15s look identical otherwise.
 let scanHydrateNote = "none";
@@ -1445,11 +1451,10 @@ let scanHydrateNote = "none";
 // Serve cached scan numbers instantly; renew an expired scan in the background so
 // dashboard polling never waits on the ~10s full-bucket listing.
 async function scanCachedWithBgRefresh(ctx, force = false) {
-  const TTL_MS = 5 * 60 * 1000;
   if (force) return await ensureR2Scan(true);
   if (r2ScanCache.scannedAt === 0) await hydrateScanFromSnapshot();
   if (r2ScanCache.scannedAt === 0) return await ensureR2Scan(false);
-  if (Date.now() - r2ScanCache.scannedAt >= TTL_MS && ctx && ctx.waitUntil) {
+  if (Date.now() - r2ScanCache.scannedAt >= R2_SCAN_TTL_MS && ctx && ctx.waitUntil) {
     ctx.waitUntil(ensureR2Scan(true));
   }
   return r2ScanCache;
@@ -1524,55 +1529,71 @@ async function hydrateScanFromSnapshot() {
 }
 
 async function ensureR2Scan(force = false) {
-  const TTL_MS = 5 * 60 * 1000;
-  if (!force && r2ScanCache.scannedAt > 0 && Date.now() - r2ScanCache.scannedAt < TTL_MS) return r2ScanCache;
-  // A dashboard opens several panels at once; without this each one would list the whole bucket.
-  if (scanInFlight) return await scanInFlight;
-  scanInFlight = (async () => {
-    try {
-      const keys = await listR2AllKeys();
-      let totalBytes = 0;
-      const prefixMap = new Map();
-      for (const [key, size] of keys.entries()) {
-        totalBytes += size;
-        const seg = key.includes("/") ? key.slice(0, key.indexOf("/")) : "(root)";
-        const cur = prefixMap.get(seg) || { fileCount: 0, sizeBytes: 0 };
-        cur.fileCount += 1;
-        cur.sizeBytes += size;
-        prefixMap.set(seg, cur);
-      }
-      const byPrefix = Array.from(prefixMap.entries())
-        .map(([name, v]) => ({ name, fileCount: v.fileCount, sizeBytes: v.sizeBytes, sizeFormatted: formatBytesSb(v.sizeBytes) }))
-        .sort((a, b) => b.sizeBytes - a.sizeBytes);
-      r2ScanCache = { totalObjects: keys.size, totalBytes, byPrefix, keySet: keys, scannedAt: Date.now() };
-      scanHydrateNote = "live-scan";
-      cachedR2Stats.totalObjects = keys.size;
-      cachedR2Stats.totalBytes = totalBytes;
-      cachedR2Stats.lastScanned = Date.now();
-      try {
-        await uploadToR2Bucket(R2_SCAN_SNAPSHOT_KEY, new TextEncoder().encode(JSON.stringify({
-          totalObjects: keys.size,
-          totalBytes,
-          byPrefix,
-          scannedAt: r2ScanCache.scannedAt
-        })), "application/json");
-      } catch (e) {}
-      try {
-        if (d1Ready(activeEnv)) {
-          await activeEnv.SB_D1.prepare(
-            "INSERT OR REPLACE INTO r2_scan_snapshot (scope, totalObjects, totalBytes, byPrefix, scannedAt) VALUES (?1, ?2, ?3, ?4, ?5)"
-          ).bind("bucket", keys.size, totalBytes, JSON.stringify(byPrefix), r2ScanCache.scannedAt).run();
-          scanSnapshotReadAttempted = true;
-        }
-      } catch (d1SnapErr) {}
-    } catch (e) {
-      console.warn("R2 scan notice:", e);
-    } finally {
-      scanInFlight = null;
+  if (!force && r2ScanCache.scannedAt > 0 && Date.now() - r2ScanCache.scannedAt < R2_SCAN_TTL_MS) return r2ScanCache;
+  // A dashboard opens several panels at once, so only one request may list the bucket. It must not be
+  // the same *promise* handed to the others: Cloudflare drops a promise whose creating request has
+  // already ended, so a second panel awaiting the first one's listing never settled and answered 500
+  // for every stats request that overlapped it. The others watch the shared result instead, which a
+  // sleep of their own can do safely.
+  if (scanRunning) {
+    const budget = force ? R2_SCAN_FORCE_WAIT_MS : R2_SCAN_WAIT_MS;
+    for (let waited = 0; waited < budget && scanRunning; waited += 400) {
+      await new Promise(res => setTimeout(res, 400));
     }
     return r2ScanCache;
-  })();
-  return await scanInFlight;
+  }
+  scanRunning = true;
+  try {
+    const keys = await listR2AllKeys();
+    let totalBytes = 0;
+    const prefixMap = new Map();
+    for (const [key, size] of keys.entries()) {
+      totalBytes += size;
+      const seg = key.includes("/") ? key.slice(0, key.indexOf("/")) : "(root)";
+      const cur = prefixMap.get(seg) || { fileCount: 0, sizeBytes: 0 };
+      cur.fileCount += 1;
+      cur.sizeBytes += size;
+      prefixMap.set(seg, cur);
+    }
+    const byPrefix = Array.from(prefixMap.entries())
+      .map(([name, v]) => ({ name, fileCount: v.fileCount, sizeBytes: v.sizeBytes, sizeFormatted: formatBytesSb(v.sizeBytes) }))
+      .sort((a, b) => b.sizeBytes - a.sizeBytes);
+    r2ScanCache = { totalObjects: keys.size, totalBytes, byPrefix, keySet: keys, scannedAt: Date.now() };
+    scanHydrateNote = "live-scan";
+    cachedR2Stats.totalObjects = keys.size;
+    cachedR2Stats.totalBytes = totalBytes;
+    cachedR2Stats.lastScanned = Date.now();
+    try {
+      await uploadToR2Bucket(R2_SCAN_SNAPSHOT_KEY, new TextEncoder().encode(JSON.stringify({
+        totalObjects: keys.size,
+        totalBytes,
+        byPrefix,
+        scannedAt: r2ScanCache.scannedAt
+      })), "application/json");
+    } catch (e) {}
+    try {
+      if (d1Ready(activeEnv)) {
+        await activeEnv.SB_D1.prepare(
+          "INSERT OR REPLACE INTO r2_scan_snapshot (scope, totalObjects, totalBytes, byPrefix, scannedAt) VALUES (?1, ?2, ?3, ?4, ?5)"
+        ).bind("bucket", keys.size, totalBytes, JSON.stringify(byPrefix), r2ScanCache.scannedAt).run();
+        scanSnapshotReadAttempted = true;
+      }
+    } catch (d1SnapErr) {}
+  } catch (e) {
+    console.warn("R2 scan notice:", e);
+  } finally {
+    scanRunning = false;
+  }
+  return r2ScanCache;
+}
+
+// Retire the capacity numbers so the next dashboard renews them in the background. Zeroing the stamp
+// outright is what made a delete feel like an outage: the very next /api/stats then had no scan to
+// serve and walked the whole bucket on the request path, which is tens of seconds of "not responding".
+function retireR2Scan() {
+  if (r2ScanCache.scannedAt > 0) {
+    r2ScanCache.scannedAt = Math.min(r2ScanCache.scannedAt, Date.now() - R2_SCAN_TTL_MS - 1000);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -2018,7 +2039,7 @@ async function purgeStaleStudentPhotos(oldRefs, newKey, exceptStudentId) {
       if (await deleteFromR2Bucket(k)) purged.push(k);
     } catch (e) {}
   }
-  if (purged.length > 0) r2ScanCache.scannedAt = 0;
+  if (purged.length > 0) retireR2Scan();
   return purged;
 }
 
@@ -3636,7 +3657,12 @@ export default {
         const verifiedPhotos = allData.filter(s => Boolean(s.photoPath || s.thumbnailPath || s.originalPhotoPath)).length;
         const latency = supabaseLatency || Math.max(11, Date.now() - pingStart);
 
-        const scan = await scanCachedWithBgRefresh(ctx, forceRefresh);
+        let scan = r2ScanCache;
+        try {
+          scan = await scanCachedWithBgRefresh(ctx, forceRefresh);
+        } catch (scanErr) {
+          console.warn("status capacity scan notice:", scanErr && scanErr.message);
+        }
         const [usersCount, auditLogsCount] = await Promise.all([
           countSupabaseRows("users"),
           countSupabaseRows("audit_logs")
@@ -3747,7 +3773,7 @@ export default {
             }
           } catch (e) {}
         }
-        r2ScanCache.scannedAt = 0;
+        retireR2Scan();
         await writeAuditLog({
           action: "STORAGE_ORPHAN_PURGE",
           entityType: "Storage",
@@ -5864,7 +5890,7 @@ export default {
               }
             }
 
-            r2ScanCache.scannedAt = 0;
+            retireR2Scan();
 
             // A station that asks to purge a record that is already gone gets the same 200 answer,
             // but it is not an event: one retrying client wrote 985 "permanent purge completed" rows
@@ -6497,7 +6523,18 @@ export default {
         });
       }
 
-      const scan = await scanCachedWithBgRefresh(ctx);
+      // The counters above are the dashboard. A capacity figure that cannot be produced is reported
+      // as unavailable, because losing the storage panel must not take the student counts down with it.
+      let scan = { totalObjects: 0, totalBytes: 0, byPrefix: [], scannedAt: 0 };
+      let scanSource = scanHydrateNote;
+      try {
+        scan = await scanCachedWithBgRefresh(ctx);
+        scanSource = scanHydrateNote;
+      } catch (scanErr) {
+        scan = r2ScanCache;
+        scanSource = `${scanHydrateNote}/unavailable`;
+        console.warn("stats capacity scan notice:", scanErr && scanErr.message);
+      }
       const missingPhotos = (totalStudentsOut === null || photosOut === null)
         ? null
         : Math.max(0, totalStudentsOut - photosOut);
@@ -6527,7 +6564,7 @@ export default {
         r2TotalObjects: scan.totalObjects,
         r2Bucket: R2_BUCKET,
         r2RealStorageVerified: scan.scannedAt > 0,
-        storageScanSource: scanHydrateNote,
+        storageScanSource: scanSource,
         queryLatencyMs: Date.now() - statsStart
       }), {
         headers: { "Content-Type": "application/json", ...corsHeaders }
@@ -6538,7 +6575,18 @@ export default {
     // 9B. REAL-TIME CLOUDFLARE R2 CAPACITY AUDIT & REAL SIZE INSPECTION
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/storage/real-size" || url.pathname === "/api/r2/stats") {
-      const scan = await scanCachedWithBgRefresh(ctx, url.searchParams.get("refresh") === "true");
+      let scan = { totalObjects: 0, totalBytes: 0, byPrefix: [], scannedAt: 0 };
+      let scanSource = scanHydrateNote;
+      try {
+        scan = await scanCachedWithBgRefresh(ctx, url.searchParams.get("refresh") === "true");
+        scanSource = scanHydrateNote;
+      } catch (scanErr) {
+        // Fall back to the last numbers this isolate really saw rather than reporting an empty bucket,
+        // which would read as if the storage had been wiped.
+        scan = r2ScanCache;
+        scanSource = `${scanHydrateNote}/unavailable`;
+        console.warn("capacity audit notice:", scanErr && scanErr.message);
+      }
       return new Response(JSON.stringify({
         success: true,
         bucket: R2_BUCKET,
@@ -6548,7 +6596,7 @@ export default {
         totalGB: Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(3)),
         formatted: formatBytesSb(scan.totalBytes),
         verified: scan.scannedAt > 0,
-        storageScanSource: scanHydrateNote,
+        storageScanSource: scanSource,
         byPrefix: scan.byPrefix,
         lastScanned: scan.scannedAt ? new Date(scan.scannedAt).toISOString() : null
       }), {
