@@ -243,6 +243,119 @@ async function writeStudentToMirror(studentId, method, payload, opts) {
   return first;
 }
 
+// -----------------------------------------------------------------------------
+// MIRROR REPAIR QUEUE
+//
+// A row that lands in D1 but not in Postgres is invisible right now and wrong later: the backup is
+// what the stations read on the day the row store cannot answer, and twelve such rows were measured
+// missing from it. Retries that run behind a response die with the isolate, so the divergence is
+// recorded in the store that did take the write and drained whenever a station next polls the edge.
+// -----------------------------------------------------------------------------
+let mirrorRepairDrain = null;
+let mirrorRepairDrainedAt = 0;
+
+async function enqueueMirrorRepair(env, studentId) {
+  if (!d1Ready(env) || !studentId) return false;
+  try {
+    await env.SB_D1.prepare("INSERT OR REPLACE INTO mirror_repair (studentId, enqueuedAt) VALUES (?1, ?2)")
+      .bind(String(studentId).trim(), new Date().toISOString()).run();
+    return true;
+  } catch (queueErr) {
+    console.warn("mirror repair queue note:", queueErr);
+    return false;
+  }
+}
+
+// A batch the backup refused whole is queued in one round trip, the same way it arrived.
+async function enqueueMirrorRepairMany(env, studentIds) {
+  if (!d1Ready(env) || !Array.isArray(studentIds) || studentIds.length === 0) return 0;
+  const stmt = env.SB_D1.prepare("INSERT OR REPLACE INTO mirror_repair (studentId, enqueuedAt) VALUES (?1, ?2)");
+  const nowIso = new Date().toISOString();
+  const seen = new Set();
+  const stmts = [];
+  for (const raw of studentIds) {
+    const id = String(raw || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    stmts.push(stmt.bind(id, nowIso));
+  }
+  if (!stmts.length) return 0;
+  try {
+    await env.SB_D1.batch(stmts);
+    return stmts.length;
+  } catch (queueErr) {
+    console.warn("mirror repair batch queue note:", queueErr);
+    return 0;
+  }
+}
+
+// Throttled and single-flighted on purpose: the queue is normally empty, and the read that proves
+// that must not become a per-request cost on the busiest endpoints.
+function drainMirrorRepair(env, ctx) {
+  if (!d1Ready(env)) return;
+  if (mirrorRepairDrain) return;
+  if (Date.now() - mirrorRepairDrainedAt < 30000) return;
+  mirrorRepairDrainedAt = Date.now();
+  mirrorRepairDrain = runMirrorRepair(env)
+    .catch(err => { console.warn("mirror repair drain note:", err); })
+    .finally(() => { mirrorRepairDrain = null; });
+  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(mirrorRepairDrain);
+}
+
+async function runMirrorRepair(env) {
+  const queued = await env.SB_D1.prepare("SELECT studentId FROM mirror_repair ORDER BY enqueuedAt ASC LIMIT 25").all();
+  const ids = (queued.results || []).map(r => String(r.studentId)).filter(Boolean);
+  if (!ids.length) return 0;
+  let cleared = 0;
+  for (const id of ids) {
+    const row = await env.SB_D1.prepare("SELECT * FROM students WHERE studentId = ?1").bind(id).first();
+    // Deleted from the record store since it was queued: the repair drops the claim instead of
+    // resurrecting a student nobody registered.
+    if (!row) {
+      await env.SB_D1.prepare("DELETE FROM mirror_repair WHERE studentId = ?1").bind(id).run();
+      cleared++;
+      continue;
+    }
+    healRetiredCampus(row);
+    const payload = pickSupabaseStudentFields(row, { skipNull: true });
+    payload.studentId = id;
+    // Postgres will not take a row without its primary key, and the twelve gaps this queue exists
+    // for were exactly the records written to the store that tolerates a missing one. The repair
+    // names the key after the student, which is stable across retries.
+    if (!payload.id) payload.id = id;
+    let written = false;
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/students?on_conflict=studentId`, {
+        method: "POST",
+        headers: {
+          "apikey": SUPABASE_KEY,
+          "Authorization": `Bearer ${SUPABASE_KEY}`,
+          "Content-Type": "application/json",
+          "Content-Profile": "cloudflare",
+          "Accept-Profile": "cloudflare",
+          "Prefer": "resolution=merge-duplicates"
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined
+      });
+      written = res.ok;
+      if (!written) {
+        const body = (await res.text().catch(() => "")).slice(0, 120);
+        // The row already being there satisfies the repair; the queue exists to close gaps, not to
+        // re-argue about a duplicate key.
+        if (res.status === 409 || /duplicate|conflict/i.test(body)) written = true;
+        console.warn(`mirror repair ${id} refused (${res.status}):`, body);
+      }
+    } catch (repairErr) {
+      console.warn(`mirror repair ${id} did not reach the backup:`, repairErr);
+    }
+    if (!written) continue;
+    await env.SB_D1.prepare("DELETE FROM mirror_repair WHERE studentId = ?1").bind(id).run();
+    cleared++;
+  }
+  return cleared;
+}
+
 const MIRROR_PHOTO_FIELDS = ["photoPath", "thumbnailPath", "previewPath", "originalPhotoPath", "storageKey"];
 
 // -----------------------------------------------------------------------------
@@ -782,6 +895,375 @@ async function readFleetRowsFromD1(env) {
     console.warn("D1 fleet read note:", d1FleetErr);
     return null;
   }
+}
+
+// -----------------------------------------------------------------------------
+// LIVE DASHBOARD AGGREGATES - /api/dashboard/flow, /api/students/duplicates
+// -----------------------------------------------------------------------------
+//
+// The Live Dashboard only swaps in a snapshot once every part of it has answered, so a screen stuck
+// on "the server snapshot is not ready yet" means one of its endpoints never returned JSON rather
+// than that two numbers disagree. Both aggregates here are GROUP BYs over the table every counter
+// comes from, cut on the same Addis calendar days the payroll windows use, so the chart's window
+// total, /api/stats' total and the sender report are one measurement rather than three.
+const FLOW_WINDOW_DEFAULT_DAYS = 90;
+const FLOW_WINDOW_MAX_DAYS = 120;
+const FLOW_CACHE_MS = 15000;
+const DUPLICATE_CACHE_MS = 60000;
+const DUPLICATE_GROUP_PAGE = 150;
+const DUPLICATE_MEMBER_PAGE = 25;
+let dashboardFlowCache = null;
+let duplicateReportCache = null;
+
+const PHOTO_VERIFIED_COL = "SUM(CASE WHEN photoIntegrityStatus = 'PHOTO_VERIFIED' THEN 1 ELSE 0 END)";
+const ADDIS_DAY_COL = "substr(datetime(createdAt, '+3 hours'), 1, 10)";
+const ADDIS_HOUR_COL = "substr(datetime(createdAt, '+3 hours'), 12, 2)";
+
+function addFlowBucket(map, key, count, verified) {
+  let b = map.get(key);
+  if (!b) {
+    b = { count: 0, verified: 0 };
+    map.set(key, b);
+  }
+  b.count += Number(count) || 0;
+  b.verified += Number(verified) || 0;
+}
+
+// Three independent statements, opened together rather than one after another: the dashboard waits
+// on the slowest of them instead of on their sum.
+async function queryFlowFromD1(env, windowStartIso, todayKey) {
+  if (!d1Ready(env)) return null;
+  const bound = d1CanonicalInstant(windowStartIso);
+  // The window is cut exactly the way every period counter cuts it - a second-precision text
+  // comparison over the stored UTC instants - so a record cannot be "today" on the chart and
+  // outside today in the header because one of the two read its fractional seconds differently.
+  const windowClause = "substr(createdAt, 1, 19) >= substr(?, 1, 19)";
+  try {
+    const [dayRes, hourRes, branchRes] = await Promise.all([
+      env.SB_D1.prepare(
+        `SELECT ${ADDIS_DAY_COL} AS day, COUNT(*) AS count, ${PHOTO_VERIFIED_COL} AS verified
+           FROM students WHERE ${windowClause} GROUP BY day`).bind(bound).all(),
+      env.SB_D1.prepare(
+        `SELECT ${ADDIS_HOUR_COL} AS hour, COUNT(*) AS count, ${PHOTO_VERIFIED_COL} AS verified
+           FROM students WHERE ${ADDIS_DAY_COL} = ? GROUP BY hour`).bind(todayKey).all(),
+      env.SB_D1.prepare(
+        `SELECT ${ADDIS_DAY_COL} AS day, IFNULL(NULLIF(TRIM(branch), ''), 'Unassigned') AS branch,
+                COUNT(*) AS count, ${PHOTO_VERIFIED_COL} AS verified
+           FROM students WHERE ${windowClause} GROUP BY day, branch`).bind(bound).all()
+    ]);
+    const daily = new Map();
+    const hourly = new Map();
+    const branchDaily = new Map();
+    for (const r of (dayRes && dayRes.results) || []) {
+      if (!r || typeof r.day !== "string" || r.day.length !== 10) continue;
+      addFlowBucket(daily, r.day, r.count, r.verified);
+    }
+    for (const r of (hourRes && hourRes.results) || []) {
+      if (!r || typeof r.hour !== "string" || r.hour.length !== 2) continue;
+      addFlowBucket(hourly, r.hour, r.count, r.verified);
+    }
+    for (const r of (branchRes && branchRes.results) || []) {
+      if (!r || typeof r.day !== "string" || r.day.length !== 10) continue;
+      const branch = String(r.branch || "").trim() || "Unassigned";
+      addFlowBucket(branchDaily, `${branch}\u0000${r.day}`, r.count, r.verified);
+    }
+    return { daily, hourly, branchDaily };
+  } catch (flowQueryErr) {
+    console.warn("D1 dashboard flow note:", flowQueryErr);
+    return null;
+  }
+}
+
+// Only reached when D1 cannot answer, so the screen still gets a complete snapshot instead of
+// hanging on "not ready". The backup table carries no branch column, so a row's branch is resolved
+// from its campus the same way the write path resolves it, and `source` names the store the figures
+// were measured from so the dashboard can say which one it is drawing.
+async function bucketFlowFromBackupRows(env, todayKey, windowStartIso) {
+  const res = await fetchSupabaseAllRows(
+    "students",
+    "select=studentId,createdAt,photoIntegrityStatus,school&order=createdAt.desc,id.desc"
+  );
+  if (!res || !Array.isArray(res.rows) || res.rows.length === 0) return null;
+  const from = d1CanonicalInstant(windowStartIso).slice(0, 19);
+  const daily = new Map();
+  const hourly = new Map();
+  const branchDaily = new Map();
+  for (const r of res.rows) {
+    const iso = d1CanonicalInstant(r && r.createdAt);
+    const ts = Date.parse(iso);
+    if (!Number.isFinite(ts) || iso.slice(0, 19) < from) continue;
+    const day = fleetDayKey(ts);
+    const verified = String(r.photoIntegrityStatus || "").toUpperCase() === "PHOTO_VERIFIED" ? 1 : 0;
+    addFlowBucket(daily, day, 1, verified);
+    if (day === todayKey) {
+      addFlowBucket(hourly, String(new Date(ts + 3 * 3600 * 1000).getUTCHours()).padStart(2, "0"), 1, verified);
+    }
+    addFlowBucket(branchDaily, `${getBranchForSchoolWorker(r.school)}\u0000${day}`, 1, verified);
+  }
+  return { daily, hourly, branchDaily };
+}
+
+async function buildDashboardFlow(env, rangeDaysRaw) {
+  if (dashboardFlowCache && Date.now() - dashboardFlowCache.at < FLOW_CACHE_MS) {
+    return dashboardFlowCache.payload;
+  }
+  const started = Date.now();
+  const rangeDays = Math.min(
+    FLOW_WINDOW_MAX_DAYS,
+    Math.max(1, Math.round(Number(rangeDaysRaw) || FLOW_WINDOW_DEFAULT_DAYS))
+  );
+  const dayKeys = fleetDayWindow(started, rangeDays);
+  const todayKey = dayKeys[dayKeys.length - 1];
+  const windowStartIso = addisDayStartUtcIso(dayKeys[0]);
+
+  let source = "d1";
+  let buckets = await queryFlowFromD1(env, windowStartIso, todayKey);
+  if (!buckets) {
+    source = "supabase";
+    buckets = await bucketFlowFromBackupRows(env, todayKey, windowStartIso);
+  }
+  const daily = (buckets && buckets.daily) || new Map();
+  const hourly = (buckets && buckets.hourly) || new Map();
+  const branchDaily = (buckets && buckets.branchDaily) || new Map();
+
+  // Contiguous and zero-filled: the client takes a period by slicing the tail of this array and by
+  // summing everything from a week or month start, so days missing from the answer would silently
+  // shorten the window it believes it is showing.
+  const days = dayKeys.map((day) => {
+    const b = daily.get(day);
+    return { day, count: b ? b.count : 0, verified: b ? b.verified : 0 };
+  });
+  const hours = [];
+  for (let h = 0; h < 24; h++) {
+    const hour = String(h).padStart(2, "0");
+    const b = hourly.get(hour);
+    hours.push({ hour, count: b ? b.count : 0, verified: b ? b.verified : 0 });
+  }
+  const inWindow = new Set(dayKeys);
+  const branchDays = [];
+  for (const [composite, b] of branchDaily.entries()) {
+    const at = composite.indexOf("\u0000");
+    const branch = composite.slice(0, at);
+    const day = composite.slice(at + 1);
+    if (!inWindow.has(day)) continue;
+    branchDays.push({ day, branch, count: b.count, verified: b.verified });
+  }
+  branchDays.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : a.branch.localeCompare(b.branch)));
+
+  let totalInWindow = 0;
+  let verifiedInWindow = 0;
+  for (const d of days) {
+    totalInWindow += d.count;
+    verifiedInWindow += d.verified;
+  }
+
+  const payload = {
+    success: true,
+    rangeDays,
+    todayKey,
+    oldestKey: dayKeys[0],
+    source,
+    days,
+    hours,
+    branchDays,
+    totalInWindow,
+    verifiedInWindow,
+    generatedAt: new Date(started).toISOString(),
+    queryLatencyMs: Date.now() - started
+  };
+  dashboardFlowCache = { at: Date.now(), payload };
+  return payload;
+}
+
+// The signature a repeat registration is recognised by, expressed the way the write path expresses
+// it (name, guardian, grade, section, phone, campus). The review list and the same-child fold must
+// never be two different opinions about who is the same child.
+//
+// Mirrors those SQL expressions character for character: SQLite's trim() strips spaces only and
+// lower() folds ASCII, so a JS key built with a wider trim would merge two groups the database
+// counts apart and make the listed group size disagree with its own members.
+function dupeTextKey(value, foldCase) {
+  const s = String(value == null ? "" : value).replace(/^ +/, "").replace(/ +$/, "");
+  return foldCase ? s.toLowerCase() : s;
+}
+
+function dupeKeyOf(row) {
+  return [
+    dupeTextKey(row && row.fullName, true),
+    dupeTextKey(row && row.guardianFullName, true),
+    dupeTextKey(row && row.grade, true),
+    dupeTextKey(row && row.section, true),
+    String((row && row.phone) == null ? "" : row.phone),
+    dupeTextKey(row && row.school, true)
+  ].join("\u0001");
+}
+
+const DUPE_GROUP_BY = "lower(trim(fullName)), lower(ifnull(guardianFullName, '')), lower(ifnull(grade, '')), " +
+  "lower(ifnull(section, '')), ifnull(phone, ''), lower(ifnull(school, ''))";
+const DUPE_SCANNED_WHERE = "receiverHidden = 0 AND TRIM(IFNULL(fullName, '')) <> ''";
+
+// One statement measures the whole table's groups and one returns only the members worth reviewing,
+// so the review list is never built by reading every record into the Worker - which is the mistake
+// that made this screen the slowest request an operator makes.
+async function queryDuplicatesFromD1(env) {
+  if (!d1Ready(env)) return null;
+  try {
+    const totalsRes = await env.SB_D1.prepare(
+      `SELECT SUM(CASE WHEN n > 1 THEN 1 ELSE 0 END) AS groups,
+              IFNULL(SUM(CASE WHEN n > 1 THEN n ELSE 0 END), 0) AS duplicate_rows,
+              IFNULL(SUM(n), 0) AS scanned
+         FROM (SELECT COUNT(*) AS n FROM students WHERE ${DUPE_SCANNED_WHERE} GROUP BY ${DUPE_GROUP_BY})`
+    ).first();
+    if (!totalsRes) return null;
+    const membersRes = await env.SB_D1.prepare(
+      `SELECT s.studentId AS studentId, s.school AS school,
+              IFNULL(NULLIF(TRIM(s.branch), ''), 'Unassigned') AS branch,
+              s.createdAt AS createdAt, s.photoIntegrityStatus AS photoIntegrityStatus,
+              s.fullName AS fullName, s.guardianFullName AS guardianFullName,
+              s.grade AS grade, s.section AS section, s.phone AS phone, g.n AS group_count
+         FROM students s
+         JOIN (SELECT lower(trim(fullName)) nk, lower(ifnull(guardianFullName, '')) gk,
+                      lower(ifnull(grade, '')) rk, lower(ifnull(section, '')) sk,
+                      ifnull(phone, '') pk, lower(ifnull(school, '')) bk, COUNT(*) AS n
+                 FROM students WHERE ${DUPE_SCANNED_WHERE}
+                GROUP BY 1, 2, 3, 4, 5, 6 HAVING COUNT(*) > 1) g
+           ON lower(trim(s.fullName)) = g.nk AND lower(ifnull(s.guardianFullName, '')) = g.gk
+          AND lower(ifnull(s.grade, '')) = g.rk AND lower(ifnull(s.section, '')) = g.sk
+          AND ifnull(s.phone, '') = g.pk AND lower(ifnull(s.school, '')) = g.bk
+        WHERE s.receiverHidden = 0
+        ORDER BY g.n DESC, s.fullName ASC, s.createdAt ASC
+        LIMIT ${DUPLICATE_GROUP_PAGE * DUPLICATE_MEMBER_PAGE}`
+    ).all();
+    return {
+      totals: {
+        groups: Number(totalsRes.groups) || 0,
+        duplicateRows: Number(totalsRes.duplicate_rows) || 0,
+        scanned: Number(totalsRes.scanned) || 0
+      },
+      rows: (membersRes && membersRes.results) || []
+    };
+  } catch (dupeQueryErr) {
+    console.warn("D1 duplicate review note:", dupeQueryErr);
+    return null;
+  }
+}
+
+// Turns member rows into review groups. `count` is taken from the database's own group size when it
+// was supplied (the listing is capped, so a group can be reported with fewer members than it has);
+// the fallback path, which has no such column, uses the rows it actually walked.
+function groupDuplicateRows(rows) {
+  const byKey = new Map();
+  const order = [];
+  for (const r of rows || []) {
+    if (!r) continue;
+    const key = dupeKeyOf(r);
+    let g = byKey.get(key);
+    if (!g) {
+      g = {
+        key,
+        fullName: String(r.fullName || "").trim(),
+        guardianFullName: String(r.guardianFullName || "").trim(),
+        grade: String(r.grade || "").trim(),
+        section: String(r.section || "").trim(),
+        phone: String(r.phone || "").trim(),
+        count: 0,
+        walked: 0,
+        members: []
+      };
+      byKey.set(key, g);
+      order.push(g);
+    }
+    g.walked += 1;
+    const reported = Number(r.group_count) || 0;
+    g.count = reported > 0 ? reported : g.walked;
+    if (g.members.length < DUPLICATE_MEMBER_PAGE) {
+      g.members.push({
+        studentId: String(r.studentId || "").trim(),
+        school: String(r.school || "").trim(),
+        branch: String(r.branch || "").trim() || "Unassigned",
+        createdAt: String(r.createdAt || "").trim(),
+        photoVerified: String(r.photoIntegrityStatus || "").toUpperCase() === "PHOTO_VERIFIED"
+      });
+    }
+  }
+  return order;
+}
+
+// Only reached when D1 cannot answer: the backup table has neither branch nor section columns, so the
+// section comes from the department the write path mirrors it into and the branch from the campus map.
+async function groupDuplicatesFromBackup(env) {
+  const res = await fetchSupabaseAllRows(
+    "students",
+    "select=studentId,fullName,guardianFullName,grade,department,phone,school,photoIntegrityStatus,createdAt" +
+      "&receiverHidden=eq.false&order=createdAt.desc,id.desc"
+  );
+  if (!res || !Array.isArray(res.rows) || res.rows.length === 0) return null;
+  const rows = res.rows.map(r => ({
+    studentId: r.studentId,
+    fullName: r.fullName,
+    guardianFullName: r.guardianFullName,
+    grade: r.grade,
+    section: r.department,
+    phone: r.phone,
+    school: r.school,
+    branch: getBranchForSchoolWorker(r.school),
+    photoIntegrityStatus: r.photoIntegrityStatus
+  }));
+  const groups = groupDuplicateRows(rows);
+  let duplicateRows = 0;
+  for (const g of groups) duplicateRows += g.count;
+  return {
+    totals: { groups: groups.length, duplicateRows, scanned: rows.length },
+    groups,
+    source: "supabase"
+  };
+}
+
+async function buildDuplicateReport(env) {
+  if (duplicateReportCache && Date.now() - duplicateReportCache.at < DUPLICATE_CACHE_MS) {
+    return duplicateReportCache.payload;
+  }
+  const started = Date.now();
+  let source = "d1";
+  let totals = { groups: 0, duplicateRows: 0, scanned: 0 };
+  let groups = [];
+  const measured = await queryDuplicatesFromD1(env);
+  if (measured) {
+    totals = measured.totals;
+    groups = groupDuplicateRows(measured.rows);
+  } else {
+    source = "supabase";
+    const fallback = await groupDuplicatesFromBackup(env);
+    if (fallback) {
+      totals = fallback.totals;
+      groups = fallback.groups;
+    }
+  }
+  const listed = groups.slice(0, DUPLICATE_GROUP_PAGE).map(g => ({
+    key: g.key,
+    fullName: g.fullName,
+    guardianFullName: g.guardianFullName,
+    grade: g.grade,
+    section: g.section,
+    phone: g.phone,
+    count: g.count,
+    members: g.members
+  }));
+
+  const payload = {
+    success: true,
+    source,
+    totalStudents: totals.scanned,
+    totalGroups: totals.groups,
+    totalDuplicateRows: totals.duplicateRows,
+    extraRows: totals.duplicateRows - totals.groups,
+    groups: listed,
+    truncated: totals.groups > listed.length,
+    generatedAt: new Date(started).toISOString(),
+    queryLatencyMs: Date.now() - started
+  };
+  duplicateReportCache = { at: Date.now(), payload };
+  return payload;
 }
 
 // -----------------------------------------------------------------------------
@@ -2439,6 +2921,34 @@ async function countSupabaseTable(table) {
   return 0;
 }
 
+// How many rows the backup table holds, asked for once and given a bounded time to answer. This is a
+// status figure, not a count anything else reconciles with, so a stalled Supabase must never make it
+// wait: /api/health is what every station polls to decide whether the API is alive. The last measured
+// value is re-served for a minute, and 0 means it has never been measured at all.
+let mirrorRowCountCache = { at: 0, count: 0 };
+async function mirrorStudentRowCount(env) {
+  if (mirrorRowCountCache.count > 0 && Date.now() - mirrorRowCountCache.at < 60000) {
+    return mirrorRowCountCache.count;
+  }
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/students?select=id&limit=1`, {
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Accept-Profile": "cloudflare",
+        "Prefer": "count=exact"
+      },
+      signal: AbortSignal.timeout ? AbortSignal.timeout(1500) : undefined
+    });
+    const cr = res.headers.get("content-range");
+    if (res.ok && cr && cr.includes("/")) {
+      const parsed = parseInt(cr.split("/")[1], 10);
+      if (Number.isFinite(parsed) && parsed > 0) mirrorRowCountCache = { at: Date.now(), count: parsed };
+    }
+  } catch (mirrorCountErr) {}
+  return mirrorRowCountCache.count;
+}
+
 // Rebuild the full registry snapshot off the request path, single-flighted so a room full of
 // stations polling `all=true` costs one Supabase scan instead of one per request.
 let fullFeedRefresh = null;
@@ -2594,6 +3104,15 @@ function fleetDayWindow(now, days) {
   return keys;
 }
 
+// A day key back into the UTC instant that day begins at in Addis Ababa (UTC+3, no DST). Every
+// window an aggregate is cut with comes from here, so a chart bucket and a counter bucket drawn
+// from the same table cannot disagree about where a day starts.
+function addisDayStartUtcIso(dayKey) {
+  const parts = String(dayKey).split("-").map(Number);
+  if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return new Date().toISOString();
+  return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]) - 3 * 3600 * 1000).toISOString();
+}
+
 function sumDailyKeys(dailyMap, dayKeys) {
   let sum = 0;
   for (const k of dayKeys) sum += dailyMap[k] || 0;
@@ -2606,11 +3125,7 @@ function sumDailyKeys(dailyMap, dayKeys) {
 // which is exactly the fluctuation the operator sees as the system being wrong.
 function statsPeriodBounds(now) {
   const keys = fleetDayWindow(now, 30);
-  const zonedDayStartUtc = (dayKey) => {
-    const parts = String(dayKey).split("-").map(Number);
-    if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return new Date().toISOString();
-    return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]) - 3 * 3600 * 1000).toISOString();
-  };
+  const zonedDayStartUtc = addisDayStartUtcIso;
   return {
     todayStartIso: zonedDayStartUtc(keys[keys.length - 1]),
     weekStartIso: zonedDayStartUtc(keys[keys.length - 7]),
@@ -3290,23 +3805,17 @@ export default {
     // 1. HEALTH CHECK & DATABASE CONNECTIVITY
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/health") {
-      // Ask the same cheap ranged count the feed uses. `select=count` aggregates the whole
-      // table and has been cancelled by Supabase's statement timeout, which used to leave this
-      // endpoint reporting the hardcoded 4500 fallback as a live figure.
-      let liveCount = cachedAllStudents && cachedAllStudents.length > 0 ? cachedAllStudents.length : 0;
-      let dbConnected = false;
+      // Stations poll this endpoint continuously, which makes it the cheapest place to bring the
+      // backup back onto the record store. It runs behind the answer and at most every 30 s.
+      drainMirrorRepair(env, ctx);
+      // The two stores are reported as the two separate measurements they are. Reporting D1's count
+      // under the backup's label, and leaving the mirror's state unanswered so the screen guesses
+      // "catching up", is how one registry came to be shown as two numbers that never agreed.
       let rowStore = "Supabase PostgreSQL & Cloudflare R2";
       const d1RowCount = await countStudentsInD1(env);
+      const backupRowCount = await mirrorStudentRowCount(env);
       if (d1RowCount > 0) {
-        dbConnected = true;
-        liveCount = d1RowCount;
         rowStore = "Cloudflare D1 (authoritative) + Supabase PostgreSQL";
-      } else {
-        const scannedCount = await countSupabaseTable("students");
-        if (scannedCount > 0) {
-          dbConnected = true;
-          liveCount = scannedCount;
-        }
       }
 
       return new Response(
@@ -3320,8 +3829,12 @@ export default {
             provider: rowStore,
             schema: "cloudflare",
             table: "cloudflare.students",
-            connected: dbConnected,
-            liveRecordCount: liveCount
+            connected: d1RowCount > 0 || backupRowCount > 0,
+            // null is a store whose size was not measured this refresh, which the screen has to show
+            // as unknown rather than as a disagreement between the two.
+            liveRecordCount: backupRowCount > 0 ? backupRowCount : null,
+            d1RecordCount: d1RowCount > 0 ? d1RowCount : null,
+            d1InSync: d1RowCount > 0 && backupRowCount > 0 ? d1RowCount === backupRowCount : null
           },
           storage: {
             provider: "Cloudflare R2",
@@ -4799,6 +5312,9 @@ export default {
           d1WriteOk = await writeStudentToD1(env, newStudent);
           if (!d1WriteOk) console.warn(`Send ${newStudent.studentId} is in Postgres but not D1`);
         }
+        // The other direction is the one that was silently tolerated: the send is answered because
+        // the record store holds it, and the backup was left a student short forever.
+        if (d1WriteOk && !dbWriteOk) await enqueueMirrorRepair(env, insertedRecord.studentId);
 
         let registryStored = false;
         if (dbWriteOk || d1WriteOk) {
@@ -5134,7 +5650,7 @@ export default {
         }
 
         // D1 first: an APK scan must be readable from the feed without waiting on the ocean.
-        await writeStudentToD1(env, newStudent);
+        const d1BindOk = await writeStudentToD1(env, newStudent);
 
         relayAnnounce(ctx, env, {
           type: "UPSERT",
@@ -5145,8 +5661,9 @@ export default {
         });
 
         // Authoritative write to Supabase cloudflare.students
+        let bindMirrorOk = false;
         try {
-          await fetch(`${SUPABASE_URL}/rest/v1/students?on_conflict=studentId`, {
+          const bindMirrorRes = await fetch(`${SUPABASE_URL}/rest/v1/students?on_conflict=studentId`, {
             method: "POST",
             headers: {
               "apikey": SUPABASE_KEY,
@@ -5158,9 +5675,11 @@ export default {
             },
             body: JSON.stringify(dbInsertPayload)
           });
+          bindMirrorOk = bindMirrorRes.ok;
         } catch (sbErr) {
           console.warn("Supabase bind-qr sync error:", sbErr);
         }
+        if (d1BindOk && !bindMirrorOk) await enqueueMirrorRepair(env, newStudent.studentId);
 
         // Write to R2 live registry and individual student record
         try {
@@ -5384,6 +5903,7 @@ export default {
         // D1 is written on the request path, before the answer: an APK that pushes a batch and
         // immediately pulls the feed must see the rows it just sent, and a background write could
         // land after that pull.
+        dbBatch.forEach(rec => { if (rec && !rec.id && rec.studentId) rec.id = String(rec.studentId).trim(); });
         await writeStudentsToD1Batch(env, dbBatch);
 
         // One nudge for the whole batch. The receivers read the rows they are missing rather than
@@ -5421,7 +5941,10 @@ export default {
               return clean;
             });
 
-            await fetch(`${SUPABASE_URL}/rest/v1/students?on_conflict=studentId`, {
+            // One refused row used to take the whole batch down with it and nobody inspected the
+            // answer, so an APK push could leave the backup a school short in silence. The batch is
+            // tried as a batch; whatever it will not take is queued and written one row at a time.
+            const batchMirrorRes = await fetch(`${SUPABASE_URL}/rest/v1/students?on_conflict=studentId`, {
               method: "POST",
               headers: {
                 "apikey": SUPABASE_KEY,
@@ -5433,6 +5956,11 @@ export default {
               },
               body: JSON.stringify(cleanBatch)
             });
+            if (!batchMirrorRes.ok) {
+              const batchDetail = (await batchMirrorRes.text().catch(() => "")).slice(0, 160);
+              console.warn(`Supabase batch of ${cleanBatch.length} refused (${batchMirrorRes.status}): ${batchDetail}`);
+              await enqueueMirrorRepairMany(env, cleanBatch.map(s => s.studentId));
+            }
 
             await postAuditRowsToSupabase(auditRows);
 
@@ -5756,7 +6284,12 @@ export default {
 
           if (Object.keys(supabasePayload).length > 0) {
             const mirrorEdit = await writeStudentToMirror(editedId, "PATCH", supabasePayload, { ctx });
-            if (!mirrorEdit.ok) backupSynced = false;
+            if (!mirrorEdit.ok) {
+              backupSynced = false;
+              // The edit is durable in the record store, so the answer stays a success; the backup is
+              // queued to take the whole row rather than be left a version behind.
+              await enqueueMirrorRepair(env, editedId);
+            }
           }
         } catch (sbErr) {
           backupSynced = false;
@@ -5882,6 +6415,7 @@ export default {
           }
           const restoreMirror = await writeStudentToMirror(targetId, "PATCH",
             { receiverHidden: false, hiddenAt: null, updatedAt: flagInstant }, { ctx });
+          if (restorePatchOk && !restoreMirror.ok) await enqueueMirrorRepair(env, targetId);
 
           if (cachedAllStudents) {
             const match = cachedAllStudents.find(s => (s.studentId || "").toLowerCase() === tLower || (s.id || "").toLowerCase() === tLower);
@@ -6147,6 +6681,7 @@ export default {
           }
           const hideMirror = await writeStudentToMirror(targetId, "PATCH",
             { receiverHidden: true, hiddenAt: flagInstant, updatedAt: flagInstant }, { ctx });
+          if (hiddenPatchOk && !hideMirror.ok) await enqueueMirrorRepair(env, targetId);
 
           // 3. Update memory caches
           if (cachedAllStudents) {
@@ -7420,8 +7955,45 @@ export default {
       }
     }
 
+    // A dashboard snapshot is only as live as its slowest part, so both aggregates answer with JSON
+    // even when they cannot measure anything: a 200 that is really the SPA HTML is what left the
+    // Live Dashboard saying "the server snapshot is not ready yet" forever.
+    if (url.pathname === "/api/dashboard/flow" && request.method === "GET") {
+      let payload;
+      try {
+        payload = await buildDashboardFlow(env, url.searchParams.get("days"));
+      } catch (flowRouteErr) {
+        console.warn("dashboard flow route note:", flowRouteErr);
+        payload = dashboardFlowCache && dashboardFlowCache.payload
+          ? { ...dashboardFlowCache.payload, stale: true }
+          : { success: false, error: "flow_unavailable" };
+      }
+      return new Response(JSON.stringify(payload), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders }
+      });
+    }
+
+    if (url.pathname === "/api/students/duplicates" && request.method === "GET") {
+      let payload;
+      try {
+        payload = await buildDuplicateReport(env);
+      } catch (dupeRouteErr) {
+        console.warn("duplicate review route note:", dupeRouteErr);
+        payload = duplicateReportCache && duplicateReportCache.payload
+          ? { ...duplicateReportCache.payload, stale: true }
+          : { success: false, error: "duplicates_unavailable" };
+      }
+      return new Response(JSON.stringify(payload), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders }
+      });
+    }
+
     if (url.pathname === "/api/audit-logs" && request.method === "GET") {
-      const serverLogs = await fetchPersistentAuditLogs(500);
+      // The panel that asks for twelve rows used to be handed the whole 800-row tail of the log on
+      // every twenty-second refresh, and it renders whatever it is given - so the card labelled
+      // "latest" counted 800. The limit the caller asked for is the limit it gets.
+      const askedLimit = Math.min(800, Math.max(1, Math.round(Number(url.searchParams.get("limit")) || 800)));
+      const serverLogs = await fetchPersistentAuditLogs(askedLimit);
       const byId = new Map();
       for (const l of [...edgeAuditLogs, ...serverLogs]) {
         const id = l.id || `edge-${l.timestamp || l.createdAt}-${l.action}`;
@@ -7445,7 +8017,7 @@ export default {
       }
       const merged = Array.from(byId.values())
         .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
-        .slice(0, 800);
+        .slice(0, askedLimit);
       return new Response(JSON.stringify(merged), {
         headers: { "Content-Type": "application/json", "Cache-Control": "no-cache, no-store, must-revalidate", ...corsHeaders }
       });

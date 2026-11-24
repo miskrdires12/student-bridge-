@@ -9,6 +9,7 @@ import {
   Clock,
   Copy,
   Database,
+  GitCompareArrows,
   HardDrive,
   MapPin,
   Pause,
@@ -103,9 +104,9 @@ interface HealthPayload {
   time: string;
   database: {
     connected: boolean;
-    liveRecordCount: number;
-    d1RecordCount: number;
-    d1InSync: boolean;
+    liveRecordCount: number | null;
+    d1RecordCount: number | null;
+    d1InSync: boolean | null;
   };
 }
 
@@ -175,6 +176,14 @@ const REFRESH_INTERVAL_MS = 20000;
 function fmtInt(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   return value.toLocaleString("en-US");
+}
+
+// "In sync" and "Catching up" are two different claims drawn from one comparison; when either side
+// was not actually counted, the row has to say nothing rather than pick the alarming one.
+function syncStateLabel(health: HealthPayload | null | undefined): string {
+  const mirror = health?.database;
+  if (!mirror || mirror.d1InSync === null) return "—";
+  return mirror.d1InSync ? "In sync" : "Catching up";
 }
 
 function shiftDayKey(key: string, delta: number): string {
@@ -529,10 +538,14 @@ export const AdminDashboardPage: React.FC<DashboardPageProps> = ({
     {
       label: "Total Students",
       value: fmtInt(stats?.totalStudents),
+      // The mirror's state is only claimed when both stores were actually measured. null means the
+      // backup did not answer this refresh, which is not the same statement as "the mirror is behind".
       hint: snapshot?.health?.database
-        ? snapshot.health.database.d1InSync
-          ? "D1 mirror in sync"
-          : "D1 mirror catching up"
+        ? snapshot.health.database.d1InSync === null
+          ? "Backup size not measured"
+          : snapshot.health.database.d1InSync
+            ? "Backup mirror in sync"
+            : "Backup mirror catching up"
         : "Registry of record",
       icon: Users,
     },
@@ -562,6 +575,8 @@ export const AdminDashboardPage: React.FC<DashboardPageProps> = ({
     },
   ];
 
+  const db = snapshot?.health?.database;
+
   const systemRows = [
     {
       label: "Pages",
@@ -578,18 +593,31 @@ export const AdminDashboardPage: React.FC<DashboardPageProps> = ({
       icon: Wifi,
     },
     {
-      label: "Supabase",
-      value: snapshot?.health?.database.connected ? "Connected" : snapshot ? "Degraded" : "—",
-      ok: Boolean(snapshot?.health?.database.connected),
-      detail: snapshot?.health ? `${fmtInt(snapshot.health.database.liveRecordCount)} rows` : "Awaiting snapshot",
+      label: "D1 (record)",
+      value: db ? (db.d1RecordCount === null ? "—" : "Readable") : "—",
+      ok: Boolean(db && db.d1RecordCount && db.d1RecordCount > 0),
+      detail: db ? `${fmtInt(db.d1RecordCount)} rows` : "Awaiting snapshot",
       icon: Database,
     },
     {
-      label: "D1 Mirror",
-      value: snapshot?.health?.database.d1InSync ? "In sync" : snapshot ? "Catching up" : "—",
-      ok: Boolean(snapshot?.health?.database.d1InSync),
-      detail: snapshot?.health ? `${fmtInt(snapshot.health.database.d1RecordCount)} rows` : "Awaiting snapshot",
+      label: "Backup mirror",
+      value: db ? (db.liveRecordCount === null ? "—" : db.connected ? "Connected" : "Degraded") : "—",
+      ok: Boolean(db?.connected),
+      detail: db
+        ? db.liveRecordCount === null
+          ? "size not measured"
+          : `${fmtInt(db.liveRecordCount)} rows`
+        : "Awaiting snapshot",
       icon: Workflow,
+    },
+    {
+      label: "Mirror sync",
+      value: syncStateLabel(snapshot?.health),
+      ok: Boolean(db && db.d1InSync === true),
+      detail: db
+        ? `${fmtInt(db.d1RecordCount)} D1 vs ${fmtInt(db.liveRecordCount)} backup`
+        : "Awaiting snapshot",
+      icon: GitCompareArrows,
     },
     {
       label: "R2 Storage",
@@ -1029,7 +1057,7 @@ export const AdminDashboardPage: React.FC<DashboardPageProps> = ({
 
             {duplicates && (
               <div className="mt-3 text-[11px] text-[#7C8B70]">
-                Source: {duplicates.source === "d1" ? "D1 mirror" : "Supabase"} ·{" "}
+                Source: {duplicates.source === "d1" ? "D1 aggregate" : "Supabase"} ·{" "}
                 {fmtInt(duplicates.totalStudents)} rows scanned · {duplicates.queryLatencyMs} ms
               </div>
             )}
