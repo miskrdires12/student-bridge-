@@ -7,6 +7,11 @@ import { useRegistryVersion } from '@/lib/useRegistryVersion';
 
 export const SuperAdminSchoolsPage: React.FC = () => {
   const [schools, setSchools] = useState<School[]>([]);
+  // Counts measured from the row store, keyed by campus name in lower case. When the edge cannot
+  // answer, this page counts the registry it already holds and says so - it never fills a gap with
+  // the numbers that used to be typed into the campus list, because those made one fleet report
+  // two different totals depending on which screen was asked.
+  const [liveCounts, setLiveCounts] = useState<Record<string, number> | null>(null);
   const registryVersion = useRegistryVersion();
   const [modalOpen, setModalOpen] = useState(false);
   const [newSchoolName, setNewSchoolName] = useState('');
@@ -16,11 +21,30 @@ export const SuperAdminSchoolsPage: React.FC = () => {
     setSchools(getSchools());
   }, [registryVersion]);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/schools', { cache: 'no-store' })
+      .then(res => (res.ok ? res.json() : null))
+      .then(rows => {
+        if (cancelled || !Array.isArray(rows)) return;
+        const map: Record<string, number> = {};
+        for (const row of rows) {
+          if (typeof row?.studentsCount === 'number') {
+            map[String(row.name || '').trim().toLowerCase()] = row.studentsCount;
+          }
+        }
+        setLiveCounts(map);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [registryVersion]);
+
   const students = useMemo(() => getStudents(), [registryVersion]);
-  const totalEnrollment = schools.reduce(
-    (acc, s) => acc + (students.filter(std => std.school === s.name).length || s.studentsCount || 0),
-    0
-  );
+  const enrolledIn = (name: string) => {
+    if (liveCounts) return liveCounts[String(name || '').trim().toLowerCase()] ?? 0;
+    return students.filter(std => std.school === name).length;
+  };
+  const totalEnrollment = schools.reduce((acc, s) => acc + enrolledIn(s.name), 0);
   const hubs = new Set(schools.map(s => s.location).filter(Boolean)).size;
 
   const handleAddSchool = (e: React.FormEvent) => {
@@ -61,7 +85,7 @@ export const SuperAdminSchoolsPage: React.FC = () => {
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
         {schools.map(s => {
-          const actualStudentCount = students.filter(std => std.school === s.name).length || s.studentsCount;
+          const actualStudentCount = enrolledIn(s.name);
 
           return (
             <SectionCard key={s.id} className="transition-colors hover:border-[#85E510]">

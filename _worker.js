@@ -86,8 +86,8 @@ function fetch(input, init = {}) {
 // BRANCH AND SCHOOL MAPPING (Canonical)
 // -----------------------------------------------------------------------------
 const BRANCH_SCHOOL_MAP = {
-  "Addis Ababa": ["YMS 1", "YMS 2", "YMS 3", "YMS 4", "YMS 5", "YMS 6", "YMS 7", "YMS 8", "YMS 9", "YMS 10", "YMS 11", "YMS 12", "YMS 13", "YMS 14", "YMS 15", "YMS 16", "YMS 17", "YMS 18", "YMS 19", "School of America 1", "School of America 2", "School of America 3", "School of America 4", "School of America 5", "School of America 6", "Adika Youth", "Warka", "Ferway", "YMS"],
-  "Adama": ["Sena Yerosen", "Yacine", "Debebech"],
+  "Addis Ababa": ["YMS 1", "YMS 2", "YMS 3", "YMS 4", "YMS 5", "YMS 6", "YMS 7", "YMS 8", "YMS 9", "YMS 10", "YMS 11", "YMS 12", "YMS 13", "YMS 14", "YMS 15", "YMS 16", "YMS 17", "YMS 18", "YMS 19", "School of America 1", "School of America 2", "School of America 3", "School of America 4", "School of America 5", "School of America 6", "Adika Youth", "Warka", "Ferway", "YMS", "YMS Abado", "YMS Wosen", "YMS Shola"],
+  "Adama": ["Sena Yerosen", "Sena Yerosen 1", "Sena Yerosen 2", "Sena Yerosen 3", "Sena Yerosen 4", "Yacine", "Yacine Staff", "Debebech"],
   "Hawassa": ["Hawassa Campus 1", "Hawassa Campus 2"],
   "Dire Dawa": ["Dire Dawa Academy"],
   "Bahir Dar": ["Bahir Dar Academy"],
@@ -275,6 +275,26 @@ function extractValidPhone(...candidates) {
     return clean;
   }
   return null;
+}
+
+// Fourty-six percent of the roster pull was base64 nobody displays: 1,749 records carried their
+// thumbnail as an inline `data:` JPEG, 9.2 MB of the 20 MB a station downloads, which is long
+// enough on a school connection for the request to be abandoned and the screen to announce that
+// the API is not responding. The same picture already exists as a bucket object on every one of
+// those rows, so a read answers with that reference instead. This is a projection at the wire
+// boundary only - the stored row keeps its bytes until its upload is separately verified, and a
+// record whose portrait has not reached the bucket keeps its inline copy rather than rendering a
+// broken image.
+function projectInlineThumbnail(s) {
+  if (!s || typeof s !== "object") return s;
+  const thumb = String(s.thumbnailPath || "").trim();
+  if (!thumb.startsWith("data:")) return s;
+  if (String(s.photoIntegrityStatus || "").toUpperCase() !== "PHOTO_VERIFIED") return s;
+  const stored = [s.photoPath, s.originalPhotoPath, s.previewPath]
+    .map(v => (typeof v === "string" ? v.trim() : ""))
+    .find(v => v && !v.startsWith("data:"));
+  if (stored) s.thumbnailPath = stored;
+  return s;
 }
 
 function normalizeStudentWireFields(s) {
@@ -526,7 +546,7 @@ function d1HydrateStudent(row) {
   if (!row || typeof row !== "object") return row;
   row.receiverHidden = row.receiverHidden === 1 || row.receiverHidden === true;
   row.hasMistake = row.hasMistake === 1 || row.hasMistake === true;
-  return normalizeStudentWireFields(row);
+  return projectInlineThumbnail(normalizeStudentWireFields(row));
 }
 
 const D1_SORT_COLS = new Set(["createdAt", "updatedAt", "fullName", "grade", "school", "studentId", "status"]);
@@ -595,6 +615,12 @@ async function queryAllStudentsFromD1(env, opts) {
   if (!d1Ready(env)) return null;
   const PAGE = 1000;
   const MAX_PAGES = 25;
+  // The pages are read a few at a time rather than one after another. Nine sequential round trips
+  // to D1 is most of the ~10 s a station waits before a full-roster pull begins answering, and a
+  // pull that keeps it waiting that long is what the station reports as a dead API. The window is
+  // bounded because every open statement is an open D1 connection, and a table of a few hundred
+  // thousand rows would otherwise fan out into hundreds.
+  const WINDOW = 4;
   const all = [];
   let total = 0;
   try {
@@ -604,13 +630,18 @@ async function queryAllStudentsFromD1(env, opts) {
     total = (countRow && Number(countRow.n)) || 0;
     const sortCol = D1_SORT_COLS.has((opts && opts.sort)) ? opts.sort : "createdAt";
     const dir = String((opts && opts.order) || "").toLowerCase() === "asc" ? "ASC" : "DESC";
-    for (let i = 0; i < MAX_PAGES; i++) {
+    const readPage = async (i) => {
       const page = await env.SB_D1.prepare(
         `SELECT * FROM students ${clause} ORDER BY ${sortCol} ${dir}, studentId ASC LIMIT ${PAGE} OFFSET ${i * PAGE}`
       ).bind(...binds).all();
-      const rows = (page && page.results) || [];
-      all.push(...rows.map(d1HydrateStudent));
-      if (rows.length < PAGE) break;
+      return (page && page.results) || [];
+    };
+    for (let start = 0; start < MAX_PAGES; start += WINDOW) {
+      const idxs = [];
+      for (let i = start; i < Math.min(start + WINDOW, MAX_PAGES); i++) idxs.push(i);
+      const batch = await Promise.all(idxs.map(readPage));
+      for (const rows of batch) all.push(...rows.map(d1HydrateStudent));
+      if (batch.some(rows => rows.length < PAGE)) break;
     }
     return { students: all, total };
   } catch (d1AllErr) {
@@ -675,6 +706,49 @@ async function countStudentsInD1(env) {
   }
 }
 
+// How many rows each campus really holds, measured from the same table the counters come from.
+// A campus list whose numbers are written into the source is a second set of totals the operator
+// can never reconcile with the dashboard, so the only figures served here are queried ones.
+let schoolCountsCache = { at: 0, rows: null };
+async function countSchoolsInD1(env) {
+  if (!d1Ready(env)) return null;
+  if (schoolCountsCache.rows && Date.now() - schoolCountsCache.at < 60000) return schoolCountsCache.rows;
+  try {
+    const res = await env.SB_D1.prepare("SELECT school, COUNT(*) AS n FROM students GROUP BY school").all();
+    const rows = (res.results || []).map(r => ({
+      school: String(r.school || "").trim(),
+      display: String(r.school || "").trim(),
+      n: Number(r.n) || 0
+    }));
+    schoolCountsCache = { at: Date.now(), rows };
+    return rows;
+  } catch (schoolCountErr) {
+    console.warn("school count note:", schoolCountErr);
+    return schoolCountsCache.rows || null;
+  }
+}
+
+// The operator identities behind the "actual senders" counter, asked of the row store directly.
+// Building it used to mean reading every student record into the Worker just to collect a set of
+// names, which made the station status panel the slowest request an operator ever makes.
+async function distinctSenderKeysFromD1(env) {
+  if (!d1Ready(env)) return null;
+  try {
+    const res = await env.SB_D1.prepare(
+      "SELECT DISTINCT TRIM(IFNULL(senderName, '')) AS name, TRIM(IFNULL(senderId, '')) AS id FROM students"
+    ).all();
+    const keys = new Set();
+    for (const r of res.results || []) {
+      const k = String(r.name || r.id || "").trim().toLowerCase();
+      if (k) keys.add(k);
+    }
+    return keys;
+  } catch (senderKeysErr) {
+    console.warn("sender keys note:", senderKeysErr);
+    return null;
+  }
+}
+
 // The fleet counter walks the whole table. Reading it in fixed pages from D1 rather than from
 // Postgres is what lets its total be the same measurement as /api/stats rather than a second one
 // taken at a different instant.
@@ -682,18 +756,26 @@ async function readFleetRowsFromD1(env) {
   if (!d1Ready(env)) return null;
   const PAGE = 1000;
   const MAX_PAGES = 30;
+  // Same reason as the roster pull: nine of these pages read one after another is most of the three
+  // and a half seconds the sender telemetry takes, and the round trips do not depend on each other.
+  const WINDOW = 4;
   const out = [];
   out.truncated = false;
   try {
-    for (let i = 0; i < MAX_PAGES; i++) {
+    const readPage = async (i) => {
       const res = await env.SB_D1.prepare(
         `SELECT id, studentId, senderName, senderId, createdAt, school, branch FROM students
           ORDER BY createdAt DESC, studentId ASC LIMIT ${PAGE} OFFSET ${i * PAGE}`
       ).all();
-      const rows = (res && res.results) || [];
-      out.push(...rows);
-      if (rows.length < PAGE) break;
-      if (i === MAX_PAGES - 1) out.truncated = true;
+      return (res && res.results) || [];
+    };
+    for (let start = 0; start < MAX_PAGES; start += WINDOW) {
+      const idxs = [];
+      for (let i = start; i < Math.min(start + WINDOW, MAX_PAGES); i++) idxs.push(i);
+      const batch = await Promise.all(idxs.map(readPage));
+      for (const rows of batch) out.push(...rows);
+      if (batch.some(rows => rows.length < PAGE)) break;
+      if (idxs[idxs.length - 1] === MAX_PAGES - 1) out.truncated = true;
     }
     return out;
   } catch (d1FleetErr) {
@@ -1152,18 +1234,10 @@ let edgeHiddenStudents = new Map(); // studentIdLower -> hiddenAt ISO string
 
 let edgeTasks = [];
 
-let edgeSchools = [
-  { id: "sch_yms", name: "YMS", location: "Addis Ababa", status: "Active", studentsCount: 1245 },
-  { id: "sch_adika", name: "Adika Youth", location: "Addis Ababa", status: "Active", studentsCount: 982 },
-  { id: "sch_soa6", name: "School of America 6", location: "Addis Ababa", status: "Active", studentsCount: 756 },
-  { id: "sch_soa5", name: "School of America 5", location: "Addis Ababa", status: "Active", studentsCount: 0 },
-  { id: "sch_ferway", name: "Ferway", location: "Addis Ababa", status: "Active", studentsCount: 542 },
-  { id: "sch_warka", name: "Warka", location: "Addis Ababa", status: "Active", studentsCount: 398 },
-  { id: "sch_senayerosen", name: "Sena Yerosen", location: "Adama", status: "Active", studentsCount: 940 },
-  { id: "sch_yacine", name: "Yacine", location: "Adama", status: "Active", studentsCount: 420 },
-  { id: "sch_debebech", name: "Debebech", location: "Adama", status: "Active", studentsCount: 510 },
-  { id: "sch_hightech", name: "High Tech", location: "Harar", status: "Active", studentsCount: 380 }
-];
+// Campuses an operator added through the schools screen this isolate is alive for. The list the
+// pickers are built from is BRANCH_SCHOOL_MAP plus these; the student counts are never stored here,
+// they are queried, so no screen can serve a number that was typed into a source file.
+let runtimeAddedSchools = [];
 
 let edgeAuditLogs = [];
 
@@ -1435,28 +1509,50 @@ const R2_SCAN_SNAPSHOT_KEY = "stats/r2_scan_snapshot.json";
 // A cold Worker isolate has no in-memory scan, and rebuilding one means paging the whole
 // bucket (16 S3 list calls, ~15 s). The last finished scan is mirrored to D1 and R2, so a fresh
 // isolate can serve the numbers it would have served minutes earlier instead of paying for a listing.
-const SCAN_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
+// The snapshot is a real measurement of a real bucket, so age is reported rather than distrusted:
+// refusing a two-hour-old figure left the panel with nothing to show and made the next request list
+// the bucket on its own account. Only a scan the store cannot date at all is useless.
+const SCAN_SNAPSHOT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const R2_SCAN_TTL_MS = 5 * 60 * 1000;
 // How long a request will watch a listing started by somebody else before serving the numbers it
 // already has. A caller that explicitly asked for a refresh waits longer than a dashboard panel that
 // only wants the counters.
 const R2_SCAN_WAIT_MS = 4000;
 const R2_SCAN_FORCE_WAIT_MS = 45000;
+// The most a cold isolate may hold a dashboard response while it hunts for capacity numbers it does
+// not have yet. A full listing costs tens of seconds, and a station that waits that long reports the
+// API as dead even though it is working perfectly.
+const R2_SCAN_COLD_WAIT_MS = 2500;
 let scanSnapshotReadAttempted = false;
 let scanRunning = false;
 // Which copy a fresh isolate actually read. Surfaced in the capacity responses because a cold
 // dashboard that answers in 400ms and one that answers in 15s look identical otherwise.
 let scanHydrateNote = "none";
 
-// Serve cached scan numbers instantly; renew an expired scan in the background so
-// dashboard polling never waits on the ~10s full-bucket listing.
+// Capacity numbers are never produced on the request path. A request is answered from what this
+// isolate already holds (its own scan, or the snapshot mirrored to D1/R2 by the last isolate that
+// finished one) and the renewal is handed to waitUntil to run after the response. The one exception
+// is an isolate with nothing to serve at all, which is given R2_SCAN_COLD_WAIT_MS to find something
+// and then reports the panel as unverified rather than making the operator wait for a bucket.
 async function scanCachedWithBgRefresh(ctx, force = false) {
-  if (force) return await ensureR2Scan(true);
   if (r2ScanCache.scannedAt === 0) await hydrateScanFromSnapshot();
-  if (r2ScanCache.scannedAt === 0) return await ensureR2Scan(false);
-  if (Date.now() - r2ScanCache.scannedAt >= R2_SCAN_TTL_MS && ctx && ctx.waitUntil) {
-    ctx.waitUntil(ensureR2Scan(true));
+  const have = r2ScanCache.scannedAt > 0;
+  const expired = have && Date.now() - r2ScanCache.scannedAt >= R2_SCAN_TTL_MS;
+  if (!force && have && !expired) return r2ScanCache;
+
+  if (have) {
+    if (ctx && ctx.waitUntil) ctx.waitUntil(ensureR2Scan(true));
+    // renewing tells the caller these figures are on their way to being replaced, so a panel can
+    // label them with their age instead of presenting an old measurement as the current one.
+    return Object.assign({}, r2ScanCache, { renewing: true });
   }
+
+  const listing = ensureR2Scan(true);
+  if (ctx && ctx.waitUntil) ctx.waitUntil(listing);
+  await Promise.race([
+    listing.then(() => true),
+    new Promise(res => setTimeout(res, R2_SCAN_COLD_WAIT_MS, false))
+  ]);
   return r2ScanCache;
 }
 
@@ -2504,6 +2600,24 @@ function sumDailyKeys(dailyMap, dayKeys) {
   return sum;
 }
 
+// The day/week/month bounds every counter in the system is measured against. Every surface that
+// reports a total must take them from here: a dashboard that computes its own window and a report
+// that computes another one produce two different "this week" figures from one unchanging table,
+// which is exactly the fluctuation the operator sees as the system being wrong.
+function statsPeriodBounds(now) {
+  const keys = fleetDayWindow(now, 30);
+  const zonedDayStartUtc = (dayKey) => {
+    const parts = String(dayKey).split("-").map(Number);
+    if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return new Date().toISOString();
+    return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]) - 3 * 3600 * 1000).toISOString();
+  };
+  return {
+    todayStartIso: zonedDayStartUtc(keys[keys.length - 1]),
+    weekStartIso: zonedDayStartUtc(keys[keys.length - 7]),
+    monthStartIso: zonedDayStartUtc(keys[0])
+  };
+}
+
 // Calendar arithmetic on plain YYYY-MM-DD strings, so a period boundary is the same in Addis Ababa
 // no matter which Cloudflare colo ran the request. A day key is treated as a UTC midnight anchor and
 // only ever converted back to a date, never to a local time, so nothing here depends on a clock.
@@ -2810,7 +2924,7 @@ async function getAllStudentsDataset(env, originUrl, forceRefresh = false) {
     // fall through to the static + R2 merge, otherwise a truncated snapshot becomes the
     // authoritative dataset - and the daily backup would persist it as the whole registry.
     if (rows.length > 0 && complete) {
-      rows.forEach(normalizeStudentWireFields);
+      rows.forEach(s => projectInlineThumbnail(normalizeStudentWireFields(s)));
       cachedAllStudents = rows;
       lastAllFetchTime = Date.now();
       return cachedAllStudents;
@@ -2872,13 +2986,13 @@ async function getAllStudentsDataset(env, originUrl, forceRefresh = false) {
     }
 
     const resolvedBranch = s.branch || s.location || s.address || getBranchForSchoolWorker(s.school);
-    return normalizeStudentWireFields({
+    return projectInlineThumbnail(normalizeStudentWireFields({
       ...s,
       receiverHidden: isHidden,
       hiddenAt: hiddenAt,
       branch: resolvedBranch,
       location: resolvedBranch
-    });
+    }));
   });
   lastAllFetchTime = Date.now();
   return cachedAllStudents;
@@ -3263,10 +3377,23 @@ export default {
     // 1B. CLOUDFLARE R2 STORAGE & DOMAIN TELEMETRY API
     // -------------------------------------------------------------------------
     if (url.pathname === "/api/storage/status" && request.method === "GET") {
-      const allData = await getAllStudentsDataset(env, request.url);
-      const withPhoto = allData.filter(s => s && s.photoPath).length;
+      // Every figure this endpoint used to publish under "metrics" was typed into the source:
+      // 3.65 GB, 110.4 MB, 22.1%, 36.5%, "100% NOMINAL". Meanwhile totalStudents came from a full
+      // dataset read and verifiedPhotosCount from a photoPath filter, so this panel disagreed with
+      // the dashboard that reads D1 - the operator's "fluctuation". Nothing here is a constant now:
+      // counts come from the same aggregate the dashboard uses, capacity from the bucket scan, and
+      // anything the platform does not measure is reported as null rather than guessed.
+      const statusAgg = await queryStatsFromD1(env, Object.assign({ school: "ALL" }, statsPeriodBounds(Date.now())));
+      let scan = r2ScanCache;
+      try {
+        scan = await scanCachedWithBgRefresh(ctx);
+      } catch (scanErr) {
+        console.warn("storage status scan notice:", scanErr && scanErr.message);
+      }
+      const scanned = scan.scannedAt > 0;
+      const R2_PLAN_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
       return new Response(JSON.stringify({
-        status: "Operational",
+        status: scanned ? "Operational" : "Unverified",
         bucket: R2_BUCKET,
         accountId: R2_ACCOUNT_ID,
         endpoint: R2_ENDPOINT,
@@ -3279,20 +3406,29 @@ export default {
         zeroEgress: true,
         region: "auto",
         metrics: {
-          totalStudents: allData.length,
-          verifiedPhotosCount: withPhoto,
-          r2StorageGB: 3.65,
-          r2StorageLimitGB: 10.0,
-          r2StoragePercent: 36.5,
+          totalStudents: statusAgg ? statusAgg.total : null,
+          verifiedPhotosCount: statusAgg ? statusAgg.photos : null,
+          r2TotalObjects: scanned ? scan.totalObjects : null,
+          r2StorageBytes: scanned ? scan.totalBytes : null,
+          r2StorageGB: scanned ? Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(2)) : null,
+          r2StorageLimitGB: R2_PLAN_LIMIT_BYTES / (1024 * 1024 * 1024),
+          r2StoragePercent: scanned
+            ? Number(((scan.totalBytes / R2_PLAN_LIMIT_BYTES) * 100).toFixed(1))
+            : null,
+          r2ScannedAt: scanned ? new Date(scan.scannedAt).toISOString() : null,
+          r2ScanRenewing: Boolean(scan.renewing),
           r2EgressCost: "$0.00 / Free Forever",
-          dbSizeMB: 110.4,
-          dbSizeLimitMB: 500.0,
-          dbSizePercent: 22.1,
+          // D1 does not report its own size to a Worker, and a percentage invented here is a number
+          // no one can verify, so the database gauge is unmeasured rather than estimated.
+          dbSizeMB: null,
+          dbSizeLimitMB: null,
+          dbSizePercent: null,
           dbEgressStatus: "Shielded by Cloudflare Global CDN",
-          threatLevel: "100% NOMINAL",
-          quotaLockoutRisk: "0% (UNRESTRICTED)",
-          dualEdgePersistence: "Active (PostgreSQL + Cloudflare R2)",
-          offlineVault: "IndexedDB Active"
+          threatLevel: scanned ? "NOMINAL" : "UNVERIFIED",
+          quotaLockoutRisk: null,
+          dualEdgePersistence: "Active (Cloudflare D1 + Cloudflare R2)",
+          offlineVault: "IndexedDB Active",
+          countsSource: statusAgg ? "d1" : "unavailable"
         },
         timestamp: Date.now()
       }), {
@@ -3307,9 +3443,9 @@ export default {
         ssl: "Active (Universal SSL Cloudflare)",
         httpVersion: "HTTP/3 & HTTP/2 Enabled",
         status: "Online",
-        edgeColo: request.cf ? request.cf.colo : "ADD",
-        country: request.cf ? request.cf.country : "ET",
-        asn: request.cf ? request.cf.asn : 1234,
+        edgeColo: request.cf ? request.cf.colo : null,
+        country: request.cf ? request.cf.country : null,
+        asn: request.cf ? request.cf.asn : null,
         timestamp: Date.now()
       }), {
         headers: { "Content-Type": "application/json", ...corsHeaders }
@@ -3652,9 +3788,34 @@ export default {
           lastAllFetchTime = 0;
           cachedAllStudents = null;
         }
-        const allData = await getAllStudentsDataset(env, request.url);
-        const totalStudentsLive = supabaseLiveCount || allData.length;
-        const verifiedPhotos = allData.filter(s => Boolean(s.photoPath || s.thumbnailPath || s.originalPhotoPath)).length;
+        // The station status panel and the dashboard must be the same measurement of the same table.
+        // This used to read a cached dataset copy, so the two screens could disagree by however many
+        // records arrived since the cache was filled, and the operator saw one system reporting two
+        // totals.
+        const statusAgg = await queryStatsFromD1(env, Object.assign({ school: "ALL" }, statsPeriodBounds(Date.now())));
+
+        // Every number this panel shows is an aggregate over the table, so it is read as an aggregate.
+        // Pulling all ~8.7k rows to count distinct senders and then discarding them made this the
+        // slowest request in the system (15s), which stations report as "the API is not responding".
+        let senderKeys = await distinctSenderKeysFromD1(env);
+
+        // The full dataset is loaded only when D1 itself is unavailable, and then at most once.
+        let allData = null;
+        const loadDataset = async () => {
+          if (allData === null) allData = await getAllStudentsDataset(env, request.url);
+          return allData;
+        };
+
+        let totalStudentsLive;
+        let verifiedPhotos;
+        if (statusAgg) {
+          totalStudentsLive = statusAgg.total;
+          verifiedPhotos = statusAgg.photos;
+        } else {
+          const rows = await loadDataset();
+          totalStudentsLive = supabaseLiveCount || rows.length;
+          verifiedPhotos = rows.filter(s => Boolean(s.photoPath || s.thumbnailPath || s.originalPhotoPath)).length;
+        }
         const latency = supabaseLatency || Math.max(11, Date.now() - pingStart);
 
         let scan = r2ScanCache;
@@ -3669,28 +3830,32 @@ export default {
         ]);
 
         // Senders with real sent records: distinct sender identity across the actual student dataset
-        const senderKeys = new Set();
-        for (const s of allData) {
-          const k = (s.senderName || s.senderId || "").toString().trim().toLowerCase();
-          if (k) senderKeys.add(k);
+        if (senderKeys === null) {
+          senderKeys = new Set();
+          for (const s of await loadDataset()) {
+            const k = (s.senderName || s.senderId || "").toString().trim().toLowerCase();
+            if (k) senderKeys.add(k);
+          }
         }
 
         const statusPayload = {
           databaseConnected: supabaseConnected,
           databaseLatencyMs: latency,
-          supabaseLiveCount: totalStudentsLive,
+          supabaseLiveCount: supabaseLiveCount,
           supabaseConnected: supabaseConnected,
           storageConnected: scan.scannedAt > 0,
           storageBucket: R2_BUCKET,
           storageProvider: "Cloudflare R2 (Zero Egress)",
-          storageFileCount: scan.totalObjects,
-          storageSizeBytes: scan.totalBytes,
-          storageSizeFormatted: formatBytesSb(scan.totalBytes),
-          r2TotalObjects: scan.totalObjects,
+          storageFileCount: scan.scannedAt > 0 ? scan.totalObjects : null,
+          storageSizeBytes: scan.scannedAt > 0 ? scan.totalBytes : null,
+          storageSizeFormatted: scan.scannedAt > 0 ? formatBytesSb(scan.totalBytes) : null,
+          r2TotalObjects: scan.scannedAt > 0 ? scan.totalObjects : null,
           r2RealStorageVerified: scan.scannedAt > 0,
-          storageScannedAt: new Date(scan.scannedAt || Date.now()).toISOString(),
-          storageFolders: scan.byPrefix,
+          storageScannedAt: scan.scannedAt > 0 ? new Date(scan.scannedAt).toISOString() : null,
+          storageScanRenewing: Boolean(scan.renewing),
+          storageFolders: scan.scannedAt > 0 ? scan.byPrefix : [],
           sendersActual: senderKeys.size,
+          countsSource: statusAgg ? "d1" : "dataset_fallback",
           database: {
             studentsCount: totalStudentsLive,
             studentsWithPhotos: verifiedPhotos,
@@ -3698,8 +3863,10 @@ export default {
             usersCount: usersCount,
             batchesCount: 1,
             auditLogsCount: auditLogsCount,
-            studentPhotosCatalogCount: scan.totalObjects,
-            totalDatabaseRecords: totalStudentsLive + usersCount + auditLogsCount
+            studentPhotosCatalogCount: scan.scannedAt > 0 ? scan.totalObjects : null,
+            totalDatabaseRecords: (usersCount === null || auditLogsCount === null)
+              ? null
+              : totalStudentsLive + usersCount + auditLogsCount
           },
           poolerHost: "aws-0-eu-central-1.pooler.supabase.com",
           supabaseUrl: SUPABASE_URL,
@@ -3947,7 +4114,7 @@ export default {
           }
           let sbStudents = await sbRes.json();
           if (Array.isArray(sbStudents)) {
-            sbStudents.forEach(normalizeStudentWireFields);
+            sbStudents.forEach(s => projectInlineThumbnail(normalizeStudentWireFields(s)));
             // Merge in-memory customStudents if any exist
             if (customStudents.length > 0) {
               const existingSids = new Set(sbStudents.map(s => s.studentId));
@@ -5339,7 +5506,7 @@ export default {
       if (schoolFilter && schoolFilter !== "all") {
         list = list.filter(s => (s.school || "").toLowerCase().includes(schoolFilter));
       }
-      list.forEach(normalizeStudentWireFields);
+      list.forEach(s => projectInlineThumbnail(normalizeStudentWireFields(s)));
 
       return new Response(JSON.stringify({
         success: true,
@@ -6077,7 +6244,7 @@ export default {
       }
 
       if (found) {
-        normalizeStudentWireFields(found);
+        projectInlineThumbnail(normalizeStudentWireFields(found));
         return new Response(JSON.stringify({
           success: true,
           found: true,
@@ -6410,17 +6577,9 @@ export default {
       const schoolParam = (url.searchParams.get("school") || "ALL").trim();
       const schoolQ = schoolParam && schoolParam !== "ALL" ? `&school=ilike.*${encodeURIComponent(schoolParam)}*` : "";
 
-      // Period boundaries use the same school-local calendar days (Addis Ababa,
-      // UTC+3, no DST) as /api/telemetry/senders, so dashboards cannot disagree.
-      const statsDayKeys = fleetDayWindow(Date.now(), 30);
-      const zonedDayStartUtc = (dayKey) => {
-        const parts = String(dayKey).split("-").map(Number);
-        if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return new Date().toISOString();
-        return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]) - 3 * 3600 * 1000).toISOString();
-      };
-      const todayStartIso = zonedDayStartUtc(statsDayKeys[statsDayKeys.length - 1]);
-      const weekStartIso = zonedDayStartUtc(statsDayKeys[statsDayKeys.length - 7]);
-      const monthStartIso = zonedDayStartUtc(statsDayKeys[0]);
+      // Period boundaries use the same school-local calendar days (Addis Ababa, UTC+3, no DST) as
+      // /api/telemetry/senders and the station status panel, so dashboards cannot disagree.
+      const { todayStartIso, weekStartIso, monthStartIso } = statsPeriodBounds(Date.now());
 
       let totalCount = null, photoVerifiedCount = null, todayCount = null, weekCount = null, monthCount = null;
       let statsSource = "d1";
@@ -6557,13 +6716,19 @@ export default {
         acceptanceRate: (totalStudentsOut && photosOut !== null && totalStudentsOut > 0)
           ? ((photosOut / totalStudentsOut) * 100).toFixed(1) + "%"
           : null,
-        storageUsedBytes: scan.totalBytes,
-        storageUsedMB: Number((scan.totalBytes / (1024 * 1024)).toFixed(2)),
-        storageUsedGB: Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(3)),
-        storageFormatted: formatBytesSb(scan.totalBytes),
-        r2TotalObjects: scan.totalObjects,
+        // Capacity is only ever a measurement this isolate actually holds. With no scan and no
+        // readable snapshot the fields are null so the panel says "unavailable" instead of showing
+        // an empty bucket, which would read as if the storage had been wiped.
+        storageUsedBytes: scan.scannedAt > 0 ? scan.totalBytes : null,
+        storageUsedMB: scan.scannedAt > 0 ? Number((scan.totalBytes / (1024 * 1024)).toFixed(2)) : null,
+        storageUsedGB: scan.scannedAt > 0 ? Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(3)) : null,
+        storageFormatted: scan.scannedAt > 0 ? formatBytesSb(scan.totalBytes) : null,
+        r2TotalObjects: scan.scannedAt > 0 ? scan.totalObjects : null,
         r2Bucket: R2_BUCKET,
         r2RealStorageVerified: scan.scannedAt > 0,
+        storageScannedAt: scan.scannedAt > 0 ? new Date(scan.scannedAt).toISOString() : null,
+        storageScanAgeMs: scan.scannedAt > 0 ? Date.now() - scan.scannedAt : null,
+        storageScanRenewing: Boolean(scan.renewing),
         storageScanSource: scanSource,
         queryLatencyMs: Date.now() - statsStart
       }), {
@@ -6590,15 +6755,17 @@ export default {
       return new Response(JSON.stringify({
         success: true,
         bucket: R2_BUCKET,
-        totalObjects: scan.totalObjects,
-        totalBytes: scan.totalBytes,
-        totalMB: Number((scan.totalBytes / (1024 * 1024)).toFixed(2)),
-        totalGB: Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(3)),
-        formatted: formatBytesSb(scan.totalBytes),
+        totalObjects: scan.scannedAt > 0 ? scan.totalObjects : null,
+        totalBytes: scan.scannedAt > 0 ? scan.totalBytes : null,
+        totalMB: scan.scannedAt > 0 ? Number((scan.totalBytes / (1024 * 1024)).toFixed(2)) : null,
+        totalGB: scan.scannedAt > 0 ? Number((scan.totalBytes / (1024 * 1024 * 1024)).toFixed(3)) : null,
+        formatted: scan.scannedAt > 0 ? formatBytesSb(scan.totalBytes) : null,
         verified: scan.scannedAt > 0,
-        storageScanSource: scanSource,
-        byPrefix: scan.byPrefix,
-        lastScanned: scan.scannedAt ? new Date(scan.scannedAt).toISOString() : null
+        storageScanSource: scan.renewing ? `${scanSource}/renewing` : scanSource,
+        byPrefix: scan.scannedAt > 0 ? scan.byPrefix : [],
+        lastScanned: scan.scannedAt ? new Date(scan.scannedAt).toISOString() : null,
+        scanAgeMs: scan.scannedAt > 0 ? Date.now() - scan.scannedAt : null,
+        scanRenewing: Boolean(scan.renewing)
       }), {
         headers: { "Content-Type": "application/json", ...corsHeaders }
       });
@@ -7139,11 +7306,64 @@ export default {
     }
 
     if (url.pathname === "/api/schools") {
-      if (request.method === "GET") return new Response(JSON.stringify(edgeSchools), { headers: { "Content-Type": "application/json", ...corsHeaders } });
+      if (request.method === "GET") {
+        const counts = await countSchoolsInD1(env);
+        const byName = new Map();
+        if (counts) {
+          for (const c of counts) {
+            const k = c.school.toLowerCase();
+            const seen = byName.get(k);
+            if (seen) seen.n += c.n;
+            else byName.set(k, { display: c.display || c.school, n: c.n });
+          }
+        }
+        const slug = (name) => "sch_" + String(name).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+        const list = [];
+        const known = new Set();
+        const catalog = { ...BRANCH_SCHOOL_MAP };
+        for (const added of runtimeAddedSchools) {
+          const branch = added.location || getBranchForSchoolWorker(added.name);
+          catalog[branch] = (catalog[branch] || []).concat([added.name]);
+        }
+        for (const [branch, names] of Object.entries(catalog)) {
+          for (const name of names) {
+            const k = String(name).toLowerCase();
+            if (known.has(k)) continue;
+            known.add(k);
+            list.push({
+              id: slug(name), name, location: branch, status: "Active",
+              studentsCount: byName ? (byName.get(k) ? byName.get(k).n : 0) : null
+            });
+          }
+        }
+        // Rows whose campus spelling no catalog entry covers are still campuses the operator has
+        // sent students to; dropping them would make this list add to less than the dashboard total.
+        if (byName) {
+          for (const [k, v] of byName.entries()) {
+            if (known.has(k)) continue;
+            known.add(k);
+            list.push({
+              id: slug(v.display || k), name: v.display || k,
+              location: getBranchForSchoolWorker(v.display || k), status: "Active",
+              studentsCount: v.n, fromStoredRecords: true
+            });
+          }
+        }
+        return new Response(JSON.stringify(list), {
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders }
+        });
+      }
       if (request.method === "POST") {
         const body = await request.json();
-        const newSch = { id: "sch_" + Date.now(), name: body.name, location: body.location, status: "Active", studentsCount: 0 };
-        edgeSchools.push(newSch);
+        const name = String(body.name || "").trim();
+        const newSch = {
+          id: "sch_" + Date.now(), name,
+          location: body.location || getBranchForSchoolWorker(name),
+          status: "Active", studentsCount: 0
+        };
+        if (name && !runtimeAddedSchools.some(s => s.name.toLowerCase() === name.toLowerCase())) {
+          runtimeAddedSchools.push(newSch);
+        }
         return new Response(JSON.stringify(newSch), { status: 201, headers: { "Content-Type": "application/json", ...corsHeaders } });
       }
     }

@@ -10,30 +10,42 @@ export type { DeliveryReceipt } from './syncEngine';
 // calls it, and the row store buckets on this zone.
 const FLEET_TZ = 'Africa/Addis_Ababa';
 
-// Initial fallback schools strictly mapped to authorized branches
+// The campus list every picker and report is built from. studentsCount is deliberately zero here:
+// a number typed into a source file is not a measurement, and it used to be added to real counts
+// when a campus looked empty, so the same fleet reported two different totals depending on which
+// screen was asked. Real counts come from the row store - /api/schools for the server, the loaded
+// registry for these screens.
 export const DEFAULT_SCHOOLS: School[] = [
-  { id: "sch_yms1", name: "YMS 1", location: "Addis Ababa", status: "Active", studentsCount: 420 },
-  { id: "sch_yms2", name: "YMS 2", location: "Addis Ababa", status: "Active", studentsCount: 380 },
-  { id: "sch_yms3", name: "YMS 3", location: "Addis Ababa", status: "Active", studentsCount: 310 },
-  { id: "sch_yms4", name: "YMS 4", location: "Addis Ababa", status: "Active", studentsCount: 285 },
-  { id: "sch_yms", name: "YMS", location: "Addis Ababa", status: "Active", studentsCount: 1245 },
-  { id: "sch_soa1", name: "School of America 1", location: "Addis Ababa", status: "Active", studentsCount: 260 },
-  { id: "sch_soa2", name: "School of America 2", location: "Addis Ababa", status: "Active", studentsCount: 240 },
-  { id: "sch_soa3", name: "School of America 3", location: "Addis Ababa", status: "Active", studentsCount: 220 },
-  { id: "sch_soa4", name: "School of America 4", location: "Addis Ababa", status: "Active", studentsCount: 190 },
+  { id: "sch_yms1", name: "YMS 1", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_yms2", name: "YMS 2", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_yms3", name: "YMS 3", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_yms4", name: "YMS 4", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_yms", name: "YMS", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_soa1", name: "School of America 1", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_soa2", name: "School of America 2", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_soa3", name: "School of America 3", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_soa4", name: "School of America 4", location: "Addis Ababa", status: "Active", studentsCount: 0 },
   { id: "sch_soa5", name: "School of America 5", location: "Addis Ababa", status: "Active", studentsCount: 0 },
-  { id: "sch_soa6", name: "School of America 6", location: "Addis Ababa", status: "Active", studentsCount: 756 },
-  { id: "sch_adika", name: "Adika Youth", location: "Addis Ababa", status: "Active", studentsCount: 982 },
-  { id: "sch_warka", name: "Warka", location: "Addis Ababa", status: "Active", studentsCount: 398 },
-  { id: "sch_ferway", name: "Ferway", location: "Addis Ababa", status: "Active", studentsCount: 542 },
-  { id: "sch_senayerosen", name: "Sena Yerosen", location: "Adama", status: "Active", studentsCount: 414 },
-  { id: "sch_yacine", name: "Yacine", location: "Adama", status: "Active", studentsCount: 185 },
-  { id: "sch_debebech", name: "Debebech", location: "Adama", status: "Active", studentsCount: 671 },
-  { id: "sch_mojo", name: "Mojo", location: "Mojo", status: "Active", studentsCount: 360 },
-  { id: "sch_hightech2", name: "High Tech 2", location: "Harar", status: "Active", studentsCount: 110 },
-  { id: "sch_hightech3", name: "High Tech 3", location: "Harar", status: "Active", studentsCount: 95 },
-  { id: "sch_hightech4", name: "High Tech 4", location: "Harar", status: "Active", studentsCount: 85 },
-  { id: "sch_hightech", name: "High Tech", location: "Harar", status: "Active", studentsCount: 380 }
+  { id: "sch_soa6", name: "School of America 6", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_adika", name: "Adika Youth", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_warka", name: "Warka", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_ferway", name: "Ferway", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_yms_abado", name: "YMS Abado", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_yms_wosen", name: "YMS Wosen", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_yms_shola", name: "YMS Shola", location: "Addis Ababa", status: "Active", studentsCount: 0 },
+  { id: "sch_senayerosen", name: "Sena Yerosen", location: "Adama", status: "Active", studentsCount: 0 },
+  { id: "sch_senayerosen1", name: "Sena Yerosen 1", location: "Adama", status: "Active", studentsCount: 0 },
+  { id: "sch_senayerosen2", name: "Sena Yerosen 2", location: "Adama", status: "Active", studentsCount: 0 },
+  { id: "sch_senayerosen3", name: "Sena Yerosen 3", location: "Adama", status: "Active", studentsCount: 0 },
+  { id: "sch_senayerosen4", name: "Sena Yerosen 4", location: "Adama", status: "Active", studentsCount: 0 },
+  { id: "sch_yacine", name: "Yacine", location: "Adama", status: "Active", studentsCount: 0 },
+  { id: "sch_yacine_staff", name: "Yacine Staff", location: "Adama", status: "Active", studentsCount: 0 },
+  { id: "sch_debebech", name: "Debebech", location: "Adama", status: "Active", studentsCount: 0 },
+  { id: "sch_mojo", name: "Mojo", location: "Mojo", status: "Active", studentsCount: 0 },
+  { id: "sch_hightech2", name: "High Tech 2", location: "Harar", status: "Active", studentsCount: 0 },
+  { id: "sch_hightech3", name: "High Tech 3", location: "Harar", status: "Active", studentsCount: 0 },
+  { id: "sch_hightech4", name: "High Tech 4", location: "Harar", status: "Active", studentsCount: 0 },
+  { id: "sch_hightech", name: "High Tech", location: "Harar", status: "Active", studentsCount: 0 }
 ];
 
 export interface OperatorAccount extends User {

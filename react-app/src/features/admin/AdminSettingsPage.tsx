@@ -515,17 +515,15 @@ export const AdminSettingsPage: React.FC = () => {
                   onChange={(e) => setSenderConfig({ ...senderConfig, defaultSchool: e.target.value })}
                   className="w-full bg-[#F8FAF9] border border-[#CBD5E1] rounded-xl px-3 py-2 font-semibold text-[#0B1118]"
                 >
-                  <option value="YMS">YMS (Addis Ababa)</option>
-                  <option value="School of America 5">School of America 5 (Addis Ababa)</option>
-                  <option value="School of America 6">School of America 6 (Addis Ababa)</option>
-                  <option value="Adika Youth">Adika Youth (Addis Ababa)</option>
-                  <option value="Warka">Warka (Addis Ababa)</option>
-                  <option value="Ferway">Ferway (Addis Ababa)</option>
-                  <option value="Sena Yerosen">Sena Yerosen (Adama)</option>
-                  <option value="Yacine">Yacine (Adama)</option>
-                  <option value="Debebech">Debebech (Adama)</option>
-                  <option value="Mojo">Mojo (Mojo)</option>
-                  <option value="High Tech">High Tech (Harar)</option>
+                  {/* Built from the same branch map the pickers use, so a campus added once appears
+                      everywhere instead of needing a second list to be remembered. */}
+                  {Object.entries(BRANCH_SCHOOL_MAP).flatMap(([branch, names]) => (
+                    <optgroup key={branch} label={branch}>
+                      {names.map(name => (
+                        <option key={`${branch}:${name}`} value={name}>{name} ({branch})</option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
               </div>
 

@@ -33,9 +33,9 @@ export const BRANCH_SCHOOL_MAP: Record<string, string[]> = {
   'Addis Ababa': [
     'YMS', 'YMS 1', 'YMS 2', 'YMS 3', 'YMS 4',
     'School of America 5', 'School of America 6', 'School of America 1', 'School of America 2', 'School of America 3', 'School of America 4',
-    'Adika Youth', 'Warka', 'Ferway'
+    'Adika Youth', 'Warka', 'Ferway', 'YMS Abado', 'YMS Wosen', 'YMS Shola'
   ],
-  'Adama': ['Sena Yerosen', 'Yacine', 'Debebech'],
+  'Adama': ['Sena Yerosen', 'Sena Yerosen 1', 'Sena Yerosen 2', 'Sena Yerosen 3', 'Sena Yerosen 4', 'Yacine', 'Yacine Staff', 'Debebech'],
   'Mojo': ['Mojo'],
   'Harar': ['High Tech', 'High Tech 2', 'High Tech 3', 'High Tech 4']
 };

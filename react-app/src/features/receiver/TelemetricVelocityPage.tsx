@@ -416,13 +416,8 @@ export const TelemetricVelocityPage: React.FC = () => {
       const allTimeTotal = branchSenders.reduce((acc, s) => acc + (s.total || 0), 0);
       const lockedDevices = branchSenders.filter(s => Boolean(s.boundDeviceId)).length;
 
-      // Authoritative cohort quotas for this region
-      const branchSchools = DEFAULT_SCHOOLS.filter(s => s.location === branchName);
-      const targetCohort = branchSchools.reduce((acc, sch) => acc + (sch.studentsCount || 0), 0);
-
       // Actual registered students in dataset for this region (authoritative count)
       const actualRegistered = datasetFacts.byBranch[branchName] || 0;
-      const remainingRecords = Math.max(0, targetCohort - actualRegistered);
 
       // Time / Student: genuine per-record capture cadence only (null when unsupported).
       const avgSeconds = averageCaptureCadence(branchSenders);
@@ -433,14 +428,14 @@ export const TelemetricVelocityPage: React.FC = () => {
       // Daily pace: authoritative records created today in this region (from the dataset).
       const effectiveDailyPace = todayTotal;
 
-      // Projected operating days; null when no observed pace yet exists.
-      const daysToComplete = remainingRecords > 0
-        ? (effectiveDailyPace > 0 ? Number((remainingRecords / effectiveDailyPace).toFixed(1)) : null)
-        : 0;
-
-      const completionPercentage = targetCohort > 0
-        ? Number(((actualRegistered / targetCohort) * 100).toFixed(1))
-        : 0;
+      // There is no configured cohort quota anywhere in the system. This used to divide by the
+      // enrollments typed into the campus list, which meant the panel was measuring against a
+      // number no database had ever produced. What it can say honestly is the branch's share of
+      // the registrations the fleet actually holds.
+      const fleetRegistered = datasetFacts.total || 0;
+      const completionPercentage = fleetRegistered > 0
+        ? Number(((actualRegistered / fleetRegistered) * 100).toFixed(1))
+        : null;
 
       // Cadence tier derived from real capture cadence (IDLE when no cadence data).
       const cadenceLevel = cadenceTier(avgSeconds);
@@ -456,11 +451,8 @@ export const TelemetricVelocityPage: React.FC = () => {
         week: weekTotal,
         month: monthTotal,
         total: allTimeTotal,
-        targetCohort,
         actualRegistered,
-        remainingRecords,
         effectiveDailyPace,
-        daysToComplete,
         completionPercentage,
         avgSeconds,
         recPerMinute,
@@ -473,19 +465,9 @@ export const TelemetricVelocityPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branches, sendersList, students, datasetFacts, sampleVersion]);
 
-  // Aggregate Fleet Cohort Metrics across All Regional Jurisdictions
-  const totalFleetCohortTarget = useMemo(() => {
-    return DEFAULT_SCHOOLS.reduce((acc, sch) => acc + (sch.studentsCount || 0), 0);
-  }, []);
-
-  const totalFleetCompleted = useMemo(() => {
-    return edgeStats?.totalStudents || datasetFacts.total;
-  }, [edgeStats, datasetFacts.total]);
-
-  const totalFleetRemaining = useMemo(() => {
-    return Math.max(0, totalFleetCohortTarget - totalFleetCompleted);
-  }, [totalFleetCohortTarget, totalFleetCompleted]);
-
+  // The fleet "cohort target" this file used to compute came from the enrollments written into the
+  // campus list, and nothing in the system configures a quota, so the whole chain of
+  // target -> remaining -> days-to-complete has been removed rather than displayed as a measurement.
   const totalFleetTransmissionsToday = useMemo(() => {
     return edgeStats?.todayRecords ?? datasetFacts.todayCount;
   }, [edgeStats, datasetFacts.todayCount]);
@@ -493,13 +475,6 @@ export const TelemetricVelocityPage: React.FC = () => {
   const totalFleetDailyPace = useMemo(() => {
     return totalFleetTransmissionsToday;
   }, [totalFleetTransmissionsToday]);
-
-  const totalFleetDaysToComplete = useMemo(() => {
-    if (totalFleetRemaining === 0) return 0;
-    return totalFleetDailyPace > 0
-      ? Number((totalFleetRemaining / totalFleetDailyPace).toFixed(1))
-      : null;
-  }, [totalFleetRemaining, totalFleetDailyPace]);
 
   const totalHardwareLocked = useMemo(() => {
     return sendersList.filter(s => Boolean(s.boundDeviceId)).length;
@@ -1041,12 +1016,12 @@ export const TelemetricVelocityPage: React.FC = () => {
                 <div className="mt-2.5 h-1.5 rounded-full bg-[#F6FAEF] overflow-hidden">
                   <div
                     className="h-full rounded-full bg-[#85E510]"
-                    style={{ width: `${Math.min(100, Math.max(0, b.completionPercentage))}%` }}
+                    style={{ width: `${Math.min(100, Math.max(0, b.completionPercentage ?? 0))}%` }}
                   />
                 </div>
 
                 <div className="mt-2 flex items-center justify-between text-[10px] text-[#7C8B70]">
-                  <span>{b.completionPercentage}% of cohort</span>
+                  <span>{b.completionPercentage === null ? 'fleet total unavailable' : `${b.completionPercentage}% of fleet`}</span>
                   <span>{b.activeOperators}/{b.totalOperators} transmitted today</span>
                 </div>
               </div>
